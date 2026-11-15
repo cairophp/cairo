@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package helloworld;
+
+service Greeter {
+  rpc SayHello (HelloRequest) returns (HelloReply);
+  // Waits `seconds` with Cairo\sleep() before replying; used to show
+  // deadlines and fiber concurrency.
+  rpc SlowHello (SlowHelloRequest) returns (HelloReply);
+}
+
+message HelloRequest {
+  string name = 1;
+}
+
+message SlowHelloRequest {
+  string name = 1;
+  double seconds = 2;
+}
+
+message HelloReply {
+  string message = 1;
+  // Seconds left before the call's deadline, as PHP saw it; 0 when there is none.
+  double remaining = 2;
+}

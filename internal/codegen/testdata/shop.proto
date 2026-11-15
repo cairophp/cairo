@@ -1,0 +1,17 @@
+syntax = "proto3";
+package shop.v1;
+import "google/protobuf/timestamp.proto";
+enum Status { STATUS_UNKNOWN = 0; STATUS_PAID = 1; }
+message Item { string sku = 1; int64 qty = 2; bytes blob = 3; }
+message Order {
+  string id = 1;
+  repeated Item items = 2;
+  map<string, int32> tags = 3;
+  Status status = 4;
+  optional string note = 5;
+  google.protobuf.Timestamp created_at = 6;
+  message Ship { string city = 1; }
+  Ship ship = 7;
+  oneof pay { string card = 8; string iban = 9; }
+}
+service Orders { rpc Get (Order) returns (Order); rpc Watch (Order) returns (stream Order); }

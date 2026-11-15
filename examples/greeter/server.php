@@ -9,6 +9,10 @@ use Cairo\Grpc\Exception as GrpcException;
 use Cairo\Http\Request;
 use Cairo\Http\Response;
 use Cairo\Pool;
+use Helloworld\GreeterInterface;
+use Helloworld\HelloReply;
+use Helloworld\HelloRequest;
+use Helloworld\SlowHelloRequest;
 
 use function Cairo\all;
 use function Cairo\async;
@@ -16,25 +20,28 @@ use function Cairo\await;
 use function Cairo\offload;
 use function Cairo\sleep;
 
-final class Greeter
+// Message classes and GreeterInterface are generated from the .proto with
+// `cairo gen --out gen proto/helloworld.proto`; no protoc needed.
+require __DIR__ . '/gen/autoload.php';
+
+final class Greeter implements GreeterInterface
 {
-    public function SayHello(array $req, Context $ctx): array
+    public function SayHello(HelloRequest $request, Context $ctx): HelloReply
     {
-        $name = $req['name'] ?? '';
-        if ($name === '') {
+        if ($request->name === '') {
             throw new GrpcException(Code::INVALID_ARGUMENT, 'name is required');
         }
-        return ['message' => "Hello $name"];
+        return new HelloReply(message: "Hello {$request->name}");
     }
 
-    public function SlowHello(array $req, Context $ctx): array
+    public function SlowHello(SlowHelloRequest $request, Context $ctx): HelloReply
     {
         $remaining = $ctx->remaining();
-        sleep((float) ($req['seconds'] ?? 0));   // the fiber suspends; Go waits
-        return [
-            'message' => 'Hello ' . ($req['name'] ?? ''),
-            'remaining' => is_finite($remaining) ? $remaining : 0,
-        ];
+        sleep($request->seconds);   // the fiber suspends; Go waits
+        return new HelloReply(
+            message: "Hello {$request->name}",
+            remaining: is_finite($remaining) ? $remaining : 0.0,
+        );
     }
 }
 

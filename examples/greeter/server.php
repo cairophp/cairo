@@ -85,9 +85,10 @@ $http->get('/blocking-sleep', function (Request $req): Response {
 // Socket hooks: a plain blocking stream client. Waiting for the reply
 // suspends only this fiber; the same applies to PDO MySQL and Redis clients.
 $http->get('/tcp', function (Request $req): Response {
-    $conn = stream_socket_client('tcp://' . $req->query('addr'), $errno, $errstr, 5);
+    $addr = (string) $req->query('addr');
+    $conn = @stream_socket_client(str_contains($addr, '://') ? $addr : "tcp://$addr", $errno, $errstr, 5);
     if ($conn === false) {
-        return Response::text("connect failed: $errstr\n", 502);
+        return Response::json(['error' => $errstr], 502);
     }
     fwrite($conn, ($req->query('delay') ?? '1') . "\n");
     $line = fgets($conn);
@@ -102,6 +103,22 @@ $http->get('/mysql', function (Request $req): Response {
     $row = $pdo->query('SELECT SLEEP(' . (float) ($req->query('seconds') ?? 1) . ') AS slept, 42 AS answer')->fetch(PDO::FETCH_ASSOC);
     return Response::json($row);
 });
+
+// Connect only: with Hook::CONNECT a slow connect suspends this fiber.
+$http->get('/connect', function (Request $req): Response {
+    $start = microtime(true);
+    $conn = @stream_socket_client('tcp://' . $req->query('addr'), $errno, $errstr, (float) ($req->query('timeout') ?? 5));
+    if ($conn !== false) {
+        fclose($conn);
+    }
+    return Response::json(['connected' => $conn !== false, 'error' => $errstr, 'took' => round(microtime(true) - $start, 2)]);
+});
+
+// DNS through Go's resolver.
+$http->get('/dns/{host}', fn (Request $req): Response => Response::json([
+    'one' => gethostbyname($req->param('host')),
+    'all' => gethostbynamel($req->param('host')),
+]));
 
 // Per-fiber state: child tasks see the parent's values; a child's own writes
 // stay in the child; deferred callbacks run when the fiber ends.

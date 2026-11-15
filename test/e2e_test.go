@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -230,6 +231,108 @@ func TestHookedSocketReadsDoNotBlockTheThread(t *testing.T) {
 	t.Logf("%d requests waiting 1s on a PHP stream socket, on 1 PHP thread: %s", n, took.Round(time.Millisecond))
 	if took > 3*time.Second {
 		t.Fatalf("took %s; socket reads blocked the thread", took)
+	}
+}
+
+// Connect hooks: unix sockets work, a refused connect reports an error like
+// PHP does, and DNS goes through Go's resolver.
+func TestHookedConnectAndDNS(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "echo.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				var secs float64
+				fmt.Fscanln(c, &secs)
+				fmt.Fprintln(c, "unix-pong")
+			}()
+		}
+	}()
+	if body := get(t, "/tcp?delay=0&addr=unix://"+path); !strings.Contains(body, `"unix-pong"`) {
+		t.Fatalf("unix: %s", body)
+	}
+
+	closed := freeAddr()
+	resp, err := http.Get("http://" + httpAddr + "/tcp?addr=" + closed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 502 || !strings.Contains(string(b), "refused") {
+		t.Fatalf("refused connect: status %d body %s", resp.StatusCode, b)
+	}
+
+	var dns struct {
+		One string   `json:"one"`
+		All []string `json:"all"`
+	}
+	if err := json.Unmarshal([]byte(get(t, "/dns/localhost")), &dns); err != nil {
+		t.Fatal(err)
+	}
+	if dns.One != "127.0.0.1" || len(dns.All) == 0 || dns.All[0] != "127.0.0.1" {
+		t.Fatalf("dns: %+v", dns)
+	}
+}
+
+// A listener that never accepts, with a backlog of 0: once the kernel's queue
+// is full, further connects hang until they time out. 30 such connects with a
+// 1s timeout overlap on one PHP thread instead of taking 30s.
+func TestHookedConnectDoesNotBlockTheThread(t *testing.T) {
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Close(fd)
+	if err := syscall.Bind(fd, &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Listen(fd, 0); err != nil {
+		t.Fatal(err)
+	}
+	sa, _ := syscall.Getsockname(fd)
+	addr := fmt.Sprintf("127.0.0.1:%d", sa.(*syscall.SockaddrInet4).Port)
+
+	const n = 30
+	start := time.Now()
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	timedOut := 0
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var out struct {
+				Connected bool `json:"connected"`
+			}
+			if err := json.Unmarshal([]byte(get(t, "/connect?timeout=1&addr="+addr)), &out); err != nil {
+				t.Error(err)
+				return
+			}
+			if !out.Connected {
+				mu.Lock()
+				timedOut++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	took := time.Since(start)
+	t.Logf("%d connects to a full backlog (%d timed out after 1s), on 1 PHP thread: %s", n, timedOut, took.Round(time.Millisecond))
+	if timedOut == 0 {
+		t.Fatal("no connect hung; the test listener did not fill up")
+	}
+	if took > 4*time.Second {
+		t.Fatalf("took %s; connects blocked the thread", took)
 	}
 }
 

@@ -376,7 +376,11 @@ namespace Cairo {
         public const SLEEP = 1;
         /** reads and writes on tcp:// and unix:// streams: mysqlnd (PDO MySQL, mysqli), Redis clients, fsockopen() */
         public const SOCKETS = 2;
-        public const ALL = self::SLEEP | self::SOCKETS;
+        /** connects on tcp:// and unix:// streams, through Go's dialer (DNS included) */
+        public const CONNECT = 4;
+        /** gethostbyname(), gethostbynamel(), through Go's resolver */
+        public const DNS = 8;
+        public const ALL = self::SLEEP | self::SOCKETS | self::CONNECT | self::DNS;
     }
 
     /** An offloaded job threw; the message names the original exception class. */
@@ -852,6 +856,47 @@ namespace Cairo\Internal {
             }
             $result = Scheduler::instance()->op(['op' => 'wait', 'fd' => $fd, 'write' => $write, 'timeout' => $timeout]);
             return $result === 'timeout' ? -1 : 1;
+        }
+
+        /**
+         * Connect $address ("host:port", or a path for unix) through Go.
+         * Returns the connected socket's descriptor, an error message, or
+         * null to let PHP connect itself.
+         */
+        public static function connect(string $network, string $address, float $timeout): int|string|null
+        {
+            if (!self::on(\Cairo\Hook::CONNECT)) {
+                return null;
+            }
+            $result = Scheduler::instance()->op(['op' => 'dial', 'network' => $network, 'address' => $address, 'timeout' => $timeout]);
+            return isset($result['fd']) ? (int) $result['fd'] : (string) ($result['err'] ?? 'connect failed');
+        }
+
+        public static function gethostbyname(mixed $hostname = null): ?string
+        {
+            if (!is_string($hostname) || !self::on(\Cairo\Hook::DNS)) {
+                return null;
+            }
+            $ips = self::lookup($hostname);
+            return $ips[0] ?? $hostname;   // like PHP: the name itself on failure
+        }
+
+        public static function gethostbynamel(mixed $hostname = null): array|false|null
+        {
+            if (!is_string($hostname) || !self::on(\Cairo\Hook::DNS)) {
+                return null;
+            }
+            $ips = self::lookup($hostname);
+            return $ips === [] ? false : $ips;
+        }
+
+        /** @return list<string> */
+        private static function lookup(string $host): array
+        {
+            if (ip2long($host) !== false) {
+                return [$host];
+            }
+            return (array) Scheduler::instance()->op(['op' => 'lookup', 'host' => $host]);
         }
 
         /** Hooks run only in fibers Cairo started on a request thread. */

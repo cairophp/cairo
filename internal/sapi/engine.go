@@ -106,6 +106,9 @@ type op struct {
 	Fd      int     `json:"fd"`
 	Write   bool    `json:"write"`
 	Timeout float64 `json:"timeout"` // seconds; < 0 means none
+	Network string  `json:"network"`
+	Address string  `json:"address"`
+	Host    string  `json:"host"`
 }
 
 var (
@@ -357,6 +360,31 @@ func (e *Engine) runOp(f *fiber, o op) {
 			ev["error"] = ctxError(f.ctx)
 		default:
 			ev["error"] = err.Error()
+		}
+	case "dial":
+		// A hooked connect: DNS and connect run here, on the fiber's goroutine.
+		timeout := time.Duration(0)
+		if o.Timeout > 0 {
+			timeout = time.Duration(o.Timeout * float64(time.Second))
+		}
+		fd, err := dialFD(f.ctx, o.Network, o.Address, timeout)
+		switch {
+		case err == nil:
+			ev["result"] = map[string]any{"fd": fd}
+		case f.ctx.Err() != nil:
+			ev["error"] = ctxError(f.ctx)
+		default:
+			ev["result"] = map[string]any{"err": err.Error()}
+		}
+	case "lookup":
+		ips, err := lookupIPv4(f.ctx, o.Host)
+		switch {
+		case err == nil:
+			ev["result"] = ips
+		case f.ctx.Err() != nil:
+			ev["error"] = ctxError(f.ctx)
+		default:
+			ev["result"] = []string{}
 		}
 	default:
 		ev["error"] = "unknown operation " + o.Op

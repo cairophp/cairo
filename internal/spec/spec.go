@@ -23,6 +23,13 @@ type HTTPServer struct {
 	WriteTimeout float64      `json:"write_timeout"`
 	Routes       []Route      `json:"routes"`
 	Static       []StaticPath `json:"static"`
+	Middleware   []Middleware `json:"middleware"`
+}
+
+// Middleware is one `$server->use(Middleware::...)`: Go runs it before PHP.
+type Middleware struct {
+	Name    string          `json:"name"`
+	Options json.RawMessage `json:"options"`
 }
 
 // Route maps an HTTP method and path pattern to a PHP handler id.
@@ -42,8 +49,9 @@ type StaticPath struct {
 type GRPCServer struct {
 	Listen      string    `json:"listen"`
 	Protos      []string  `json:"protos"`
-	MaxDuration float64   `json:"max_duration"`
-	Services    []Service `json:"services"`
+	MaxDuration float64      `json:"max_duration"`
+	Services    []Service    `json:"services"`
+	Middleware  []Middleware `json:"middleware"`
 }
 
 // Service maps a fully qualified gRPC service name to a PHP handler id.

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Cairo\App;
 use Cairo\Context;
+use Cairo\Middleware;
 use Cairo\Grpc\Code;
 use Cairo\Grpc\Exception as GrpcException;
 use Cairo\Http\Request;
@@ -60,7 +61,17 @@ $app = new App();
 $app->threads('auto');          // request threads: many fibers each
 $app->offloadThreads('auto');   // CPU threads for Cairo\offload()
 
-$http = $app->http(getenv('CAIRO_HTTP') ?: ':8080');
+$http = $app->http(getenv('CAIRO_HTTP') ?: ':8080')
+    // Go runs these before PHP, in this order.
+    ->use(Middleware::requestId())
+    ->use(Middleware::cors(origins: ['*']))
+    ->use(Middleware::gzip());
+
+// The request id set by the middleware reaches PHP as a header.
+$http->get('/request-id', fn (Request $req): Response => Response::text((string) $req->header('x-request-id')));
+
+// Large enough for the gzip middleware (1 KB by default).
+$http->get('/big', fn (): Response => Response::text(str_repeat("Cairo serves PHP from Go.\n", 200)));
 
 $http->get('/hello/{name}', fn (Request $req): Response => Response::text("Hello {$req->param('name')}\n"));
 
@@ -205,7 +216,8 @@ $http->get('/cpu', function (Request $req): Response {
 
 $grpc = $app->grpc(getenv('CAIRO_GRPC') ?: ':9000')
     ->proto(__DIR__ . '/proto/helloworld.proto')
-    ->maxDuration(30);
+    ->maxDuration(30)
+    ->use(Middleware::requestId());
 
 $grpc->service('helloworld.Greeter', Greeter::class);
 

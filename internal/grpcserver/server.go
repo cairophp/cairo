@@ -31,6 +31,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/dynamicpb"
 
+	"github.com/mohamed-samir907/cairo/internal/middleware"
 	"github.com/mohamed-samir907/cairo/internal/spec"
 )
 
@@ -95,7 +96,11 @@ func New(decl spec.GRPCServer, php Dispatcher, log *slog.Logger) (*Server, error
 		hs.SetServingStatus(sv.Name, healthpb.HealthCheckResponse_SERVING)
 	}
 
-	s.grpc = grpc.NewServer(grpc.UnknownServiceHandler(s.handle))
+	interceptors, err := middleware.GRPC(decl.Middleware, log)
+	if err != nil {
+		return nil, err
+	}
+	s.grpc = grpc.NewServer(grpc.UnknownServiceHandler(s.handle), grpc.ChainStreamInterceptor(interceptors...))
 	healthpb.RegisterHealthServer(s.grpc, hs)
 	opts := reflection.ServerOptions{Services: s, DescriptorResolver: resolver{files}}
 	reflectionv1.RegisterServerReflectionServer(s.grpc, reflection.NewServerV1(opts))

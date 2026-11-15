@@ -103,11 +103,13 @@ request fiber, they suspend the fiber while its goroutine waits, and existing
 code needs no changes. Outside request fibers (the declare phase, offload
 threads, fibers your own code creates) the original functions run.
 
-| Hook | Functions | Status |
+| Hook | Functions | Notes |
 |---|---|---|
-| `Hook::SLEEP` | `sleep()`, `usleep()`, `time_nanosleep()` | done |
-| `Hook::SOCKETS` | reads and writes on `tcp://` and `unix://` streams: mysqlnd (PDO MySQL, mysqli), Predis, phpredis, `fsockopen()`, `stream_socket_client()` | done (connect and DNS still block; no TLS yet) |
-| curl | `curl_exec()` through Go `net/http` | planned |
+| `Hook::SLEEP` | `sleep()`, `usleep()`, `time_nanosleep()` | |
+| `Hook::SOCKETS` | reads and writes on `tcp://` and `unix://` streams: mysqlnd (PDO MySQL, mysqli), Predis, phpredis, `fsockopen()`, `stream_socket_client()` | waits go through one Go epoll loop |
+| `Hook::CONNECT` | connects on those streams, DNS included | Go's dialer; falls back to PHP when a `bindto` option is set |
+| `Hook::DNS` | `gethostbyname()`, `gethostbynamel()` | Go's resolver |
+| `Hook::CURL` | `curl_exec()` | libcurl still does the transfer; only its socket waits move to Go, so `curl_getinfo()`, `curl_error()` and callbacks are unchanged |
 
 ```php
 $app->hooks(Hook::ALL);    // the default; Hook::NONE turns them off
@@ -120,7 +122,24 @@ hold a thousand OS threads. With one PHP thread, 50 PDO queries running
 `Hook::NONE`).
 
 pdo_pgsql talks to libpq's own sockets, which no PHP-level hook sees; a
-Go-backed PDO driver for Postgres is planned.
+Go-backed PDO driver for Postgres is planned. TLS streams (`ssl://`, `tls://`)
+are not hooked yet, and `curl_multi_*` keeps blocking in `curl_multi_select()`.
+
+### Connection pools
+
+Each fiber needs its own connection. `Cairo\Pool` keeps a pool per PHP thread
+(build it in `server.php`, which every thread runs):
+
+```php
+$db = new Cairo\Pool(fn () => new PDO($dsn, $user, $pass), max: 10);
+
+$pdo = $db->get();                                  // this fiber's, returned when it ends
+$db->with(fn (PDO $pdo) => $pdo->query('SELECT 1')); // borrowed for the callback only
+```
+
+When all connections are in use, `get()` suspends the fiber until one comes
+back. Using one connection from two fibers at once throws instead of
+corrupting the protocol.
 
 ### Request state: Context values
 
@@ -143,8 +162,8 @@ first when the fiber ends; for a request, that is after the response is sent.
 
 Rules that keep fibers safe: per-request data lives on `Request` and
 `Context`, not in superglobals (Cairo does not fill `$_GET`/`$_SERVER`), and
-blocking calls that are not hooked yet (curl, pdo_pgsql, connects) stall
-every fiber on their thread. Use `Cairo\offload()` for CPU-heavy work.
+blocking calls that are not hooked yet (pdo_pgsql, TLS streams,
+`curl_multi_select()`) stall every fiber on their thread. Use `Cairo\offload()` for CPU-heavy work.
 
 ## Building
 
@@ -159,7 +178,7 @@ make run            # serves examples/greeter
 
 Or with Docker: `docker build -t cairo . && docker run -p 8080:8080 -p 9000:9000 cairo`.
 
-Requirements: Go 1.24+, a C toolchain, and PHP 8.1 or newer (fibers).
+Requirements: Go 1.24+, a C toolchain, libcurl headers (`libcurl4-openssl-dev`), and PHP 8.1 or newer (fibers).
 
 ## Layout
 
@@ -177,7 +196,7 @@ test/                 end-to-end tests
 ## Not done yet
 
 - Streaming gRPC, generated PHP message classes, a `cairo protoc` command.
-- curl and connect/DNS hooks, TLS streams, a Go-backed HTTP client, a pgx PDO driver.
+- TLS stream hooks, `curl_multi` hooks, a Go-backed HTTP client, a pgx PDO driver.
 - Hard interruption of PHP code at a deadline, `isolated` mode for non-fiber-safe apps.
 - Opcache and a wider set of PHP extensions in the default build.
 - A Cairo-owned SAPI adapted from FrankenPHP; this prototype uses PHP's embed SAPI.

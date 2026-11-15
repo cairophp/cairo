@@ -153,9 +153,9 @@ static const zend_function_entry cairo_functions[] = {
 // the runtime declines (hooks off, offload thread, a fiber Cairo did not
 // start), the original handler runs and blocks as usual.
 
-enum { HOOK_SLEEP, HOOK_USLEEP, HOOK_NANOSLEEP, HOOK_COUNT };
+enum { HOOK_SLEEP, HOOK_USLEEP, HOOK_NANOSLEEP, HOOK_GETHOSTBYNAME, HOOK_GETHOSTBYNAMEL, HOOK_COUNT };
 
-static const char *hook_names[HOOK_COUNT] = {"sleep", "usleep", "time_nanosleep"};
+static const char *hook_names[HOOK_COUNT] = {"sleep", "usleep", "time_nanosleep", "gethostbyname", "gethostbynamel"};
 static zif_handler hook_originals[HOOK_COUNT];
 
 // Returns 1 when the runtime slept for us (or threw), 0 to fall back.
@@ -225,7 +225,51 @@ static ZEND_NAMED_FUNCTION(cairo_hook_nanosleep)
 	hook_originals[HOOK_NANOSLEEP](INTERNAL_FUNCTION_PARAM_PASSTHRU);
 }
 
-static const zif_handler hook_handlers[HOOK_COUNT] = {cairo_hook_sleep, cairo_hook_usleep, cairo_hook_nanosleep};
+// Forwards a call to Cairo\Internal\Hooks::<name>(...$args). A null result
+// means the runtime declined, and the original function runs instead.
+static int cairo_forward(const char *method, zend_execute_data *execute_data, zval *return_value)
+{
+	if (EG(active_fiber) == NULL) {
+		return 0;
+	}
+	char name[96];
+	snprintf(name, sizeof(name), "Cairo\\Internal\\Hooks::%s", method);
+	zval fname, retval;
+	ZVAL_STRING(&fname, name);
+	ZVAL_UNDEF(&retval);
+	uint32_t argc = ZEND_NUM_ARGS();
+	int rc = call_user_function(NULL, NULL, &fname, &retval, argc, argc ? ZEND_CALL_ARG(execute_data, 1) : NULL);
+	zval_ptr_dtor(&fname);
+	if (EG(exception) != NULL) {
+		zval_ptr_dtor(&retval);
+		return 1;
+	}
+	if (rc != SUCCESS || Z_TYPE(retval) == IS_NULL || Z_TYPE(retval) == IS_UNDEF) {
+		zval_ptr_dtor(&retval);
+		return 0;
+	}
+	ZVAL_COPY_VALUE(return_value, &retval);
+	return 1;
+}
+
+static ZEND_NAMED_FUNCTION(cairo_hook_gethostbyname)
+{
+	if (!cairo_forward("gethostbyname", execute_data, return_value)) {
+		hook_originals[HOOK_GETHOSTBYNAME](INTERNAL_FUNCTION_PARAM_PASSTHRU);
+	}
+}
+
+static ZEND_NAMED_FUNCTION(cairo_hook_gethostbynamel)
+{
+	if (!cairo_forward("gethostbynamel", execute_data, return_value)) {
+		hook_originals[HOOK_GETHOSTBYNAMEL](INTERNAL_FUNCTION_PARAM_PASSTHRU);
+	}
+}
+
+static const zif_handler hook_handlers[HOOK_COUNT] = {
+	cairo_hook_sleep, cairo_hook_usleep, cairo_hook_nanosleep,
+	cairo_hook_gethostbyname, cairo_hook_gethostbynamel,
+};
 
 
 // ---- Socket hooks ----------------------------------------------------------
@@ -240,6 +284,7 @@ static const zif_handler hook_handlers[HOOK_COUNT] = {cairo_hook_sleep, cairo_ho
 #define CAIRO_MAX_SOCK_OPS 8
 static const php_stream_ops *sock_ops_orig[CAIRO_MAX_SOCK_OPS];
 static php_stream_ops sock_ops_hooked[CAIRO_MAX_SOCK_OPS];
+static int sock_ops_unix[CAIRO_MAX_SOCK_OPS];
 static int sock_ops_count;
 
 static const php_stream_ops *find_orig_ops(const php_stream_ops *hooked)
@@ -289,6 +334,77 @@ static int cairo_wait_fd(php_netstream_data_t *sock, int write)
 	return out;
 }
 
+// Connects through Go (Cairo\Internal\Hooks::connect): the name lookup and
+// the connect run on the fiber's goroutine with Go's resolver and netpoller.
+// Returns 1 when handled (xparam filled in), 0 to let PHP connect itself.
+static int cairo_sock_connect(php_stream *stream, php_netstream_data_t *sock, php_stream_xport_param *xparam, int is_unix)
+{
+	if (EG(active_fiber) == NULL || sock == NULL || sock->socket != -1 || xparam->inputs.name == NULL) {
+		return 0;
+	}
+	// Options Go's dialer does not take (a local bind address): let PHP do it.
+	if (!is_unix && PHP_STREAM_CONTEXT(stream)
+		&& php_stream_context_get_option(PHP_STREAM_CONTEXT(stream), "socket", "bindto") != NULL) {
+		return 0;
+	}
+	double timeout = -1;
+	if (xparam->inputs.timeout != NULL) {
+		timeout = (double)xparam->inputs.timeout->tv_sec + (double)xparam->inputs.timeout->tv_usec / 1e6;
+	}
+	zval fname, args[3], retval;
+	ZVAL_STRING(&fname, "Cairo\\Internal\\Hooks::connect");
+	ZVAL_STRING(&args[0], is_unix ? "unix" : "tcp");
+	ZVAL_STRINGL(&args[1], xparam->inputs.name, xparam->inputs.namelen);
+	ZVAL_DOUBLE(&args[2], timeout);
+	ZVAL_UNDEF(&retval);
+	int rc = call_user_function(NULL, NULL, &fname, &retval, 3, args);
+	zval_ptr_dtor(&fname);
+	zval_ptr_dtor(&args[0]);
+	zval_ptr_dtor(&args[1]);
+	if (EG(exception) != NULL) {
+		zval_ptr_dtor(&retval);
+		xparam->outputs.returncode = -1;
+		return 1;
+	}
+	if (rc != SUCCESS || Z_TYPE(retval) == IS_NULL || Z_TYPE(retval) == IS_UNDEF) {
+		zval_ptr_dtor(&retval);
+		return 0;
+	}
+	if (Z_TYPE(retval) == IS_LONG && Z_LVAL(retval) >= 0) {
+		sock->socket = (php_socket_t)Z_LVAL(retval);
+		xparam->outputs.returncode = 0;
+		xparam->outputs.error_code = 0;
+	} else {
+		xparam->outputs.returncode = -1;
+		xparam->outputs.error_code = ECONNREFUSED;
+		if (xparam->want_errortext && Z_TYPE(retval) == IS_STRING) {
+			xparam->outputs.error_text = zend_string_copy(Z_STR(retval));
+		}
+	}
+	zval_ptr_dtor(&retval);
+	return 1;
+}
+
+static int cairo_sock_set_option(php_stream *stream, int option, int value, void *ptrparam)
+{
+	const php_stream_ops *orig = find_orig_ops(stream->ops);
+	if (option == PHP_STREAM_OPTION_XPORT_API && ptrparam != NULL) {
+		php_stream_xport_param *xparam = (php_stream_xport_param *)ptrparam;
+		if (xparam->op == STREAM_XPORT_OP_CONNECT) {
+			int is_unix = 0;
+			for (int i = 0; i < CAIRO_MAX_SOCK_OPS; i++) {
+				if (&sock_ops_hooked[i] == stream->ops) {
+					is_unix = sock_ops_unix[i];
+				}
+			}
+			if (cairo_sock_connect(stream, (php_netstream_data_t *)stream->abstract, xparam, is_unix)) {
+				return PHP_STREAM_OPTION_RETURN_OK;
+			}
+		}
+	}
+	return orig->set_option(stream, option, value, ptrparam);
+}
+
 static ssize_t cairo_sock_read(php_stream *stream, char *buf, size_t count)
 {
 	const php_stream_ops *orig = find_orig_ops(stream->ops);
@@ -328,7 +444,7 @@ static ssize_t cairo_sock_write(php_stream *stream, const char *buf, size_t coun
 // that table is created. The table only grows, under a mutex.
 static pthread_mutex_t sock_ops_mu = PTHREAD_MUTEX_INITIALIZER;
 
-static const php_stream_ops *hooked_ops_for(const php_stream_ops *ops)
+static const php_stream_ops *hooked_ops_for(const php_stream_ops *ops, int is_unix)
 {
 	const php_stream_ops *out = NULL;
 	pthread_mutex_lock(&sock_ops_mu);
@@ -344,6 +460,10 @@ static const php_stream_ops *hooked_ops_for(const php_stream_ops *ops)
 		sock_ops_hooked[i] = *ops;
 		sock_ops_hooked[i].read = cairo_sock_read;
 		sock_ops_hooked[i].write = cairo_sock_write;
+		if (ops->set_option != NULL) {
+			sock_ops_hooked[i].set_option = cairo_sock_set_option;
+		}
+		sock_ops_unix[i] = is_unix;
 		sock_ops_count++;
 		out = &sock_ops_hooked[i];
 	}
@@ -360,7 +480,8 @@ static php_stream *cairo_socket_factory(const char *proto, size_t protolen,
 	php_stream *stream = php_stream_generic_socket_factory(proto, protolen,
 		resourcename, resourcenamelen, persistent_id, options, flags, timeout, context STREAMS_REL_CC);
 	if (stream != NULL) {
-		const php_stream_ops *hooked = hooked_ops_for(stream->ops);
+		int is_unix = protolen == 4 && strncmp(proto, "unix", 4) == 0;
+		const php_stream_ops *hooked = hooked_ops_for(stream->ops, is_unix);
 		if (hooked != NULL) {
 			stream->ops = hooked;
 		}

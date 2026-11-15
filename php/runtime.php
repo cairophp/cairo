@@ -366,6 +366,154 @@ namespace Cairo {
     }
 
     /**
+     * A per-thread pool of connections (PDO, Redis clients, sockets), so each
+     * fiber gets its own connection: a connection must never be used by two
+     * fibers at once.
+     *
+     *     $db = new Pool(fn () => new PDO($dsn, $user, $pass), max: 10);
+     *     $pdo = $db->get();                        // this fiber's, until it ends
+     *     $db->with(fn (PDO $pdo) => $pdo->query('SELECT 1'));   // only for the callback
+     *
+     * Build pools in server.php: every PHP thread runs it, so every thread
+     * gets its own pool. When all connections are in use, get() suspends the
+     * fiber until one is returned.
+     */
+    final class Pool
+    {
+        /** @var list<mixed> */
+        private array $idle = [];
+        private int $open = 0;
+        /** @var \WeakMap<Context, mixed> fiber context => its connection */
+        private \WeakMap $held;
+        /** @var \SplQueue<object{fiber: \Fiber, conn: mixed}> */
+        private \SplQueue $waiters;
+        /** @var \Closure(): mixed */
+        private \Closure $factory;
+
+        public function __construct(callable $factory, private readonly int $max = 16)
+        {
+            if ($max < 1) {
+                throw new \InvalidArgumentException('a pool needs max >= 1');
+            }
+            $this->factory = \Closure::fromCallable($factory);
+            $this->held = new \WeakMap();
+            $this->waiters = new \SplQueue();
+        }
+
+        /**
+         * The current fiber's connection: the same one on every call in this
+         * fiber, returned to the pool when the fiber ends. A child task from
+         * async() gets its own.
+         */
+        public function get(): mixed
+        {
+            $ctx = Context::current();
+            if (isset($this->held[$ctx])) {
+                return $this->held[$ctx];
+            }
+            $conn = $this->acquire();
+            $this->held[$ctx] = $conn;
+            Context::defer(fn () => $this->release($ctx));
+            return $conn;
+        }
+
+        /** Borrow a connection for $fn only, then return it. */
+        public function with(callable $fn): mixed
+        {
+            $conn = $this->acquire();
+            try {
+                return $fn($conn);
+            } finally {
+                $this->giveBack($conn);
+            }
+        }
+
+        /** Give the current fiber's connection back before the fiber ends. */
+        public function put(): void
+        {
+            $this->release(Context::current());
+        }
+
+        /** Drop the current fiber's connection (it broke); the pool may open a new one. */
+        public function discard(): void
+        {
+            $ctx = Context::current();
+            if (isset($this->held[$ctx])) {
+                unset($this->held[$ctx]);
+                $this->open--;
+                $this->wakeOne();
+            }
+        }
+
+        /** @return array{open: int, idle: int, waiting: int, max: int} */
+        public function stats(): array
+        {
+            return ['open' => $this->open, 'idle' => count($this->idle), 'waiting' => count($this->waiters), 'max' => $this->max];
+        }
+
+        private function acquire(): mixed
+        {
+            if ($this->idle !== []) {
+                return array_pop($this->idle);
+            }
+            if ($this->open < $this->max) {
+                $this->open++;
+                try {
+                    return ($this->factory)();
+                } catch (\Throwable $e) {
+                    $this->open--;
+                    throw $e;
+                }
+            }
+            $fiber = \Fiber::getCurrent() ?? throw new \LogicException('the pool is exhausted and there is no fiber to wait in');
+            $waiter = new class ($fiber) {
+                public mixed $conn = null;
+                public bool $fresh = false;
+                public function __construct(public readonly \Fiber $fiber)
+                {
+                }
+            };
+            $this->waiters->enqueue($waiter);
+            \Fiber::suspend();
+            if ($waiter->fresh) {
+                return $this->acquire();
+            }
+            return $waiter->conn;
+        }
+
+        private function release(Context $ctx): void
+        {
+            if (!isset($this->held[$ctx])) {
+                return;
+            }
+            $conn = $this->held[$ctx];
+            unset($this->held[$ctx]);
+            $this->giveBack($conn);
+        }
+
+        private function giveBack(mixed $conn): void
+        {
+            if (!$this->waiters->isEmpty()) {
+                $waiter = $this->waiters->dequeue();
+                $waiter->conn = $conn;
+                Scheduler::instance()->ready($waiter->fiber);
+                return;
+            }
+            $this->idle[] = $conn;
+        }
+
+        /** A connection was dropped: let one waiter open a new one. */
+        private function wakeOne(): void
+        {
+            if (!$this->waiters->isEmpty()) {
+                $waiter = $this->waiters->dequeue();
+                $waiter->fresh = true;
+                Scheduler::instance()->ready($waiter->fiber);
+            }
+        }
+    }
+
+    /**
      * Runtime hooks: blocking PHP functions that suspend the current fiber
      * instead of blocking the whole thread. See App::hooks().
      */
@@ -376,7 +524,13 @@ namespace Cairo {
         public const SLEEP = 1;
         /** reads and writes on tcp:// and unix:// streams: mysqlnd (PDO MySQL, mysqli), Redis clients, fsockopen() */
         public const SOCKETS = 2;
-        public const ALL = self::SLEEP | self::SOCKETS;
+        /** curl_exec(): curl's socket waits suspend the fiber */
+        public const CURL = 16;
+        /** connects on tcp:// and unix:// streams, through Go's dialer (DNS included) */
+        public const CONNECT = 4;
+        /** gethostbyname(), gethostbynamel(), through Go's resolver */
+        public const DNS = 8;
+        public const ALL = self::SLEEP | self::SOCKETS | self::CONNECT | self::DNS | self::CURL;
     }
 
     /** An offloaded job threw; the message names the original exception class. */
@@ -852,6 +1006,64 @@ namespace Cairo\Internal {
             }
             $result = Scheduler::instance()->op(['op' => 'wait', 'fd' => $fd, 'write' => $write, 'timeout' => $timeout]);
             return $result === 'timeout' ? -1 : 1;
+        }
+
+        /**
+         * Wait for any of curl's sockets ($read readable, $write writable) or
+         * $timeout seconds (-1: none). Returns 1 when done waiting, 0 to let
+         * curl block as usual.
+         *
+         * @param list<int> $read
+         * @param list<int> $write
+         */
+        public static function waitSet(array $read, array $write, float $timeout): int
+        {
+            if (!self::on(\Cairo\Hook::CURL)) {
+                return 0;
+            }
+            Scheduler::instance()->op(['op' => 'waitset', 'read' => $read, 'write_fds' => $write, 'timeout' => $timeout]);
+            return 1;
+        }
+
+        /**
+         * Connect $address ("host:port", or a path for unix) through Go.
+         * Returns the connected socket's descriptor, an error message, or
+         * null to let PHP connect itself.
+         */
+        public static function connect(string $network, string $address, float $timeout): int|string|null
+        {
+            if (!self::on(\Cairo\Hook::CONNECT)) {
+                return null;
+            }
+            $result = Scheduler::instance()->op(['op' => 'dial', 'network' => $network, 'address' => $address, 'timeout' => $timeout]);
+            return isset($result['fd']) ? (int) $result['fd'] : (string) ($result['err'] ?? 'connect failed');
+        }
+
+        public static function gethostbyname(mixed $hostname = null): ?string
+        {
+            if (!is_string($hostname) || !self::on(\Cairo\Hook::DNS)) {
+                return null;
+            }
+            $ips = self::lookup($hostname);
+            return $ips[0] ?? $hostname;   // like PHP: the name itself on failure
+        }
+
+        public static function gethostbynamel(mixed $hostname = null): array|false|null
+        {
+            if (!is_string($hostname) || !self::on(\Cairo\Hook::DNS)) {
+                return null;
+            }
+            $ips = self::lookup($hostname);
+            return $ips === [] ? false : $ips;
+        }
+
+        /** @return list<string> */
+        private static function lookup(string $host): array
+        {
+            if (ip2long($host) !== false) {
+                return [$host];
+            }
+            return (array) Scheduler::instance()->op(['op' => 'lookup', 'host' => $host]);
         }
 
         /** Hooks run only in fibers Cairo started on a request thread. */

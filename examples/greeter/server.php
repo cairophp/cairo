@@ -8,6 +8,7 @@ use Cairo\Grpc\Code;
 use Cairo\Grpc\Exception as GrpcException;
 use Cairo\Http\Request;
 use Cairo\Http\Response;
+use Cairo\Pool;
 
 use function Cairo\all;
 use function Cairo\async;
@@ -85,9 +86,10 @@ $http->get('/blocking-sleep', function (Request $req): Response {
 // Socket hooks: a plain blocking stream client. Waiting for the reply
 // suspends only this fiber; the same applies to PDO MySQL and Redis clients.
 $http->get('/tcp', function (Request $req): Response {
-    $conn = stream_socket_client('tcp://' . $req->query('addr'), $errno, $errstr, 5);
+    $addr = (string) $req->query('addr');
+    $conn = @stream_socket_client(str_contains($addr, '://') ? $addr : "tcp://$addr", $errno, $errstr, 5);
     if ($conn === false) {
-        return Response::text("connect failed: $errstr\n", 502);
+        return Response::json(['error' => $errstr], 502);
     }
     fwrite($conn, ($req->query('delay') ?? '1') . "\n");
     $line = fgets($conn);
@@ -102,6 +104,63 @@ $http->get('/mysql', function (Request $req): Response {
     $row = $pdo->query('SELECT SLEEP(' . (float) ($req->query('seconds') ?? 1) . ') AS slept, 42 AS answer')->fetch(PDO::FETCH_ASSOC);
     return Response::json($row);
 });
+
+// Connect only: with Hook::CONNECT a slow connect suspends this fiber.
+$http->get('/connect', function (Request $req): Response {
+    $start = microtime(true);
+    $conn = @stream_socket_client('tcp://' . $req->query('addr'), $errno, $errstr, (float) ($req->query('timeout') ?? 5));
+    if ($conn !== false) {
+        fclose($conn);
+    }
+    return Response::json(['connected' => $conn !== false, 'error' => $errstr, 'took' => round(microtime(true) - $start, 2)]);
+});
+
+// A pool of 2 "connections" (counting objects here; PDO in real code) shared
+// by 6 concurrent tasks: they take turns, and only 2 are ever opened.
+final class FakeConn
+{
+    public static int $opened = 0;
+    public function __construct() { self::$opened++; }
+}
+
+$http->get('/pool', function (): Response {
+    $pool = new Pool(fn () => new FakeConn(), max: 2);
+    FakeConn::$opened = 0;
+    $start = microtime(true);
+    $ids = await(all(array_map(fn (int $i) => async(function () use ($pool): int {
+        $conn = $pool->get();          // this task's connection until it ends
+        sleep(0.2);
+        return spl_object_id($conn);
+    }), range(1, 6))));
+    return Response::json([
+        'opened' => FakeConn::$opened,
+        'distinct' => count(array_unique($ids)),
+        'took' => round(microtime(true) - $start, 2),
+        'stats' => $pool->stats(),
+    ]);
+});
+
+// curl, unchanged: while curl waits for the server, this fiber is suspended.
+$http->get('/curl', function (Request $req): Response {
+    $ch = curl_init((string) $req->query('url'));
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, (int) ($req->query('timeout') ?? 10));
+    $body = curl_exec($ch);
+    $out = [
+        'body' => $body === false ? null : $body,
+        'status' => curl_getinfo($ch, CURLINFO_HTTP_CODE),
+        'errno' => curl_errno($ch),
+        'error' => curl_error($ch),
+    ];
+    curl_close($ch);
+    return Response::json($out);
+});
+
+// DNS through Go's resolver.
+$http->get('/dns/{host}', fn (Request $req): Response => Response::json([
+    'one' => gethostbyname($req->param('host')),
+    'all' => gethostbynamel($req->param('host')),
+]));
 
 // Per-fiber state: child tasks see the parent's values; a child's own writes
 // stay in the child; deferred callbacks run when the fiber ends.

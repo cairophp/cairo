@@ -204,6 +204,31 @@ Rules that keep fibers safe: per-request data lives on `Request` and
 blocking calls that are not hooked yet (pdo_pgsql, TLS streams,
 `curl_multi_select()`) stall every fiber on their thread. Use `Cairo\offload()` for CPU-heavy work.
 
+### Isolated mode
+
+Apps that keep request state in globals or singletons (many Laravel and
+Symfony apps, most legacy code) can run with one request per PHP thread at a
+time:
+
+```php
+$app->concurrency('isolated')
+    ->resetAfterRequest($container->get(CurrentUser::class), fn () => Cache::flushLocal());
+
+$http->get('/legacy', function (): void {     // classic PHP works
+    header('Content-Type: application/json');
+    echo json_encode(['id' => $_GET['id'], 'ip' => $_SERVER['REMOTE_ADDR']]);
+});
+```
+
+In isolated mode Cairo fills `$_GET`, `$_POST` (url-encoded forms), `$_COOKIE`,
+`$_SERVER` and `$_REQUEST`; a handler that returns nothing answers with what it
+echoed, its `header()` calls and `http_response_code()`. After each request it
+clears the superglobals and calls `reset()` on everything given to
+`resetAfterRequest()` (any object with a `reset()` method, such as
+`Cairo\Resettable` or Symfony's `ResetInterface`, or a callable). Requests that
+arrive while a thread is busy wait in line for it, so use more threads in
+this mode. Multipart uploads (`$_FILES`) are not parsed yet.
+
 ## Building
 
 Cairo links against a thread-safe (ZTS) PHP built with the embed SAPI.
@@ -231,6 +256,7 @@ internal/middleware/  Go middleware declared from PHP (HTTP and gRPC)
 internal/grpcserver/  grpc-go server, proto compilation, health, reflection
 php/runtime.php       the PHP side: Cairo\ classes and the fiber scheduler (embedded in the binary)
 examples/greeter/     HTTP + gRPC example
+examples/isolated/    isolated mode: superglobals, echo/header(), resets
 test/                 end-to-end tests
 ```
 
@@ -238,6 +264,6 @@ test/                 end-to-end tests
 
 - Streaming gRPC.
 - TLS stream hooks, `curl_multi` hooks, a Go-backed HTTP client, a pgx PDO driver.
-- Hard interruption of PHP code at a deadline, `isolated` mode for non-fiber-safe apps.
+- Hard interruption of PHP code at a deadline; multipart uploads in isolated mode.
 - Opcache and a wider set of PHP extensions in the default build.
 - A Cairo-owned SAPI adapted from FrankenPHP; this prototype uses PHP's embed SAPI.

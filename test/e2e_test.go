@@ -35,6 +35,7 @@ import (
 var (
 	httpAddr string
 	grpcAddr string
+	cairoBin string // the binary built for this test run
 )
 
 func TestMain(m *testing.M) {
@@ -53,6 +54,7 @@ func run(m *testing.M) (int, error) {
 	}
 	defer os.RemoveAll(dir)
 	bin := filepath.Join(dir, "cairo")
+	cairoBin = bin
 	build := exec.Command("go", "build", "-o", bin, "../cmd/cairo")
 	build.Stdout, build.Stderr = os.Stderr, os.Stderr
 	if err := build.Run(); err != nil {

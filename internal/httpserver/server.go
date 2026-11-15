@@ -112,6 +112,10 @@ func routeHandler(r spec.Route, php Dispatcher, log *slog.Logger) http.Handler {
 			"headers": req.Header,
 			"params":  params,
 			"body":    base64.StdEncoding.EncodeToString(body),
+			"remote":  req.RemoteAddr,
+			"host":    req.Host,
+			"proto":   req.Proto,
+			"tls":     req.TLS != nil,
 		}
 		raw, err := php.Dispatch(req.Context(), ev)
 		if err != nil {

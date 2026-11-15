@@ -142,11 +142,108 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE_END
 };
 
+// ---- Runtime hooks -------------------------------------------------------
+//
+// Cairo swaps the handlers of PHP's blocking sleep functions. Inside a fiber,
+// the new handler asks the PHP runtime (Cairo\Internal\Hooks::sleep) to
+// suspend the fiber while its goroutine waits; PHP fibers are stackful, so
+// the fiber can suspend from inside this C function. Outside a fiber, or when
+// the runtime declines (hooks off, offload thread, a fiber Cairo did not
+// start), the original handler runs and blocks as usual.
+
+enum { HOOK_SLEEP, HOOK_USLEEP, HOOK_NANOSLEEP, HOOK_COUNT };
+
+static const char *hook_names[HOOK_COUNT] = {"sleep", "usleep", "time_nanosleep"};
+static zif_handler hook_originals[HOOK_COUNT];
+
+// Returns 1 when the runtime slept for us (or threw), 0 to fall back.
+static int cairo_hooked_sleep(double seconds)
+{
+	if (EG(active_fiber) == NULL) {
+		return 0;
+	}
+	zval fname, arg, retval;
+	ZVAL_STRING(&fname, "Cairo\\Internal\\Hooks::sleep");
+	ZVAL_DOUBLE(&arg, seconds);
+	ZVAL_UNDEF(&retval);
+	int rc = call_user_function(NULL, NULL, &fname, &retval, 1, &arg);
+	zval_ptr_dtor(&fname);
+	if (rc != SUCCESS) {
+		return EG(exception) != NULL;
+	}
+	if (EG(exception) != NULL) {
+		zval_ptr_dtor(&retval);
+		return 1;
+	}
+	int handled = zend_is_true(&retval);
+	zval_ptr_dtor(&retval);
+	return handled;
+}
+
+static ZEND_NAMED_FUNCTION(cairo_hook_sleep)
+{
+	zend_long seconds;
+	if (ZEND_NUM_ARGS() == 1 && Z_TYPE_P(ZEND_CALL_ARG(execute_data, 1)) == IS_LONG) {
+		seconds = Z_LVAL_P(ZEND_CALL_ARG(execute_data, 1));
+		if (seconds >= 0 && cairo_hooked_sleep((double)seconds)) {
+			if (EG(exception) == NULL) {
+				RETVAL_LONG(0);
+			}
+			return;
+		}
+	}
+	hook_originals[HOOK_SLEEP](INTERNAL_FUNCTION_PARAM_PASSTHRU);
+}
+
+static ZEND_NAMED_FUNCTION(cairo_hook_usleep)
+{
+	if (ZEND_NUM_ARGS() == 1 && Z_TYPE_P(ZEND_CALL_ARG(execute_data, 1)) == IS_LONG) {
+		zend_long us = Z_LVAL_P(ZEND_CALL_ARG(execute_data, 1));
+		if (us >= 0 && cairo_hooked_sleep((double)us / 1e6)) {
+			return;
+		}
+	}
+	hook_originals[HOOK_USLEEP](INTERNAL_FUNCTION_PARAM_PASSTHRU);
+}
+
+static ZEND_NAMED_FUNCTION(cairo_hook_nanosleep)
+{
+	if (ZEND_NUM_ARGS() == 2
+		&& Z_TYPE_P(ZEND_CALL_ARG(execute_data, 1)) == IS_LONG
+		&& Z_TYPE_P(ZEND_CALL_ARG(execute_data, 2)) == IS_LONG) {
+		zend_long s = Z_LVAL_P(ZEND_CALL_ARG(execute_data, 1));
+		zend_long ns = Z_LVAL_P(ZEND_CALL_ARG(execute_data, 2));
+		if (s >= 0 && ns >= 0 && ns <= 999999999 && cairo_hooked_sleep((double)s + (double)ns / 1e9)) {
+			if (EG(exception) == NULL) {
+				RETVAL_TRUE;
+			}
+			return;
+		}
+	}
+	hook_originals[HOOK_NANOSLEEP](INTERNAL_FUNCTION_PARAM_PASSTHRU);
+}
+
+static const zif_handler hook_handlers[HOOK_COUNT] = {cairo_hook_sleep, cairo_hook_usleep, cairo_hook_nanosleep};
+
+// Module startup: install the hooks once, before any worker thread copies
+// the function table.
+static PHP_MINIT_FUNCTION(cairo)
+{
+	for (int i = 0; i < HOOK_COUNT; i++) {
+		zend_function *fn = zend_hash_str_find_ptr(CG(function_table), hook_names[i], strlen(hook_names[i]));
+		if (fn != NULL && fn->type == ZEND_INTERNAL_FUNCTION) {
+			hook_originals[i] = fn->internal_function.handler;
+			fn->internal_function.handler = hook_handlers[i];
+		}
+	}
+	return SUCCESS;
+}
+
 static zend_module_entry cairo_module_entry = {
 	STANDARD_MODULE_HEADER,
 	"cairo",
 	cairo_functions,
-	NULL, NULL, NULL, NULL, NULL,
+	PHP_MINIT(cairo), NULL, NULL, NULL, NULL,
 	"0.1.0-dev",
 	STANDARD_MODULE_PROPERTIES
 };

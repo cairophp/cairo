@@ -74,6 +74,41 @@ $http->get('/parallel', function (): Response {
     return Response::json(['results' => [$a, $b], 'took' => round(microtime(true) - $start, 2)]);
 });
 
+// Runtime hooks: PHP's own usleep() suspends this fiber instead of blocking
+// the thread, so existing blocking code needs no changes.
+$http->get('/blocking-sleep', function (Request $req): Response {
+    $seconds = (float) ($req->query('seconds') ?? 1);
+    usleep((int) ($seconds * 1e6));
+    return Response::json(['slept' => $seconds]);
+});
+
+// Per-fiber state: child tasks see the parent's values; a child's own writes
+// stay in the child; deferred callbacks run when the fiber ends.
+final class Audit
+{
+    /** @var list<string> */
+    public static array $log = [];
+}
+
+$http->get('/context/{user}', function (Request $req): Response {
+    $user = $req->param('user');
+    Context::set('user', $user);
+    Context::defer(static function () use ($user): void { Audit::$log[] = "done $user"; });
+    $child = await(async(function (): array {
+        $seen = Context::get('user');
+        Context::set('user', 'child');
+        sleep(0.01);
+        return ['seen' => $seen, 'own' => Context::get('user')];
+    }));
+    return Response::json([
+        'user' => Context::get('user'),
+        'child' => $child,
+        'missing' => Context::get('nope', 'default'),
+    ]);
+});
+
+$http->get('/audit', fn (): Response => Response::json(Audit::$log));
+
 // CPU-heavy work goes to the offload pool; the request thread keeps serving
 // other requests while this one waits.
 $http->get('/cpu', function (Request $req): Response {

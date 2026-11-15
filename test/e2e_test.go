@@ -140,6 +140,63 @@ func TestOffloadKeepsRequestThreadResponsive(t *testing.T) {
 	}
 }
 
+// Runtime hooks: handlers call PHP's own usleep(), unchanged, and 500 of them
+// still overlap on one PHP thread.
+func TestHookedUsleepDoesNotBlockTheThread(t *testing.T) {
+	const n = 500
+	client := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: n, MaxConnsPerHost: n}}
+	start := time.Now()
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := client.Get("http://" + httpAddr + "/blocking-sleep?seconds=1")
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != 200 || !strings.Contains(string(b), `"slept":1`) {
+				errs <- fmt.Errorf("status %d body %q", resp.StatusCode, b)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	took := time.Since(start)
+	t.Logf("%d requests calling usleep(1s) on 1 PHP thread: %s", n, took.Round(time.Millisecond))
+	if took > 3*time.Second {
+		t.Fatalf("took %s; usleep() blocked the thread", took)
+	}
+}
+
+func TestContextValuesFollowFibers(t *testing.T) {
+	var out struct {
+		User  string `json:"user"`
+		Child struct {
+			Seen string `json:"seen"`
+			Own  string `json:"own"`
+		} `json:"child"`
+		Missing string `json:"missing"`
+	}
+	if err := json.Unmarshal([]byte(get(t, "/context/mohamed")), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.User != "mohamed" || out.Child.Seen != "mohamed" || out.Child.Own != "child" || out.Missing != "default" {
+		t.Fatalf("got %+v", out)
+	}
+	// The deferred callback ran when the request's fiber ended.
+	if audit := get(t, "/audit"); !strings.Contains(audit, `"done mohamed"`) {
+		t.Fatalf("audit log %s", audit)
+	}
+}
+
 func TestAsyncAllInsideOneRequest(t *testing.T) {
 	var out struct {
 		Results []string `json:"results"`

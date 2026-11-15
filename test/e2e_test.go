@@ -1,0 +1,287 @@
+// End-to-end tests: build the cairo binary, run examples/greeter on ONE PHP
+// thread, and check milestone 1 from the outside, over real HTTP and gRPC.
+//
+// Requires a ZTS PHP with the embed SAPI; see the README for CGO_CFLAGS and
+// CGO_LDFLAGS. Run with: go test ./test/ -v
+package test
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/bufbuild/protocompile"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
+)
+
+var (
+	httpAddr string
+	grpcAddr string
+)
+
+func TestMain(m *testing.M) {
+	code, err := run(m)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "e2e setup:", err)
+		os.Exit(1)
+	}
+	os.Exit(code)
+}
+
+func run(m *testing.M) (int, error) {
+	dir, err := os.MkdirTemp("", "cairo-e2e-")
+	if err != nil {
+		return 0, err
+	}
+	defer os.RemoveAll(dir)
+	bin := filepath.Join(dir, "cairo")
+	build := exec.Command("go", "build", "-o", bin, "../cmd/cairo")
+	build.Stdout, build.Stderr = os.Stderr, os.Stderr
+	if err := build.Run(); err != nil {
+		return 0, fmt.Errorf("build cairo: %w", err)
+	}
+
+	httpAddr, grpcAddr = freeAddr(), freeAddr()
+	cmd := exec.Command(bin, "serve", "../examples/greeter/server.php", "--threads", "1", "--offload-threads", "1")
+	cmd.Env = append(os.Environ(), "CAIRO_HTTP="+httpAddr, "CAIRO_GRPC="+grpcAddr)
+	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+	if err := cmd.Start(); err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = cmd.Process.Signal(os.Interrupt)
+		_ = cmd.Wait()
+	}()
+	if err := waitFor(httpAddr, 10*time.Second); err != nil {
+		return 0, err
+	}
+	if err := waitFor(grpcAddr, 10*time.Second); err != nil {
+		return 0, err
+	}
+	return m.Run(), nil
+}
+
+func TestHTTPRouteAnswersFromPHP(t *testing.T) {
+	body := get(t, "/hello/Mohamed")
+	if body != "Hello Mohamed\n" {
+		t.Fatalf("got %q", body)
+	}
+}
+
+// The core promise: one PHP thread holds 1,000 requests at once. Each request
+// sleeps 1s in Cairo\sleep(); its fiber suspends while a goroutine waits, so
+// all of them finish in about 1s instead of 1,000s.
+func TestOneThreadServesThousandConcurrentRequests(t *testing.T) {
+	const n = 1000
+	client := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: n, MaxConnsPerHost: n}}
+	start := time.Now()
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := client.Get("http://" + httpAddr + "/sleep?seconds=1")
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != 200 || !strings.Contains(string(b), `"slept":1`) {
+				errs <- fmt.Errorf("status %d body %q", resp.StatusCode, b)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	took := time.Since(start)
+	t.Logf("%d concurrent requests, each sleeping 1s, on 1 PHP thread: %s", n, took.Round(time.Millisecond))
+	if took > 3*time.Second {
+		t.Fatalf("took %s; requests were not concurrent", took)
+	}
+}
+
+// CPU-heavy work sent with Cairo\offload() runs on the offload pool, so the
+// single request thread keeps answering other requests meanwhile.
+func TestOffloadKeepsRequestThreadResponsive(t *testing.T) {
+	done := make(chan string, 1)
+	go func() { done <- get(t, "/cpu?seconds=1.5") }()
+	time.Sleep(200 * time.Millisecond) // the CPU job is now running
+
+	start := time.Now()
+	if body := get(t, "/hello/during-cpu"); body != "Hello during-cpu\n" {
+		t.Fatalf("got %q", body)
+	}
+	if took := time.Since(start); took > 300*time.Millisecond {
+		t.Fatalf("request thread was blocked for %s while a CPU job ran", took)
+	}
+	if body := <-done; !strings.Contains(body, `"iterations":`) {
+		t.Fatalf("offload result: %q", body)
+	}
+}
+
+func TestAsyncAllInsideOneRequest(t *testing.T) {
+	var out struct {
+		Results []string `json:"results"`
+		Took    float64  `json:"took"`
+	}
+	if err := json.Unmarshal([]byte(get(t, "/parallel")), &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(out.Results, ",") != "a,b" || out.Took > 1.5 {
+		t.Fatalf("two 1s sleeps should overlap: %+v", out)
+	}
+}
+
+func TestGRPCUnaryFromPHP(t *testing.T) {
+	g := newGreeter(t)
+	reply, err := g.call(context.Background(), "SayHello", map[string]any{"name": "Mohamed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reply.Get(reply.Descriptor().Fields().ByName("message")).String(); got != "Hello Mohamed" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestGRPCExceptionBecomesStatus(t *testing.T) {
+	g := newGreeter(t)
+	_, err := g.call(context.Background(), "SayHello", map[string]any{"name": ""})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("want InvalidArgument, got %v", err)
+	}
+}
+
+func TestGRPCDeadlineReachesPHP(t *testing.T) {
+	g := newGreeter(t)
+
+	// PHP sees the remaining time.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	reply, err := g.call(ctx, "SlowHello", map[string]any{"name": "x", "seconds": 0.1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining := reply.Get(reply.Descriptor().Fields().ByName("remaining")).Float()
+	if remaining <= 0 || remaining > 2 {
+		t.Fatalf("PHP saw remaining=%v, want between 0 and 2", remaining)
+	}
+
+	// A handler sleeping past the deadline gets DEADLINE_EXCEEDED at the deadline.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Second)
+	defer cancel2()
+	start := time.Now()
+	_, err = g.call(ctx2, "SlowHello", map[string]any{"name": "x", "seconds": 5.0})
+	if status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("want DeadlineExceeded, got %v", err)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("deadline took %s", took)
+	}
+}
+
+func TestGRPCHealth(t *testing.T) {
+	conn := dial(t)
+	resp, err := healthpb.NewHealthClient(conn).Check(context.Background(), &healthpb.HealthCheckRequest{Service: "helloworld.Greeter"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != healthpb.HealthCheckResponse_SERVING {
+		t.Fatalf("status %v", resp.Status)
+	}
+}
+
+// ---- helpers ----
+
+type greeter struct {
+	conn *grpc.ClientConn
+	svc  protoreflect.ServiceDescriptor
+}
+
+func newGreeter(t *testing.T) *greeter {
+	t.Helper()
+	c := protocompile.Compiler{Resolver: protocompile.WithStandardImports(&protocompile.SourceResolver{
+		ImportPaths: []string{"../examples/greeter/proto"},
+	})}
+	files, err := c.Compile(context.Background(), "helloworld.proto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &greeter{conn: dial(t), svc: files[0].Services().ByName("Greeter")}
+}
+
+func (g *greeter) call(ctx context.Context, method string, fields map[string]any) (*dynamicpb.Message, error) {
+	md := g.svc.Methods().ByName(protoreflect.Name(method))
+	in := dynamicpb.NewMessage(md.Input())
+	for k, v := range fields {
+		in.Set(md.Input().Fields().ByName(protoreflect.Name(k)), protoreflect.ValueOf(v))
+	}
+	out := dynamicpb.NewMessage(md.Output())
+	err := g.conn.Invoke(ctx, "/helloworld.Greeter/"+method, in, out)
+	return out, err
+}
+
+func dial(t *testing.T) *grpc.ClientConn {
+	t.Helper()
+	conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return conn
+}
+
+func get(t *testing.T, path string) string {
+	t.Helper()
+	resp, err := http.Get("http://" + httpAddr + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		t.Fatalf("GET %s: status %d: %s", path, resp.StatusCode, b)
+	}
+	return string(b)
+}
+
+func freeAddr() string {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		panic(err)
+	}
+	defer ln.Close()
+	return ln.Addr().String()
+}
+
+func waitFor(addr string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if c, err := net.Dial("tcp", addr); err == nil {
+			c.Close()
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return fmt.Errorf("cairo did not start listening on %s", addr)
+}

@@ -1,0 +1,29 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Cache PHP (ZTS, embed)
+        id: php-cache
+        uses: actions/cache@v4
+        with:
+          path: /opt/php-zts
+          key: php-zts-8.3.27-${{ hashFiles('scripts/build-php.sh') }}
+      - name: Build PHP (ZTS, embed)
+        if: steps.php-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf bison re2c pkg-config libxml2-dev libsqlite3-dev
+          sudo mkdir -p /opt/php-zts && sudo chown "$USER" /opt/php-zts
+          scripts/build-php.sh 8.3.27 /opt/php-zts
+      - name: Test
+        run: make test

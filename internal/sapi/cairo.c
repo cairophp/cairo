@@ -15,6 +15,8 @@
 #include <TSRM.h>
 #include <zend_exceptions.h>
 #include <zend_stream.h>
+#include <php_network.h>
+#include <poll.h>
 #include <sapi/embed/php_embed.h>
 
 #include "cairo.h"
@@ -225,6 +227,153 @@ static ZEND_NAMED_FUNCTION(cairo_hook_nanosleep)
 
 static const zif_handler hook_handlers[HOOK_COUNT] = {cairo_hook_sleep, cairo_hook_usleep, cairo_hook_nanosleep};
 
+
+// ---- Socket hooks ----------------------------------------------------------
+//
+// Cairo re-registers the tcp and unix stream transports. Streams are still
+// created by PHP's own socket code, but get a copy of its ops whose read and
+// write first wait for the descriptor through Go (epoll), suspending only the
+// calling fiber. Everything built on PHP streams benefits: mysqlnd (PDO MySQL,
+// mysqli), Predis and phpredis, fsockopen(), stream_socket_client(). The
+// connect itself still blocks for now.
+
+#define CAIRO_MAX_SOCK_OPS 8
+static const php_stream_ops *sock_ops_orig[CAIRO_MAX_SOCK_OPS];
+static php_stream_ops sock_ops_hooked[CAIRO_MAX_SOCK_OPS];
+static int sock_ops_count;
+
+static const php_stream_ops *find_orig_ops(const php_stream_ops *hooked)
+{
+	// Entries never move once added, so a hooked pointer maps to its index.
+	for (int i = 0; i < CAIRO_MAX_SOCK_OPS; i++) {
+		if (&sock_ops_hooked[i] == hooked) {
+			return sock_ops_orig[i];
+		}
+	}
+	return NULL;
+}
+
+// Asks the runtime to wait (Cairo\Internal\Hooks::wait). Returns 1 when the
+// socket is ready, 0 when the runtime declined (block as usual), -1 on the
+// socket's own timeout, -2 when an exception was thrown (deadline).
+static int cairo_wait_fd(php_netstream_data_t *sock, int write)
+{
+	if (EG(active_fiber) == NULL) {
+		return 0;
+	}
+	struct pollfd pfd = {.fd = sock->socket, .events = write ? POLLOUT : POLLIN};
+	if (poll(&pfd, 1, 0) > 0) {
+		return 1;   // ready now: no need to suspend
+	}
+	double timeout = -1;
+	if (sock->timeout.tv_sec != -1) {
+		timeout = (double)sock->timeout.tv_sec + (double)sock->timeout.tv_usec / 1e6;
+	}
+	zval fname, args[3], retval;
+	ZVAL_STRING(&fname, "Cairo\\Internal\\Hooks::wait");
+	ZVAL_LONG(&args[0], (zend_long)sock->socket);
+	ZVAL_BOOL(&args[1], write);
+	ZVAL_DOUBLE(&args[2], timeout);
+	ZVAL_UNDEF(&retval);
+	int rc = call_user_function(NULL, NULL, &fname, &retval, 3, args);
+	zval_ptr_dtor(&fname);
+	if (EG(exception) != NULL) {
+		zval_ptr_dtor(&retval);
+		return -2;
+	}
+	if (rc != SUCCESS) {
+		return 0;
+	}
+	int out = Z_TYPE(retval) == IS_LONG ? (int)Z_LVAL(retval) : 0;
+	zval_ptr_dtor(&retval);
+	return out;
+}
+
+static ssize_t cairo_sock_read(php_stream *stream, char *buf, size_t count)
+{
+	const php_stream_ops *orig = find_orig_ops(stream->ops);
+	php_netstream_data_t *sock = (php_netstream_data_t *)stream->abstract;
+	if (sock != NULL && sock->socket != -1 && sock->is_blocked && !stream->has_buffered_data
+		&& !(sock->timeout.tv_sec == 0 && sock->timeout.tv_usec == 0)) {
+		int r = cairo_wait_fd(sock, 0);
+		if (r == -1) {
+			sock->timeout_event = 1;
+			return -1;
+		}
+		if (r == -2) {
+			return -1;
+		}
+	}
+	return orig->read(stream, buf, count);
+}
+
+static ssize_t cairo_sock_write(php_stream *stream, const char *buf, size_t count)
+{
+	const php_stream_ops *orig = find_orig_ops(stream->ops);
+	php_netstream_data_t *sock = (php_netstream_data_t *)stream->abstract;
+	if (sock != NULL && sock->socket != -1 && sock->is_blocked) {
+		int r = cairo_wait_fd(sock, 1);
+		if (r == -1) {
+			sock->timeout_event = 1;
+			return -1;
+		}
+		if (r == -2) {
+			return -1;
+		}
+	}
+	return orig->write(stream, buf, count);
+}
+
+// The hooked copy of a socket ops table, made the first time a stream with
+// that table is created. The table only grows, under a mutex.
+static pthread_mutex_t sock_ops_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static const php_stream_ops *hooked_ops_for(const php_stream_ops *ops)
+{
+	const php_stream_ops *out = NULL;
+	pthread_mutex_lock(&sock_ops_mu);
+	for (int i = 0; i < sock_ops_count; i++) {
+		if (sock_ops_orig[i] == ops) {
+			out = &sock_ops_hooked[i];
+			break;
+		}
+	}
+	if (out == NULL && sock_ops_count < CAIRO_MAX_SOCK_OPS && ops->read != NULL && ops->write != NULL) {
+		int i = sock_ops_count;
+		sock_ops_orig[i] = ops;
+		sock_ops_hooked[i] = *ops;
+		sock_ops_hooked[i].read = cairo_sock_read;
+		sock_ops_hooked[i].write = cairo_sock_write;
+		sock_ops_count++;
+		out = &sock_ops_hooked[i];
+	}
+	pthread_mutex_unlock(&sock_ops_mu);
+	return out;
+}
+
+static php_stream *cairo_socket_factory(const char *proto, size_t protolen,
+		const char *resourcename, size_t resourcenamelen,
+		const char *persistent_id, int options, int flags,
+		struct timeval *timeout,
+		php_stream_context *context STREAMS_DC)
+{
+	php_stream *stream = php_stream_generic_socket_factory(proto, protolen,
+		resourcename, resourcenamelen, persistent_id, options, flags, timeout, context STREAMS_REL_CC);
+	if (stream != NULL) {
+		const php_stream_ops *hooked = hooked_ops_for(stream->ops);
+		if (hooked != NULL) {
+			stream->ops = hooked;
+		}
+	}
+	return stream;
+}
+
+static void cairo_hook_sockets(void)
+{
+	php_stream_xport_register("tcp", cairo_socket_factory);
+	php_stream_xport_register("unix", cairo_socket_factory);
+}
+
 // Module startup: install the hooks once, before any worker thread copies
 // the function table.
 static PHP_MINIT_FUNCTION(cairo)
@@ -236,6 +385,7 @@ static PHP_MINIT_FUNCTION(cairo)
 			fn->internal_function.handler = hook_handlers[i];
 		}
 	}
+	cairo_hook_sockets();
 	return SUCCESS;
 }
 

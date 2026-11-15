@@ -176,6 +176,63 @@ func TestHookedUsleepDoesNotBlockTheThread(t *testing.T) {
 	}
 }
 
+// Socket hooks: 200 requests each open a plain PHP stream to a server that
+// answers after 1s. Their reads suspend fibers, so they overlap.
+func TestHookedSocketReadsDoNotBlockTheThread(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				var secs float64
+				fmt.Fscanln(c, &secs)
+				time.Sleep(time.Duration(secs * float64(time.Second)))
+				fmt.Fprintln(c, "pong")
+			}()
+		}
+	}()
+
+	const n = 200
+	client := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: n, MaxConnsPerHost: n}}
+	start := time.Now()
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := client.Get("http://" + httpAddr + "/tcp?delay=1&addr=" + ln.Addr().String())
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != 200 || !strings.Contains(string(b), `"pong"`) {
+				errs <- fmt.Errorf("status %d body %q", resp.StatusCode, b)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	took := time.Since(start)
+	t.Logf("%d requests waiting 1s on a PHP stream socket, on 1 PHP thread: %s", n, took.Round(time.Millisecond))
+	if took > 3*time.Second {
+		t.Fatalf("took %s; socket reads blocked the thread", took)
+	}
+}
+
 func TestContextValuesFollowFibers(t *testing.T) {
 	var out struct {
 		User  string `json:"user"`

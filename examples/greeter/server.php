@@ -82,6 +82,19 @@ $http->get('/blocking-sleep', function (Request $req): Response {
     return Response::json(['slept' => $seconds]);
 });
 
+// Socket hooks: a plain blocking stream client. Waiting for the reply
+// suspends only this fiber; the same applies to PDO MySQL and Redis clients.
+$http->get('/tcp', function (Request $req): Response {
+    $conn = stream_socket_client('tcp://' . $req->query('addr'), $errno, $errstr, 5);
+    if ($conn === false) {
+        return Response::text("connect failed: $errstr\n", 502);
+    }
+    fwrite($conn, ($req->query('delay') ?? '1') . "\n");
+    $line = fgets($conn);
+    fclose($conn);
+    return Response::json(['reply' => trim((string) $line)]);
+});
+
 // Per-fiber state: child tasks see the parent's values; a child's own writes
 // stay in the child; deferred callbacks run when the fiber ends.
 final class Audit

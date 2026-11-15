@@ -374,7 +374,9 @@ namespace Cairo {
         public const NONE = 0;
         /** sleep(), usleep(), time_nanosleep() */
         public const SLEEP = 1;
-        public const ALL = self::SLEEP;
+        /** reads and writes on tcp:// and unix:// streams: mysqlnd (PDO MySQL, mysqli), Redis clients, fsockopen() */
+        public const SOCKETS = 2;
+        public const ALL = self::SLEEP | self::SOCKETS;
     }
 
     /** An offloaded job threw; the message names the original exception class. */
@@ -836,6 +838,20 @@ namespace Cairo\Internal {
             }
             Scheduler::instance()->op(['op' => 'sleep', 'seconds' => $seconds]);
             return true;
+        }
+
+        /**
+         * Wait until socket $fd is readable (or writable). $timeout is the
+         * stream's own timeout in seconds, -1 for none. Returns 1 when ready,
+         * -1 on the stream timeout, 0 to let PHP block as usual.
+         */
+        public static function wait(int $fd, bool $write, float $timeout): int
+        {
+            if (!self::on(\Cairo\Hook::SOCKETS)) {
+                return 0;
+            }
+            $result = Scheduler::instance()->op(['op' => 'wait', 'fd' => $fd, 'write' => $write, 'timeout' => $timeout]);
+            return $result === 'timeout' ? -1 : 1;
         }
 
         /** Hooks run only in fibers Cairo started on a request thread. */

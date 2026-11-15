@@ -103,6 +103,9 @@ type op struct {
 	Op      string  `json:"op"`
 	Seconds float64 `json:"seconds"`
 	Payload string  `json:"payload"`
+	Fd      int     `json:"fd"`
+	Write   bool    `json:"write"`
+	Timeout float64 `json:"timeout"` // seconds; < 0 means none
 }
 
 var (
@@ -334,6 +337,26 @@ func (e *Engine) runOp(f *fiber, o op) {
 			ev["error"] = ctxError(f.ctx)
 		} else {
 			ev["result"] = res
+		}
+	case "wait":
+		// A hooked socket read or write: wait until the descriptor is ready.
+		ev["result"] = "ready"
+		p, err := getPoller()
+		if err == nil {
+			timeout := time.Duration(-1)
+			if o.Timeout >= 0 {
+				timeout = time.Duration(o.Timeout * float64(time.Second))
+			}
+			err = p.wait(f.ctx, o.Fd, o.Write, timeout)
+		}
+		switch {
+		case err == nil:
+		case errors.Is(err, errPollTimeout):
+			ev["result"] = "timeout"
+		case f.ctx.Err() != nil:
+			ev["error"] = ctxError(f.ctx)
+		default:
+			ev["error"] = err.Error()
 		}
 	default:
 		ev["error"] = "unknown operation " + o.Op

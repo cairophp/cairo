@@ -5,7 +5,7 @@ servers in PHP; Go does the serving. Every request runs in its own PHP Fiber,
 and every fiber has its own goroutine, so one PHP thread can hold thousands of
 requests at once while Go does the waiting.
 
-> Status: milestone 1 prototype. Design doc:
+> Status: milestone 1 prototype plus the first milestone 2 hooks. Design doc:
 > [Cairo: architecture and design proposal](https://claude.ai/artifact/PBihYMjib8P4eh56BboTPa)
 
 ```php
@@ -96,11 +96,55 @@ use function Cairo\{async, await, all, sleep, offload};
 ]));
 ```
 
+### Runtime hooks
+
+Cairo swaps the handlers of some blocking PHP functions so that, inside a
+request fiber, they suspend the fiber while its goroutine waits, and existing
+code needs no changes. Outside request fibers (the declare phase, offload
+threads, fibers your own code creates) the original functions run.
+
+| Hook | Functions | Status |
+|---|---|---|
+| `Hook::SLEEP` | `sleep()`, `usleep()`, `time_nanosleep()` | done |
+| `Hook::SOCKETS` | reads and writes on `tcp://` and `unix://` streams: mysqlnd (PDO MySQL, mysqli), Predis, phpredis, `fsockopen()`, `stream_socket_client()` | done (connect and DNS still block; no TLS yet) |
+| curl | `curl_exec()` through Go `net/http` | planned |
+
+```php
+$app->hooks(Hook::ALL);    // the default; Hook::NONE turns them off
+```
+
+A hooked call honours the request's deadline like `Cairo\sleep()` does.
+Socket waits go through one Go epoll loop, so a thousand waiting queries do not
+hold a thousand OS threads. With one PHP thread, 50 PDO queries running
+`SELECT SLEEP(1)` finish in about 1 second (20 take 20 seconds with
+`Hook::NONE`).
+
+pdo_pgsql talks to libpq's own sockets, which no PHP-level hook sees; a
+Go-backed PDO driver for Postgres is planned.
+
+### Request state: Context values
+
+Globals and static properties are shared by every fiber on a thread, so
+request state goes on the context instead:
+
+```php
+use Cairo\Context;
+
+Context::set('user', $user);                 // this fiber and the tasks it starts
+Context::get('user');                        // null (or a default) when unset
+Context::has('tenant');
+Context::getOrSet('db', fn () => $pool->get());
+Context::defer(fn () => $pool->put(Context::get('db')));   // when the fiber ends
+```
+
+Values follow Go's `context.WithValue`: an `async()` task sees its parent's
+values, and a value it sets stays in the task. Deferred callbacks run last
+first when the fiber ends; for a request, that is after the response is sent.
+
 Rules that keep fibers safe: per-request data lives on `Request` and
 `Context`, not in superglobals (Cairo does not fill `$_GET`/`$_SERVER`), and
-blocking calls (PDO, curl, PHP's own `sleep()`) stall every fiber on their
-thread until Go-backed replacements exist. Use `Cairo\sleep()` and
-`Cairo\offload()`.
+blocking calls that are not hooked yet (curl, pdo_pgsql, connects) stall
+every fiber on their thread. Use `Cairo\offload()` for CPU-heavy work.
 
 ## Building
 
@@ -109,7 +153,7 @@ Cairo links against a thread-safe (ZTS) PHP built with the embed SAPI.
 ```sh
 make php            # builds PHP 8.3 (ZTS, embed) into /opt/php-zts
 make build          # bin/cairo
-make test           # unit + end-to-end tests
+make test           # unit + end-to-end tests (set CAIRO_TEST_MYSQL to include PDO MySQL)
 make run            # serves examples/greeter
 ```
 
@@ -130,10 +174,10 @@ examples/greeter/     HTTP + gRPC example
 test/                 end-to-end tests
 ```
 
-## What milestone 1 does not do yet
+## Not done yet
 
 - Streaming gRPC, generated PHP message classes, a `cairo protoc` command.
-- Go-backed HTTP client, SQL, Redis (only `Cairo\sleep()` and `Cairo\offload()` suspend today).
+- curl and connect/DNS hooks, TLS streams, a Go-backed HTTP client, a pgx PDO driver.
 - Hard interruption of PHP code at a deadline, `isolated` mode for non-fiber-safe apps.
 - Opcache and a wider set of PHP extensions in the default build.
 - A Cairo-owned SAPI adapted from FrankenPHP; this prototype uses PHP's embed SAPI.

@@ -21,6 +21,7 @@ namespace Cairo {
         private array $servers = [];
         private int $threads = 0;
         private int $offloadThreads = 0;
+        private int $hooks = Hook::ALL;
         /** @var list<mixed> handler id => handler */
         private array $handlers = [];
 
@@ -47,6 +48,22 @@ namespace Cairo {
                 return $threads;
             }
             throw new \InvalidArgumentException("threads must be 'auto' or a positive integer");
+        }
+
+        /**
+         * Which blocking PHP functions suspend the fiber instead of blocking
+         * the thread: Hook::ALL (the default), Hook::NONE, or Hook::* flags.
+         */
+        public function hooks(int $flags): static
+        {
+            $this->hooks = $flags;
+            return $this;
+        }
+
+        /** @internal */
+        public function hookFlags(): int
+        {
+            return $this->hooks;
         }
 
         public function http(string $listen): Http\Server
@@ -103,18 +120,91 @@ namespace Cairo {
         private static ?\WeakMap $byFiber = null;
         private static ?self $background = null;
 
+        /** @var array<string, mixed> values set on this context */
+        private array $values = [];
+        /** @var list<callable> */
+        private array $deferred = [];
+
         /** @internal */
         public function __construct(
             public readonly int $requestId,
             public readonly int $fiberId,
             private readonly ?float $deadline,
+            private readonly ?self $parent = null,
         ) {
         }
 
         /** @internal the context of a child fiber served by goroutine $fiberId */
         public function child(int $fiberId): self
         {
-            return new self($this->requestId, $fiberId, $this->deadline);
+            return new self($this->requestId, $fiberId, $this->deadline, $this);
+        }
+
+        /**
+         * Store a value for the current fiber and the async() tasks it starts.
+         *
+         * Values follow Go's context.WithValue: a child task sees its parent's
+         * values, and a value set in a child stays in the child. Use this for
+         * request state (user, tenant, trace id, a pooled connection) instead
+         * of globals or static properties, which every fiber on the thread shares.
+         */
+        public static function set(string $key, mixed $value): void
+        {
+            self::current()->values[$key] = $value;
+        }
+
+        /** The value for $key in this fiber or its parents, or $default. */
+        public static function get(string $key, mixed $default = null): mixed
+        {
+            for ($ctx = self::current(); $ctx !== null; $ctx = $ctx->parent) {
+                if (array_key_exists($key, $ctx->values)) {
+                    return $ctx->values[$key];
+                }
+            }
+            return $default;
+        }
+
+        public static function has(string $key): bool
+        {
+            for ($ctx = self::current(); $ctx !== null; $ctx = $ctx->parent) {
+                if (array_key_exists($key, $ctx->values)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /** The value for $key; when there is none, store and return $make(). */
+        public static function getOrSet(string $key, callable $make): mixed
+        {
+            if (self::has($key)) {
+                return self::get($key);
+            }
+            $value = $make();
+            self::set($key, $value);
+            return $value;
+        }
+
+        /**
+         * Run $fn when the current fiber ends (last deferred runs first). For a
+         * request, that is after its response was sent.
+         */
+        public static function defer(callable $fn): void
+        {
+            self::current()->deferred[] = $fn;
+        }
+
+        /** @internal runs deferred callbacks and drops this fiber's values */
+        public function finish(): void
+        {
+            while (($fn = array_pop($this->deferred)) !== null) {
+                try {
+                    $fn();
+                } catch (\Throwable $e) {
+                    error_log('cairo: deferred callback failed: ' . $e);
+                }
+            }
+            $this->values = [];
         }
 
         public static function current(): self
@@ -183,12 +273,14 @@ namespace Cairo {
         $parent = Context::current();
         // Go starts the goroutine that will serve this fiber.
         $goroutine = \cairo_fiber_open($parent->fiberId);
-        $fiber = new \Fiber(static function () use ($fn, $task, $goroutine): void {
+        $context = $parent->child($goroutine);
+        $fiber = new \Fiber(static function () use ($fn, $task, $goroutine, $context): void {
             try {
                 $task->result = $fn();
             } catch (\Throwable $e) {
                 $task->error = $e;
             } finally {
+                $context->finish();
                 \cairo_fiber_close($goroutine);
             }
             $task->done = true;
@@ -197,7 +289,7 @@ namespace Cairo {
             }
             $task->waiters = [];
         });
-        Context::bind($fiber, $parent->child($goroutine));
+        Context::bind($fiber, $context);
         $fiber->start();
         return $task;
     }
@@ -271,6 +363,20 @@ namespace Cairo {
             throw new OffloadException(($out['class'] ?? 'Error') . ': ' . ($out['message'] ?? 'offloaded job failed'));
         }
         return $out['value'];
+    }
+
+    /**
+     * Runtime hooks: blocking PHP functions that suspend the current fiber
+     * instead of blocking the whole thread. See App::hooks().
+     */
+    final class Hook
+    {
+        public const NONE = 0;
+        /** sleep(), usleep(), time_nanosleep() */
+        public const SLEEP = 1;
+        /** reads and writes on tcp:// and unix:// streams: mysqlnd (PDO MySQL, mysqli), Redis clients, fsockopen() */
+        public const SOCKETS = 2;
+        public const ALL = self::SLEEP | self::SOCKETS;
     }
 
     /** An offloaded job threw; the message names the original exception class. */
@@ -637,11 +743,23 @@ namespace Cairo\Internal {
             }
         }
 
+        public function app(): App
+        {
+            return $this->app;
+        }
+
         private function spawn(array $event, \Closure $fn): void
         {
-            $fiber = new \Fiber($fn);
             $id = (int) $event['id'];   // the request's root fiber is served by the request goroutine
-            Context::bind($fiber, new Context($id, $id, isset($event['deadline']) ? (float) $event['deadline'] : null));
+            $context = new Context($id, $id, isset($event['deadline']) ? (float) $event['deadline'] : null);
+            $fiber = new \Fiber(static function () use ($fn, $context): void {
+                try {
+                    $fn();
+                } finally {
+                    $context->finish();
+                }
+            });
+            Context::bind($fiber, $context);
             $fiber->start();
         }
 
@@ -704,6 +822,44 @@ namespace Cairo\Internal {
                 $out = ['ok' => false, 'code' => Grpc\Code::INTERNAL, 'message' => 'internal error'];
             }
             \cairo_respond((int) $event['id'], json_encode($out, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+        }
+    }
+
+    /**
+     * Called from Cairo's C hooks when a hooked blocking function runs inside
+     * a fiber. Returns false to let the original function block as usual.
+     */
+    final class Hooks
+    {
+        public static function sleep(float $seconds): bool
+        {
+            if (!self::on(\Cairo\Hook::SLEEP)) {
+                return false;
+            }
+            Scheduler::instance()->op(['op' => 'sleep', 'seconds' => $seconds]);
+            return true;
+        }
+
+        /**
+         * Wait until socket $fd is readable (or writable). $timeout is the
+         * stream's own timeout in seconds, -1 for none. Returns 1 when ready,
+         * -1 on the stream timeout, 0 to let PHP block as usual.
+         */
+        public static function wait(int $fd, bool $write, float $timeout): int
+        {
+            if (!self::on(\Cairo\Hook::SOCKETS)) {
+                return 0;
+            }
+            $result = Scheduler::instance()->op(['op' => 'wait', 'fd' => $fd, 'write' => $write, 'timeout' => $timeout]);
+            return $result === 'timeout' ? -1 : 1;
+        }
+
+        /** Hooks run only in fibers Cairo started on a request thread. */
+        private static function on(int $hook): bool
+        {
+            return Scheduler::running()
+                && (Scheduler::instance()->app()->hookFlags() & $hook) !== 0
+                && Context::current()->fiberId !== 0;
         }
     }
 

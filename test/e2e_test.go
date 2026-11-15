@@ -140,6 +140,160 @@ func TestOffloadKeepsRequestThreadResponsive(t *testing.T) {
 	}
 }
 
+// Runtime hooks: handlers call PHP's own usleep(), unchanged, and 500 of them
+// still overlap on one PHP thread.
+func TestHookedUsleepDoesNotBlockTheThread(t *testing.T) {
+	const n = 500
+	client := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: n, MaxConnsPerHost: n}}
+	start := time.Now()
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := client.Get("http://" + httpAddr + "/blocking-sleep?seconds=1")
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != 200 || !strings.Contains(string(b), `"slept":1`) {
+				errs <- fmt.Errorf("status %d body %q", resp.StatusCode, b)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	took := time.Since(start)
+	t.Logf("%d requests calling usleep(1s) on 1 PHP thread: %s", n, took.Round(time.Millisecond))
+	if took > 3*time.Second {
+		t.Fatalf("took %s; usleep() blocked the thread", took)
+	}
+}
+
+// Socket hooks: 200 requests each open a plain PHP stream to a server that
+// answers after 1s. Their reads suspend fibers, so they overlap.
+func TestHookedSocketReadsDoNotBlockTheThread(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				var secs float64
+				fmt.Fscanln(c, &secs)
+				time.Sleep(time.Duration(secs * float64(time.Second)))
+				fmt.Fprintln(c, "pong")
+			}()
+		}
+	}()
+
+	const n = 200
+	client := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: n, MaxConnsPerHost: n}}
+	start := time.Now()
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := client.Get("http://" + httpAddr + "/tcp?delay=1&addr=" + ln.Addr().String())
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != 200 || !strings.Contains(string(b), `"pong"`) {
+				errs <- fmt.Errorf("status %d body %q", resp.StatusCode, b)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	took := time.Since(start)
+	t.Logf("%d requests waiting 1s on a PHP stream socket, on 1 PHP thread: %s", n, took.Round(time.Millisecond))
+	if took > 3*time.Second {
+		t.Fatalf("took %s; socket reads blocked the thread", took)
+	}
+}
+
+// PDO MySQL through the socket hooks: 50 queries that each run SELECT SLEEP(1)
+// overlap on one PHP thread. Needs CAIRO_TEST_MYSQL (a PDO DSN) and a PHP
+// build with pdo_mysql; CI runs it against a MySQL service.
+func TestHookedPDOMySQL(t *testing.T) {
+	if os.Getenv("CAIRO_TEST_MYSQL") == "" {
+		t.Skip("CAIRO_TEST_MYSQL is not set")
+	}
+	const n = 50
+	client := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: n, MaxConnsPerHost: n}}
+	start := time.Now()
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := client.Get("http://" + httpAddr + "/mysql?seconds=1")
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != 200 || !strings.Contains(string(b), `"answer":42`) {
+				errs <- fmt.Errorf("status %d body %q", resp.StatusCode, b)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	took := time.Since(start)
+	t.Logf("%d PDO queries running SELECT SLEEP(1), on 1 PHP thread: %s", n, took.Round(time.Millisecond))
+	if took > 3*time.Second {
+		t.Fatalf("took %s; PDO blocked the thread", took)
+	}
+}
+
+func TestContextValuesFollowFibers(t *testing.T) {
+	var out struct {
+		User  string `json:"user"`
+		Child struct {
+			Seen string `json:"seen"`
+			Own  string `json:"own"`
+		} `json:"child"`
+		Missing string `json:"missing"`
+	}
+	if err := json.Unmarshal([]byte(get(t, "/context/mohamed")), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.User != "mohamed" || out.Child.Seen != "mohamed" || out.Child.Own != "child" || out.Missing != "default" {
+		t.Fatalf("got %+v", out)
+	}
+	// The deferred callback ran when the request's fiber ended.
+	if audit := get(t, "/audit"); !strings.Contains(audit, `"done mohamed"`) {
+		t.Fatalf("audit log %s", audit)
+	}
+}
+
 func TestAsyncAllInsideOneRequest(t *testing.T) {
 	var out struct {
 		Results []string `json:"results"`

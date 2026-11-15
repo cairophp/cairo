@@ -233,6 +233,46 @@ func TestHookedSocketReadsDoNotBlockTheThread(t *testing.T) {
 	}
 }
 
+// PDO MySQL through the socket hooks: 50 queries that each run SELECT SLEEP(1)
+// overlap on one PHP thread. Needs CAIRO_TEST_MYSQL (a PDO DSN) and a PHP
+// build with pdo_mysql; CI runs it against a MySQL service.
+func TestHookedPDOMySQL(t *testing.T) {
+	if os.Getenv("CAIRO_TEST_MYSQL") == "" {
+		t.Skip("CAIRO_TEST_MYSQL is not set")
+	}
+	const n = 50
+	client := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: n, MaxConnsPerHost: n}}
+	start := time.Now()
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := client.Get("http://" + httpAddr + "/mysql?seconds=1")
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != 200 || !strings.Contains(string(b), `"answer":42`) {
+				errs <- fmt.Errorf("status %d body %q", resp.StatusCode, b)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	took := time.Since(start)
+	t.Logf("%d PDO queries running SELECT SLEEP(1), on 1 PHP thread: %s", n, took.Round(time.Millisecond))
+	if took > 3*time.Second {
+		t.Fatalf("took %s; PDO blocked the thread", took)
+	}
+}
+
 func TestContextValuesFollowFibers(t *testing.T) {
 	var out struct {
 		User  string `json:"user"`

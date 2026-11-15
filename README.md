@@ -106,7 +106,7 @@ threads, fibers your own code creates) the original functions run.
 | Hook | Functions | Status |
 |---|---|---|
 | `Hook::SLEEP` | `sleep()`, `usleep()`, `time_nanosleep()` | done |
-| sockets | `tcp`/`unix`/`ssl` streams on Go `net.Conn` (PDO MySQL, mysqli, Redis clients) | next |
+| `Hook::SOCKETS` | reads and writes on `tcp://` and `unix://` streams: mysqlnd (PDO MySQL, mysqli), Predis, phpredis, `fsockopen()`, `stream_socket_client()` | done (connect and DNS still block; no TLS yet) |
 | curl | `curl_exec()` through Go `net/http` | planned |
 
 ```php
@@ -114,6 +114,13 @@ $app->hooks(Hook::ALL);    // the default; Hook::NONE turns them off
 ```
 
 A hooked call honours the request's deadline like `Cairo\sleep()` does.
+Socket waits go through one Go epoll loop, so a thousand waiting queries do not
+hold a thousand OS threads. With one PHP thread, 50 PDO queries running
+`SELECT SLEEP(1)` finish in about 1 second (20 take 20 seconds with
+`Hook::NONE`).
+
+pdo_pgsql talks to libpq's own sockets, which no PHP-level hook sees; a
+Go-backed PDO driver for Postgres is planned.
 
 ### Request state: Context values
 
@@ -136,8 +143,8 @@ first when the fiber ends; for a request, that is after the response is sent.
 
 Rules that keep fibers safe: per-request data lives on `Request` and
 `Context`, not in superglobals (Cairo does not fill `$_GET`/`$_SERVER`), and
-blocking calls that are not hooked yet (PDO, curl) stall every fiber on their
-thread. Use `Cairo\offload()` for CPU-heavy work.
+blocking calls that are not hooked yet (curl, pdo_pgsql, connects) stall
+every fiber on their thread. Use `Cairo\offload()` for CPU-heavy work.
 
 ## Building
 
@@ -146,7 +153,7 @@ Cairo links against a thread-safe (ZTS) PHP built with the embed SAPI.
 ```sh
 make php            # builds PHP 8.3 (ZTS, embed) into /opt/php-zts
 make build          # bin/cairo
-make test           # unit + end-to-end tests
+make test           # unit + end-to-end tests (set CAIRO_TEST_MYSQL to include PDO MySQL)
 make run            # serves examples/greeter
 ```
 
@@ -170,7 +177,7 @@ test/                 end-to-end tests
 ## Not done yet
 
 - Streaming gRPC, generated PHP message classes, a `cairo protoc` command.
-- Socket and curl hooks (milestone 2, next), a Go-backed HTTP client, a pgx PDO driver.
+- curl and connect/DNS hooks, TLS streams, a Go-backed HTTP client, a pgx PDO driver.
 - Hard interruption of PHP code at a deadline, `isolated` mode for non-fiber-safe apps.
 - Opcache and a wider set of PHP extensions in the default build.
 - A Cairo-owned SAPI adapted from FrankenPHP; this prototype uses PHP's embed SAPI.

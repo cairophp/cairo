@@ -95,6 +95,14 @@ $http->get('/tcp', function (Request $req): Response {
     return Response::json(['reply' => trim((string) $line)]);
 });
 
+// The same hooks make PDO MySQL (mysqlnd) fiber-aware with no code changes:
+// SELECT SLEEP(1) suspends this fiber, not the thread.
+$http->get('/mysql', function (Request $req): Response {
+    $pdo = new PDO((string) getenv('CAIRO_TEST_MYSQL'), (string) getenv('CAIRO_TEST_MYSQL_USER'), (string) getenv('CAIRO_TEST_MYSQL_PASSWORD'));
+    $row = $pdo->query('SELECT SLEEP(' . (float) ($req->query('seconds') ?? 1) . ') AS slept, 42 AS answer')->fetch(PDO::FETCH_ASSOC);
+    return Response::json($row);
+});
+
 // Per-fiber state: child tasks see the parent's values; a child's own writes
 // stay in the child; deferred callbacks run when the fiber ends.
 final class Audit

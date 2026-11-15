@@ -13,8 +13,9 @@ tar -xzf "$WORK/php.tar.gz" -C "$WORK"
 cd "$WORK/php-src-php-${VERSION}"
 ./buildconf --force
 
-# A small build for now: Core, date, hash, json, pcre, random, Reflection, SPL, standard.
-# Add extensions here as Cairo needs them (opcache, mbstring, pdo, ...).
+# A small build for now: Core, date, hash, json, pcre, random, Reflection, SPL,
+# standard, plus PDO, mysqlnd, pdo_mysql and mysqli (which Cairo's socket
+# hooks make fiber-aware). Add extensions here as Cairo needs them.
 ./configure \
   --prefix="$PREFIX" \
   --enable-zts \
@@ -22,7 +23,11 @@ cd "$WORK/php-src-php-${VERSION}"
   --disable-all \
   --disable-cgi \
   --disable-phpdbg \
-  --enable-cli
+  --enable-cli \
+  --enable-pdo \
+  --enable-mysqlnd \
+  --with-pdo-mysql=mysqlnd \
+  --with-mysqli=mysqlnd
 make -j"$(nproc)"
 make install
 echo "PHP $VERSION (ZTS, embed) installed in $PREFIX"

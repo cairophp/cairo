@@ -8,6 +8,7 @@ use Cairo\Grpc\Code;
 use Cairo\Grpc\Exception as GrpcException;
 use Cairo\Http\Request;
 use Cairo\Http\Response;
+use Cairo\Pool;
 
 use function Cairo\all;
 use function Cairo\async;
@@ -112,6 +113,47 @@ $http->get('/connect', function (Request $req): Response {
         fclose($conn);
     }
     return Response::json(['connected' => $conn !== false, 'error' => $errstr, 'took' => round(microtime(true) - $start, 2)]);
+});
+
+// A pool of 2 "connections" (counting objects here; PDO in real code) shared
+// by 6 concurrent tasks: they take turns, and only 2 are ever opened.
+final class FakeConn
+{
+    public static int $opened = 0;
+    public function __construct() { self::$opened++; }
+}
+
+$http->get('/pool', function (): Response {
+    $pool = new Pool(fn () => new FakeConn(), max: 2);
+    FakeConn::$opened = 0;
+    $start = microtime(true);
+    $ids = await(all(array_map(fn (int $i) => async(function () use ($pool): int {
+        $conn = $pool->get();          // this task's connection until it ends
+        sleep(0.2);
+        return spl_object_id($conn);
+    }), range(1, 6))));
+    return Response::json([
+        'opened' => FakeConn::$opened,
+        'distinct' => count(array_unique($ids)),
+        'took' => round(microtime(true) - $start, 2),
+        'stats' => $pool->stats(),
+    ]);
+});
+
+// curl, unchanged: while curl waits for the server, this fiber is suspended.
+$http->get('/curl', function (Request $req): Response {
+    $ch = curl_init((string) $req->query('url'));
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, (int) ($req->query('timeout') ?? 10));
+    $body = curl_exec($ch);
+    $out = [
+        'body' => $body === false ? null : $body,
+        'status' => curl_getinfo($ch, CURLINFO_HTTP_CODE),
+        'errno' => curl_errno($ch),
+        'error' => curl_error($ch),
+    ];
+    curl_close($ch);
+    return Response::json($out);
 });
 
 // DNS through Go's resolver.

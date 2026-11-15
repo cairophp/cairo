@@ -14,8 +14,8 @@ cd "$WORK/php-src-php-${VERSION}"
 ./buildconf --force
 
 # A small build for now: Core, date, hash, json, pcre, random, Reflection, SPL,
-# standard, plus PDO, mysqlnd, pdo_mysql and mysqli (which Cairo's socket
-# hooks make fiber-aware). Add extensions here as Cairo needs them.
+# standard, plus PDO, mysqlnd, pdo_mysql, mysqli and curl (which Cairo's
+# hooks make fiber-aware). curl needs libcurl's headers (libcurl4-openssl-dev). Add extensions here as Cairo needs them.
 ./configure \
   --prefix="$PREFIX" \
   --enable-zts \
@@ -27,7 +27,8 @@ cd "$WORK/php-src-php-${VERSION}"
   --enable-pdo \
   --enable-mysqlnd \
   --with-pdo-mysql=mysqlnd \
-  --with-mysqli=mysqlnd
+  --with-mysqli=mysqlnd \
+  --with-curl
 make -j"$(nproc)"
 make install
 echo "PHP $VERSION (ZTS, embed) installed in $PREFIX"

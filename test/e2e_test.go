@@ -336,6 +336,87 @@ func TestHookedConnectDoesNotBlockTheThread(t *testing.T) {
 	}
 }
 
+// Six tasks share a pool of two: two are opened, the tasks take turns (three
+// rounds of 0.2s), and every connection goes back when its task ends.
+func TestPoolGivesEachFiberItsOwnConnection(t *testing.T) {
+	var out struct {
+		Opened   int     `json:"opened"`
+		Distinct int     `json:"distinct"`
+		Took     float64 `json:"took"`
+		Stats    struct {
+			Open int `json:"open"`
+			Idle int `json:"idle"`
+		} `json:"stats"`
+	}
+	if err := json.Unmarshal([]byte(get(t, "/pool")), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Opened != 2 || out.Distinct != 2 || out.Took < 0.55 || out.Took > 1.0 || out.Stats.Idle != 2 {
+		t.Fatalf("got %+v", out)
+	}
+}
+
+// curl hook: 100 requests each curl a server that answers after 1s. curl's
+// socket waits suspend fibers, so they overlap; curl_getinfo() still works,
+// and a curl timeout still reports curl's own error.
+func TestHookedCurlDoesNotBlockTheThread(t *testing.T) {
+	slow := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d, _ := time.ParseDuration(r.URL.Query().Get("d"))
+		time.Sleep(d)
+		w.WriteHeader(201)
+		fmt.Fprint(w, "slow-ok")
+	})}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go slow.Serve(ln)
+	defer slow.Close()
+	target := "http://" + ln.Addr().String() + "/?d="
+
+	const n = 100
+	client := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: n, MaxConnsPerHost: n}}
+	start := time.Now()
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := client.Get("http://" + httpAddr + "/curl?url=" + target + "1s")
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			if !strings.Contains(string(b), `"body":"slow-ok"`) || !strings.Contains(string(b), `"status":201`) {
+				errs <- fmt.Errorf("status %d body %q", resp.StatusCode, b)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	took := time.Since(start)
+	t.Logf("%d curl_exec() calls to a 1s endpoint, on 1 PHP thread: %s", n, took.Round(time.Millisecond))
+	if took > 3*time.Second {
+		t.Fatalf("took %s; curl blocked the thread", took)
+	}
+
+	var out struct {
+		Errno int `json:"errno"`
+	}
+	if err := json.Unmarshal([]byte(get(t, "/curl?timeout=1&url="+target+"3s")), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Errno != 28 { // CURLE_OPERATION_TIMEDOUT
+		t.Fatalf("want curl errno 28 (timeout), got %d", out.Errno)
+	}
+}
+
 // PDO MySQL through the socket hooks: 50 queries that each run SELECT SLEEP(1)
 // overlap on one PHP thread. Needs CAIRO_TEST_MYSQL (a PDO DSN) and a PHP
 // build with pdo_mysql; CI runs it against a MySQL service.

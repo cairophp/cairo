@@ -67,33 +67,58 @@ var errPollTimeout = errors.New("socket timeout")
 // (timeout < 0 means none), or ctx ends. One fiber waits on a descriptor at a
 // time: PHP connections are not shared between fibers.
 func (p *poller) wait(ctx context.Context, fd int, write bool, timeout time.Duration) error {
-	ch := make(chan struct{}, 1)
-	var events uint32 = syscall.EPOLLIN | syscall.EPOLLRDHUP
 	if write {
-		events = syscall.EPOLLOUT
+		return p.waitSet(ctx, nil, []int{fd}, timeout)
 	}
-	ev := syscall.EpollEvent{Events: events | syscall.EPOLLONESHOT, Fd: int32(fd)}
+	return p.waitSet(ctx, []int{fd}, nil, timeout)
+}
+
+// waitSet blocks until any descriptor in read is readable or any in write is
+// writable, the timeout passes, or ctx ends. An empty set just waits out the
+// timeout.
+func (p *poller) waitSet(ctx context.Context, read, write []int, timeout time.Duration) error {
+	want := map[int]uint32{}
+	for _, fd := range read {
+		want[fd] |= syscall.EPOLLIN | syscall.EPOLLRDHUP
+	}
+	for _, fd := range write {
+		want[fd] |= syscall.EPOLLOUT
+	}
+	ch := make(chan struct{}, 1)
 
 	p.mu.Lock()
-	if _, busy := p.waiters[int32(fd)]; busy {
-		p.mu.Unlock()
-		return errors.New("socket is already in use by another fiber")
+	for fd := range want {
+		if _, busy := p.waiters[int32(fd)]; busy {
+			p.mu.Unlock()
+			return errors.New("socket is already in use by another fiber")
+		}
 	}
-	p.waiters[int32(fd)] = ch
+	for fd := range want {
+		p.waiters[int32(fd)] = ch
+	}
 	p.mu.Unlock()
+	var added []int
 	defer func() {
 		p.mu.Lock()
-		delete(p.waiters, int32(fd))
+		for fd := range want {
+			delete(p.waiters, int32(fd))
+		}
 		p.mu.Unlock()
-		_ = syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_DEL, fd, nil)
+		for _, fd := range added {
+			_ = syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_DEL, fd, nil)
+		}
 	}()
 
-	err := syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_ADD, fd, &ev)
-	if errors.Is(err, syscall.EEXIST) {
-		err = syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_MOD, fd, &ev)
-	}
-	if err != nil {
-		return err
+	for fd, events := range want {
+		ev := syscall.EpollEvent{Events: events | syscall.EPOLLONESHOT, Fd: int32(fd)}
+		err := syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_ADD, fd, &ev)
+		if errors.Is(err, syscall.EEXIST) {
+			err = syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_MOD, fd, &ev)
+		}
+		if err != nil {
+			return err
+		}
+		added = append(added, fd)
 	}
 
 	var timer <-chan time.Time

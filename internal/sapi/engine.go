@@ -13,7 +13,7 @@ package sapi
 
 /*
 #cgo CFLAGS: -D_GNU_SOURCE
-#cgo LDFLAGS: -lphp
+#cgo LDFLAGS: -lphp -lcurl
 #include <stdlib.h>
 #include "cairo.h"
 */
@@ -109,6 +109,8 @@ type op struct {
 	Network string  `json:"network"`
 	Address string  `json:"address"`
 	Host    string  `json:"host"`
+	Read    []int   `json:"read"`
+	WriteFD []int   `json:"write_fds"`
 }
 
 var (
@@ -351,6 +353,26 @@ func (e *Engine) runOp(f *fiber, o op) {
 				timeout = time.Duration(o.Timeout * float64(time.Second))
 			}
 			err = p.wait(f.ctx, o.Fd, o.Write, timeout)
+		}
+		switch {
+		case err == nil:
+		case errors.Is(err, errPollTimeout):
+			ev["result"] = "timeout"
+		case f.ctx.Err() != nil:
+			ev["error"] = ctxError(f.ctx)
+		default:
+			ev["error"] = err.Error()
+		}
+	case "waitset":
+		// A hooked curl transfer: wait for any of curl's sockets.
+		ev["result"] = "ready"
+		p, err := getPoller()
+		if err == nil {
+			timeout := time.Duration(-1)
+			if o.Timeout >= 0 {
+				timeout = time.Duration(o.Timeout * float64(time.Second))
+			}
+			err = p.waitSet(f.ctx, o.Read, o.WriteFD, timeout)
 		}
 		switch {
 		case err == nil:

@@ -50,7 +50,7 @@ make test       # go vet + all tests
 make static     # dist/cairo; about 17 minutes the first time, then ~20 s
 docker run -d --name cairo-mysql -e MARIADB_ROOT_PASSWORD=cairo -p 3306:3306 mariadb:11.4
 docker run -d --name cairo-pg -e POSTGRES_USER=cairo -e POSTGRES_PASSWORD=cairo -e POSTGRES_DB=cairo -p 5432:5432 postgres:16
-CAIRO_TEST_BIN=$PWD/dist/cairo CAIRO_TEST_STATIC=1 CAIRO_TEST_NO_OPCACHE=1 \
+CAIRO_TEST_BIN=$PWD/dist/cairo CAIRO_TEST_STATIC=1 \
 CAIRO_TEST_MYSQL='mysql:host=127.0.0.1;port=3306' CAIRO_TEST_MYSQL_USER=root CAIRO_TEST_MYSQL_PASSWORD=cairo \
 CAIRO_TEST_PGSQL='pgsql:host=127.0.0.1;port=5432;dbname=cairo' CAIRO_TEST_PGSQL_USER=cairo CAIRO_TEST_PGSQL_PASSWORD=cairo \
 go test ./test ./internal/codegen ./internal/middleware ./internal/spec -count=1
@@ -66,7 +66,7 @@ What the test environment variables do:
 |----------|--------|
 | `CAIRO_TEST_BIN` | Test this binary instead of building one (needs no local PHP) |
 | `CAIRO_TEST_STATIC=1` | Also run `TestStaticBinary` (checks it is static) |
-| `CAIRO_TEST_NO_OPCACHE=1` | Do not require opcache (the static binary has none before PHP 8.5) |
+| `CAIRO_TEST_NO_OPCACHE=1` | Do not require opcache (for a static binary built with PHP older than 8.5) |
 | `CAIRO_TEST_MYSQL`, `_USER`, `_PASSWORD` | PDO DSN for the MySQL tests; skipped when unset |
 | `CAIRO_TEST_PGSQL`, `_USER`, `_PASSWORD` | PDO DSN for the PostgreSQL tests; skipped when unset |
 | `PHP_BIN` | A PHP CLI for the tests that need one (stubs, codegen) |

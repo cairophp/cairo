@@ -39,8 +39,8 @@ cairo serve server.php
 
 ## Install
 
-Cairo ships as one static binary for Linux on amd64 and arm64, with PHP 8.3
-and its extensions built in. Nothing else is needed at run time, not even
+Cairo ships as one static binary for Linux on amd64 and arm64, with PHP 8.5,
+opcache and the extensions built in. Nothing else is needed at run time, not even
 libc, so it also runs in `FROM scratch` images. Download it from the
 [releases page](https://github.com/mohamed-samir907/cairo/releases) and check
 it against `SHA256SUMS`:
@@ -73,7 +73,7 @@ the stubs package ([IDE and static analysis](#ide-and-static-analysis)).
   relies on a thread-safe PHP embedded in a Go process; use the binary in
   Docker there.
 - PHP 8.1 or newer when you build Cairo yourself; the release binary has
-  PHP 8.3.
+  PHP 8.5.
 - PostgreSQL (through pgx, for `pdo_pgsql` and `Cairo\Sql`) and MySQL or
   MariaDB (PDO MySQL and mysqli through hooked streams, and `Cairo\Sql`).
 
@@ -92,9 +92,6 @@ the stubs package ([IDE and static analysis](#ide-and-static-analysis)).
   ([Building](#building)) and cannot load others (`dl()` is off). phpredis,
   imagick, mongodb and other PECL extensions are not included; build Cairo
   yourself to add them, as long as they are thread-safe under ZTS.
-- **No opcache in the release binary** until it moves to PHP 8.5: each PHP
-  thread compiles a script the first time it uses it. A Cairo built with
-  `make php` has opcache.
 - **One process.** Cairo runs one process with many PHP threads; it does not
   fork. A fatal error in PHP kills only its thread, which is replaced, but a
   crash in C code takes the process down: run it under a supervisor
@@ -783,11 +780,12 @@ make static         # docker build -f Dockerfile.static --output dist .
 
 `dist/cairo` holds Cairo, PHP and every extension above, linked against musl
 with no shared libraries, so it runs on any Linux of the same CPU
-architecture, including `FROM scratch` images. Pass `--build-arg
-PHP_VERSION=8.4.14` for another PHP. Before PHP 8.5 it has no opcache, since
-older PHP can only build opcache as a shared extension. Code is still compiled
-only once per thread, when `server.php` and the classes it loads are first
-used. CI builds it and runs the end-to-end tests against it.
+architecture, including `FROM scratch` images. It uses PHP 8.5 with opcache
+built in; pass `--build-arg PHP_VERSION=8.4.14` for another PHP. Before PHP 8.5
+it has no opcache, since older PHP can only build opcache as a shared
+extension; code is then compiled once per thread, when `server.php` and the
+classes it loads are first used. CI builds it and runs the end-to-end tests
+against it.
 `scripts/build-static.sh` does the work and also runs outside Docker on Alpine.
 The first build takes about 15 minutes, nearly all of it ICU and PHP. Docker
 keeps those in their own layer, so later builds only compile Cairo, until

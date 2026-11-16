@@ -112,7 +112,6 @@ jobs:
         env:
           CAIRO_TEST_BIN: ${{ github.workspace }}/dist/cairo
           CAIRO_TEST_STATIC: "1"
-          CAIRO_TEST_NO_OPCACHE: "1"
           CAIRO_TEST_MYSQL: "mysql:host=127.0.0.1;port=3306"
           CAIRO_TEST_MYSQL_USER: root
           CAIRO_TEST_MYSQL_PASSWORD: cairo

@@ -66,7 +66,7 @@ PHP, with many requests per PHP thread as fibers.
 
 - PHP built with opcache and the common extensions (#18).
 - One static musl binary, `make static`, with cached library and PHP layers
-  (#24, #37), for amd64 and arm64.
+  (#24, #37), for amd64 and arm64, on PHP 8.5 with opcache built in.
 - IDE stubs and a Composer package with a PHPStan include (#34); typed gRPC
   streams and generated messages for static analysis (#39).
 - License notices for adapted code (#29); Cairo is licensed under Apache-2.0.

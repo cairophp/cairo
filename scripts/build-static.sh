@@ -17,7 +17,7 @@
 #   CAIRO_VERSION       what `cairo version` prints (default: dev)
 set -euo pipefail
 
-PHP_VERSION="${1:-8.3.27}"
+PHP_VERSION="${1:-8.5.12}"
 OUT="${2:-dist/cairo}"
 CURL_VERSION="${CURL_VERSION:-8.11.1}"
 LIBZIP_VERSION="${LIBZIP_VERSION:-1.11.2}"

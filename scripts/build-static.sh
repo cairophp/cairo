@@ -82,7 +82,7 @@ DEFAULT_EXTENSIONS="
 
 PHP_CONFIG="$PREFIX/bin/php-config"
 export CGO_ENABLED=1
-export CGO_CFLAGS="$($PHP_CONFIG --includes) -DCAIRO_STATIC_CURL"
+export CGO_CFLAGS="$($PHP_CONFIG --includes) -I$DEPS/include -DCAIRO_STATIC_CURL"
 # libphp.a first, then what it needs. The group lets the linker go back and
 # forth between libraries that need each other. ext/intl is C++.
 # Cairo's curl hook takes over two libcurl functions by renaming calls to

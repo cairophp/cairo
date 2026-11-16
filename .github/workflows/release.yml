@@ -1,0 +1,85 @@
+name: release
+# Push a tag such as v0.1.0 to publish a GitHub release with one static
+# binary per architecture and their SHA-256 checksums. The release notes are
+# the tag's section of CHANGELOG.md.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the static binary
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.static
+          build-args: CAIRO_VERSION=${{ github.ref_name }}
+          outputs: type=local,dest=dist
+          cache-from: type=gha,scope=static-${{ matrix.arch }}
+      - name: Check it
+        env:
+          CAIRO_TEST_BIN: ${{ github.workspace }}/dist/cairo
+          CAIRO_TEST_STATIC: "1"
+          CAIRO_TEST_NO_OPCACHE: "1"   # until the static build moves to PHP 8.5
+        run: |
+          file dist/cairo
+          test "$(dist/cairo version)" = "cairo ${{ github.ref_name }}"
+          go test ./test -count=1 -run 'TestStaticBinary|TestPHPBuildHasOpcacheAndExtensions'
+          mv dist/cairo dist/cairo-linux-${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cairo-linux-${{ matrix.arch }}
+          path: dist/cairo-linux-${{ matrix.arch }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          chmod +x cairo-linux-*
+          sha256sum cairo-linux-* > SHA256SUMS
+          cat SHA256SUMS
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            /^## / { if (found) exit; if (index($0, "[" v "]")) { found = 1; next } }
+            /^\[[^]]*\]: / { if (found) exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "CHANGELOG.md has no section for $version" >&2
+            exit 1
+          fi
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/cairo-linux-* dist/SHA256SUMS \
+            --title "Cairo $GITHUB_REF_NAME" --notes-file notes.md --verify-tag $prerelease

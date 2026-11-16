@@ -14,6 +14,7 @@
 #                       one skips the libraries and PHP already built there.
 #   STAGE=php           stop after PHP is built and its sources are removed
 #                       (Dockerfile.static caches that as its own layer)
+#   CAIRO_VERSION       what `cairo version` prints (default: dev)
 set -euo pipefail
 
 PHP_VERSION="${1:-8.3.27}"
@@ -150,6 +151,6 @@ export CGO_LDFLAGS="-Wl,--wrap=curl_easy_perform -Wl,--wrap=curl_multi_wait -L$P
 
 cd "$ROOT"
 go build -trimpath -tags netgo,osusergo \
-  -ldflags "-s -w -linkmode external -extldflags '-static'" \
+  -ldflags "-s -w -X main.version=${CAIRO_VERSION:-dev} -linkmode external -extldflags '-static'" \
   -o "$OUT" ./cmd/cairo
-echo "static cairo with PHP $PHP_VERSION: $OUT"
+echo "static cairo ${CAIRO_VERSION:-dev} with PHP $PHP_VERSION: $OUT"

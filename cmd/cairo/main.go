@@ -22,7 +22,8 @@ import (
 	"github.com/mohamed-samir907/cairo/internal/sapi"
 )
 
-const version = "0.1.0-dev"
+// version is set at build time: -ldflags "-X main.version=v0.1.0".
+var version = "dev"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {

@@ -1,0 +1,9 @@
+Cairo
+Copyright 2026 Mohamed Samir
+
+This product is licensed under the Apache License, Version 2.0 (LICENSE).
+
+It includes code adapted from PHP's embed SAPI (PHP License 3.01) and
+follows FrankenPHP (MIT) in places; third_party/NOTICES has both licenses.
+The static binary also links PHP, its extensions and their libraries, each
+under its own license.

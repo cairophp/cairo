@@ -493,6 +493,13 @@ is not available.
 
 Requirements: Go 1.24+, a C toolchain, the -dev packages listed in `scripts/build-php.sh`, and PHP 8.1 or newer (fibers).
 
+## License notices
+
+Cairo's SAPI is adapted from PHP's embed SAPI (PHP License 3.01) and follows
+FrankenPHP (MIT) in places; `third_party/NOTICES` has both licenses. The static
+binary also links PHP, its extensions and their libraries, under their own
+licenses.
+
 ## Layout
 
 ```
@@ -508,4 +515,5 @@ examples/greeter/     HTTP + gRPC example
 examples/isolated/    isolated mode: superglobals, echo/header(), resets
 examples/supervise/   thread restart after a fatal error, maxRequests and maxMemory
 test/                 end-to-end tests
+third_party/NOTICES   licenses of code Cairo adapts (PHP embed SAPI, FrankenPHP)
 ```

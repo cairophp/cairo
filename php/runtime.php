@@ -1226,6 +1226,101 @@ namespace Cairo\Grpc {
             parent::__construct($message, $code, $previous);
         }
     }
+
+    /**
+     * A gRPC client over grpc-go, for unary calls. Messages are protojson
+     * arrays (or generated message objects); Go encodes them with the
+     * descriptors of the given .proto files. `cairo gen` also writes a typed
+     * client per service (GreeterClient) that carries its descriptors.
+     *
+     *     $client = new Client('localhost:9000', ['protos' => [__DIR__ . '/greeter.proto']]);
+     *     $reply = $client->call('/helloworld.Greeter/SayHello', ['name' => 'Cairo']);
+     *
+     * In a request handler or async() task only the fiber waits, and the
+     * request's deadline becomes the call's deadline. Connections are shared
+     * and reused across requests and threads.
+     *
+     * Options: protos (paths), descriptors (base64 FileDescriptorSet), tls
+     * (true, or [cafile, cert, key, server_name, verify]), metadata
+     * (sent with every call), timeout (seconds, default 30).
+     */
+    final class Client
+    {
+        /** @param array<string, mixed> $options */
+        public function __construct(private readonly string $target, private readonly array $options = [])
+        {
+        }
+
+        /**
+         * Calls a unary method and returns the reply as a protojson array.
+         * A status other than OK throws Cairo\Grpc\Exception with its code.
+         *
+         * @param array<string, mixed>|object $request an array, or a message with toArray()
+         * @param array{metadata?: array<string, string|list<string>>, timeout?: float} $options
+         * @return array<string, mixed>
+         */
+        public function call(string $method, array|object $request, array $options = []): array
+        {
+            return $this->invoke($method, $request, $options)->message;
+        }
+
+        /**
+         * Like call(), with the reply's headers and trailers.
+         *
+         * @param array<string, mixed>|object $request
+         * @param array{metadata?: array<string, string|list<string>>, timeout?: float} $options
+         */
+        public function invoke(string $method, array|object $request, array $options = []): Reply
+        {
+            if (is_object($request)) {
+                $request = method_exists($request, 'toArray') ? $request->toArray() : get_object_vars($request);
+            }
+            $tls = $this->options['tls'] ?? false;
+            $tlsOpts = is_array($tls) ? $tls : [];
+            $metadata = [];
+            foreach ([$this->options['metadata'] ?? [], $options['metadata'] ?? []] as $set) {
+                foreach ($set as $key => $value) {
+                    $metadata[strtolower((string) $key)] = array_map('strval', (array) $value);
+                }
+            }
+            $result = \Cairo\Internal\Go::call('grpc.call', [
+                'target' => $this->target,
+                'method' => $method,
+                'protos' => array_values((array) ($this->options['protos'] ?? [])),
+                'descriptors' => (string) ($this->options['descriptors'] ?? ''),
+                'message' => $request === [] ? new \stdClass() : $request,
+                'metadata' => (object) $metadata,
+                'timeout' => (float) ($options['timeout'] ?? $this->options['timeout'] ?? 30),
+                'tls' => [
+                    'enabled' => $tls !== false,
+                    'cafile' => (string) ($tlsOpts['cafile'] ?? ''),
+                    'cert' => (string) ($tlsOpts['cert'] ?? ''),
+                    'key' => (string) ($tlsOpts['key'] ?? ''),
+                    'server_name' => (string) ($tlsOpts['server_name'] ?? ''),
+                    'verify' => (bool) ($tlsOpts['verify'] ?? true),
+                ],
+            ]);
+            if (!($result['ok'] ?? false)) {
+                throw new Exception((int) ($result['code'] ?? Code::UNKNOWN), (string) ($result['error'] ?? 'call failed'));
+            }
+            return new Reply($result['message'], $result['headers'] ?: [], $result['trailers'] ?: []);
+        }
+    }
+
+    final class Reply
+    {
+        /**
+         * @param array<string, mixed> $message protojson
+         * @param array<string, list<string>> $headers
+         * @param array<string, list<string>> $trailers
+         */
+        public function __construct(
+            public readonly array $message,
+            public readonly array $headers,
+            public readonly array $trailers,
+        ) {
+        }
+    }
 }
 
 namespace Cairo\Internal {

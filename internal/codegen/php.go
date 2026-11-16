@@ -1,5 +1,6 @@
 // Package codegen generates PHP classes from .proto files: one class per
-// message, one class of constants per enum, and one interface per service.
+// message, one class of constants per enum, and per service an interface to
+// implement and a typed client.
 //
 // Cairo already hands PHP each gRPC message as a protojson array, so the
 // generated classes are plain PHP with typed properties plus fromArray() and
@@ -9,6 +10,7 @@ package codegen
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +18,8 @@ import (
 	"strings"
 
 	"github.com/bufbuild/protocompile"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
@@ -112,6 +116,7 @@ func generateFile(fd protoreflect.FileDescriptor) []File {
 	walkMsgs(fd.Messages())
 	for i := 0; i < fd.Services().Len(); i++ {
 		out = append(out, serviceFile(ns, fd.Services().Get(i)))
+		out = append(out, clientFile(ns, fd.Services().Get(i)))
 	}
 	return out
 }
@@ -455,6 +460,79 @@ func serviceFile(ns string, s protoreflect.ServiceDescriptor) File {
 	}
 	b.WriteString("}\n")
 	return File{Path: filePath(ns, cls), Content: b.String()}
+}
+
+// clientFile is a typed client for a service: one method per RPC, over
+// Cairo\Grpc\Client. It carries the descriptors of the .proto file and its
+// imports, so no .proto file is needed at run time.
+func clientFile(ns string, s protoreflect.ServiceDescriptor) File {
+	cls := safeName(string(s.Name())) + "Client"
+	var b bytes.Buffer
+	header(&b, ns, s.ParentFile().Path())
+	fmt.Fprintf(&b, "/**\n * A client for %s. In a request handler or async() task only the\n * fiber waits for the reply.\n *\n *     $client = new %s('localhost:9000');\n *\n * Options are those of Cairo\\Grpc\\Client (tls, metadata, timeout).\n */\nfinal class %s\n{\n",
+		s.FullName(), cls, cls)
+	b.WriteString("    /** The .proto file and its imports, as a base64 FileDescriptorSet. */\n    public const DESCRIPTORS = ")
+	enc := descriptorSet(s.ParentFile())
+	for i := 0; i < len(enc); i += 96 {
+		end := min(i+96, len(enc))
+		if i > 0 {
+			b.WriteString("\n        . ")
+		}
+		fmt.Fprintf(&b, "'%s'", enc[i:end])
+	}
+	b.WriteString(";\n\n    private \\Cairo\\Grpc\\Client $client;\n\n")
+	b.WriteString("    /** @param array<string, mixed> $options */\n")
+	b.WriteString("    public function __construct(string $target, array $options = [])\n    {\n")
+	b.WriteString("        $this->client = new \\Cairo\\Grpc\\Client($target, $options + ['descriptors' => self::DESCRIPTORS]);\n    }\n")
+	ms := s.Methods()
+	for i := 0; i < ms.Len(); i++ {
+		m := ms.Get(i)
+		if m.IsStreamingClient() || m.IsStreamingServer() {
+			fmt.Fprintf(&b, "\n    // %s is a streaming method; streaming calls come in a later milestone.\n", m.Name())
+			continue
+		}
+		in, out := msgType(m.Input()), msgType(m.Output())
+		arg := "$request->toArray()"
+		if in == "array" {
+			arg = "$request"
+		}
+		ret := out + "::fromArray($this->client->call('/%s/%s', %s, $options))"
+		if out == "array" {
+			ret = "$this->client->call('/%s/%s', %s, $options)"
+		}
+		fmt.Fprintf(&b, "\n    /**\n     * @param array{metadata?: array<string, string|list<string>>, timeout?: float} $options\n     * @throws \\Cairo\\Grpc\\Exception with the call's status code\n     */\n")
+		fmt.Fprintf(&b, "    public function %s(%s $request, array $options = []): %s\n    {\n        return "+ret+";\n    }\n",
+			m.Name(), in, out, s.FullName(), m.Name(), arg)
+	}
+	b.WriteString("}\n")
+	return File{Path: filePath(ns, cls), Content: b.String()}
+}
+
+// descriptorSet is fd and everything it imports, as a base64
+// FileDescriptorSet, dependencies first.
+func descriptorSet(fd protoreflect.FileDescriptor) string {
+	set := &descriptorpb.FileDescriptorSet{}
+	seen := map[string]bool{}
+	var add func(protoreflect.FileDescriptor)
+	add = func(f protoreflect.FileDescriptor) {
+		if seen[f.Path()] {
+			return
+		}
+		seen[f.Path()] = true
+		imports := f.Imports()
+		for i := 0; i < imports.Len(); i++ {
+			add(imports.Get(i).FileDescriptor)
+		}
+		fp := protodesc.ToFileDescriptorProto(f)
+		fp.SourceCodeInfo = nil
+		set.File = append(set.File, fp)
+	}
+	add(fd)
+	raw, err := proto.MarshalOptions{Deterministic: true}.Marshal(set)
+	if err != nil {
+		panic(err)
+	}
+	return base64.StdEncoding.EncodeToString(raw)
 }
 
 func msgType(m protoreflect.MessageDescriptor) string {

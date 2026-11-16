@@ -59,8 +59,8 @@ cairo serve server.php
 
 `cairo gen` turns `.proto` files into PHP: a class per message (typed
 properties, a named-argument constructor, `fromArray()` / `toArray()`), a class
-of constants per enum, and an interface per service. It needs no `protoc` and
-no `google/protobuf` runtime.
+of constants per enum, and per service an interface to implement and a typed
+client. It needs no `protoc` and no `google/protobuf` runtime.
 
 ```sh
 cairo gen --out gen proto/helloworld.proto     # -I DIR for imports
@@ -94,6 +94,23 @@ form (a string for `Timestamp`). Streaming methods are not generated yet.
 
 Health checking (`grpc.health.v1`) and server reflection are built in, so
 `grpcurl -plaintext localhost:9000 list` works.
+
+Calling gRPC services: the generated client carries its `.proto` descriptors,
+and `Cairo\Grpc\Client` takes arrays with `.proto` files. Calls run through
+grpc-go on the fiber's goroutine (only the fiber waits, and the request's
+deadline caps the call); connections are shared across requests and threads.
+
+```php
+$greeter = new Helloworld\GreeterClient('greeter:9000', ['timeout' => 2]);   // tls => true or [cafile, cert, key, server_name]
+$reply = $greeter->SayHello(new HelloRequest(name: 'Cairo'), ['metadata' => ['x-trace' => $id]]);
+
+$client = new Cairo\Grpc\Client('greeter:9000', ['protos' => [__DIR__ . '/proto/helloworld.proto']]);
+$reply = $client->call('/helloworld.Greeter/SayHello', ['name' => 'Cairo']);       // a protojson array
+$full = $client->invoke('/helloworld.Greeter/SayHello', ['name' => 'Cairo']);      // ->message, ->headers, ->trailers
+```
+
+A status other than OK throws `Cairo\Grpc\Exception` with the status code.
+Streaming calls are not supported yet.
 
 ### Middleware
 
@@ -338,7 +355,7 @@ Requirements: Go 1.24+, a C toolchain, libcurl headers (`libcurl4-openssl-dev`),
 
 ```
 cmd/cairo/            the binary (serve, gen)
-internal/codegen/     cairo gen: PHP classes from .proto files
+internal/codegen/     cairo gen: PHP classes and clients from .proto files
 internal/sapi/        embedded PHP: C bridge, PHP threads, fiber goroutines, offload pool
 internal/spec/        the server declaration sent by server.php
 internal/httpserver/  net/http server built from the declaration

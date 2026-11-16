@@ -5,7 +5,7 @@ export CGO_ENABLED = 1
 export CGO_CFLAGS  = $(shell $(PHP_CONFIG) --includes)
 export CGO_LDFLAGS = -L$(PHP_PREFIX)/lib -Wl,-rpath,$(PHP_PREFIX)/lib
 
-.PHONY: build test run php static
+.PHONY: build test run php static stubs
 
 build:
 	go build -o bin/cairo ./cmd/cairo
@@ -25,3 +25,7 @@ php:
 # One static binary (musl, PHP and its extensions linked in) in dist/cairo. Needs Docker.
 static:
 	docker build -f Dockerfile.static --output dist .
+
+# Regenerate stubs/cairo.php (Cairo's PHP API for IDEs) from php/runtime.php.
+stubs:
+	php scripts/stubs.php php/runtime.php > stubs/cairo.php

@@ -73,6 +73,17 @@ $http->get('/request-id', fn (Request $req): Response => Response::text((string)
 // Large enough for the gzip middleware (1 KB by default).
 $http->get('/big', fn (): Response => Response::text(str_repeat("Cairo serves PHP from Go.\n", 200)));
 
+// Multipart uploads in fiber mode: $req->form() and $req->file().
+$http->post('/upload', function (Request $req): Response {
+    $file = $req->file('photo');
+    return Response::json([
+        'caption' => $req->form()['caption'] ?? null,
+        'name' => $file?->name,
+        'size' => $file?->size,
+        'contents' => $file?->contents(),
+    ]);
+});
+
 $http->get('/hello/{name}', fn (Request $req): Response => Response::text("Hello {$req->param('name')}\n"));
 
 // Each request sleeps without blocking the thread: one PHP thread can hold

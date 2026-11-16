@@ -219,14 +219,20 @@ $http->get('/legacy', function (): void {     // classic PHP works
 });
 ```
 
-In isolated mode Cairo fills `$_GET`, `$_POST` (url-encoded forms), `$_COOKIE`,
-`$_SERVER` and `$_REQUEST`; a handler that returns nothing answers with what it
+In isolated mode Cairo fills `$_GET`, `$_POST` (url-encoded and multipart
+forms), `$_FILES`, `$_COOKIE`, `$_SERVER` and `$_REQUEST`; a handler that returns nothing answers with what it
 echoed, its `header()` calls and `http_response_code()`. After each request it
 clears the superglobals and calls `reset()` on everything given to
 `resetAfterRequest()` (any object with a `reset()` method, such as
 `Cairo\Resettable` or Symfony's `ResetInterface`, or a callable). Requests that
 arrive while a thread is busy wait in line for it, so use more threads in
-this mode. Multipart uploads (`$_FILES`) are not parsed yet.
+this mode.
+
+Uploads are parsed by Go into temporary files that are removed after the
+request. `move_uploaded_file()` and `is_uploaded_file()` accept them in both
+modes; in fiber mode use `$req->form()` and `$req->file('photo')`, which gives a
+`Cairo\Http\UploadedFile` with `name`, `type`, `size`, `path`, `contents()` and
+`moveTo()`.
 
 ## Building
 
@@ -263,6 +269,6 @@ test/                 end-to-end tests
 
 - Streaming gRPC.
 - TLS stream hooks, a Go-backed HTTP client, a pgx PDO driver.
-- Hard interruption of PHP code at a deadline; multipart uploads in isolated mode.
+- Hard interruption of PHP code at a deadline.
 - Opcache and a wider set of PHP extensions in the default build.
 - A Cairo-owned SAPI adapted from FrankenPHP; this prototype uses PHP's embed SAPI.

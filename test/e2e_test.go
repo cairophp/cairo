@@ -6,10 +6,12 @@
 package test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -727,5 +729,24 @@ func TestHookedCurlMultiDoesNotBlockTheThread(t *testing.T) {
 	t.Logf("%d requests x 3 curl_multi transfers to a 1s endpoint, on 1 PHP thread: %s", n, took.Round(time.Millisecond))
 	if took > 3*time.Second {
 		t.Fatalf("took %s; curl_multi_select blocked the thread", took)
+	}
+}
+
+func TestUploadInFiberMode(t *testing.T) {
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	_ = mw.WriteField("caption", "Nile")
+	w, _ := mw.CreateFormFile("photo", "nile.jpg")
+	_, _ = w.Write([]byte("JPEGDATA"))
+	_ = mw.Close()
+	resp, err := http.Post("http://"+httpAddr+"/upload", mw.FormDataContentType(), &body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	want := `{"caption":"Nile","name":"nile.jpg","size":8,"contents":"JPEGDATA"}`
+	if strings.TrimSpace(string(b)) != want {
+		t.Fatalf("got %s, want %s", b, want)
 	}
 }

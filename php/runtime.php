@@ -363,15 +363,133 @@ namespace Cairo {
             return $this->deadline === null ? INF : max(0.0, $this->deadline - microtime(true));
         }
 
+        /** Why the context ended (it, or a context it derives from), or null while it is live. */
         public function err(): ?Context\ContextException
         {
-            if ($this->ended !== null) {
-                return $this->ended === 'canceled' ? new Context\Canceled() : new Context\DeadlineExceeded();
-            }
-            if ($this->deadline !== null && microtime(true) >= $this->deadline) {
-                return new Context\DeadlineExceeded();
+            for ($ctx = $this; $ctx !== null; $ctx = $ctx->parent) {
+                if ($ctx->ended !== null) {
+                    return $ctx->ended === 'canceled' ? new Context\Canceled() : new Context\DeadlineExceeded();
+                }
+                if ($ctx->deadline !== null && microtime(true) >= $ctx->deadline) {
+                    return new Context\DeadlineExceeded();
+                }
             }
             return null;
+        }
+
+        /** @var array<string, mixed> values Go middleware set on the request (root context only) */
+        private array $goValues = [];
+        /** this context came from withTimeout() and friends and owns its goroutine */
+        private bool $derived = false;
+        /** cancel() was called on it */
+        private bool $canceledHere = false;
+        /** @var ?\WeakMap<self, Channel> done() channels, woken when cancel() ends their context */
+        private static ?\WeakMap $doneChannels = null;
+
+        /** @internal */
+        public function setGoValues(array $values): void
+        {
+            $this->goValues = $values;
+        }
+
+        /**
+         * A value Go middleware attached to the request, such as 'request_id'
+         * from Middleware::requestId(). Values PHP code stores are read with
+         * Context::get().
+         */
+        public function value(string $key, mixed $default = null): mixed
+        {
+            $root = $this;
+            while ($root->parent !== null) {
+                $root = $root->parent;
+            }
+            return array_key_exists($key, $root->goValues) ? $root->goValues[$key] : $default;
+        }
+
+        /**
+         * A child context that ends $seconds from now, or earlier if this one
+         * ends. Run code under it with run(): every Cairo call it makes (HTTP,
+         * gRPC, sockets, SQL, sleep, channels, async() tasks) ends with it.
+         */
+        public function withTimeout(float $seconds): self
+        {
+            return $this->derive(max(0.0, $seconds));
+        }
+
+        /** Like withTimeout(), with an absolute time. */
+        public function withDeadline(\DateTimeInterface|float $at): self
+        {
+            $at = $at instanceof \DateTimeInterface ? (float) $at->format('U.u') : $at;
+            return $this->derive(max(0.0, $at - microtime(true)));
+        }
+
+        /** A child context that ends when cancel() is called on it, or when this one ends. */
+        public function withCancel(): self
+        {
+            return $this->derive(null);
+        }
+
+        private function derive(?float $timeout): self
+        {
+            if (!Internal\Scheduler::running()) {
+                throw new \LogicException('derived contexts need a Cairo request thread');
+            }
+            $id = \cairo_context_open($this->fiberId, $timeout ?? -1.0);
+            $deadline = $this->deadline;
+            if ($timeout !== null) {
+                $at = microtime(true) + $timeout;
+                $deadline = $deadline === null ? $at : min($deadline, $at);
+            }
+            $child = new self($this->requestId, $id, $deadline, $this);
+            $child->derived = true;
+            return $child;
+        }
+
+        /**
+         * End this context (and the ones derived from it): Cairo calls running
+         * under it throw Context\Canceled, and its done() channel closes. Only
+         * contexts made with withTimeout(), withDeadline() or withCancel() can
+         * be canceled.
+         */
+        public function cancel(): void
+        {
+            if (!$this->derived) {
+                throw new \LogicException('only a context made with withTimeout(), withDeadline() or withCancel() can be canceled');
+            }
+            if ($this->canceledHere) {
+                return;
+            }
+            $this->canceledHere = true;
+            $this->ended ??= 'canceled';
+            \cairo_context_cancel($this->fiberId);
+            foreach (self::$doneChannels ?? [] as $ch) {
+                if ($ch->isClosed()) {
+                    $ch->contextEnded();
+                }
+            }
+        }
+
+        /**
+         * Run $fn with this context as the current one, in the current fiber;
+         * returns what $fn returns. `$ctx->withTimeout(0.5)->run(fn () => $client->get($url))`.
+         */
+        public function run(callable $fn): mixed
+        {
+            $fiber = \Fiber::getCurrent() ?? throw new \LogicException('Context::run() must be called inside a request (a fiber)');
+            $prev = self::current();
+            self::bind($fiber, $this);
+            try {
+                return $fn($this);
+            } finally {
+                self::bind($fiber, $prev);
+            }
+        }
+
+        public function __destruct()
+        {
+            if ($this->derived) {
+                \cairo_fiber_close($this->fiberId);   // ends its goroutine and cancels its Go context
+            }
         }
 
         /** @var ?string how Go reported this context ended: 'canceled' or 'deadline_exceeded' */
@@ -385,7 +503,18 @@ namespace Cairo {
          */
         public function done(): Channel
         {
-            return $this->done ??= Channel::forContext($this);
+            if ($this->done === null) {
+                $this->done = Channel::forContext($this);
+                self::$doneChannels ??= new \WeakMap();
+                self::$doneChannels[$this] = $this->done;
+            }
+            return $this->done;
+        }
+
+        /** @internal the deadline as a Unix time, or null */
+        public function deadlineAt(): ?float
+        {
+            return $this->deadline;
         }
 
         /**
@@ -395,6 +524,9 @@ namespace Cairo {
         public function ended(string $why): void
         {
             for ($ctx = $this; $ctx !== null; $ctx = $ctx->parent) {
+                if ($why === 'canceled' && $ctx->canceledHere) {
+                    return;   // the cancel came from here: what it derives from goes on
+                }
                 if ($ctx->ended !== null) {
                     continue;
                 }
@@ -532,6 +664,21 @@ namespace Cairo {
                 }
                 yield $value;
             }
+        }
+
+        /** @internal a done() channel's context ended: wake whoever waits on it */
+        public function contextEnded(): void
+        {
+            foreach ($this->receivers as [$waiter, $key]) {
+                $waiter->wake($key, null, false);
+            }
+            $this->receivers = [];
+        }
+
+        /** @internal the context behind a done() channel */
+        public function context(): ?Context
+        {
+            return $this->context;
         }
 
         /** @internal try to receive now: [true, value, ok] or [false] */
@@ -672,36 +819,59 @@ namespace Cairo {
             throw new \LogicException('waiting on a Cairo\Channel must happen inside a request handler or an async() task');
         }
 
-        $waiter = new Internal\Waiter();
-        foreach ($cases as $key => $case) {
-            if ($case instanceof Channel) {
-                $case->addReceiver($waiter, $key);
-            } else {
-                $case[0]->addSender($waiter, $key, $case[1]);
-            }
-        }
-        try {
-            $event = Internal\Scheduler::instance()->park($waiter, $timeout ?? -1.0);
-        } finally {
+        // done() channels of other contexts close at their deadline, which the
+        // park below does not see: wake up then and look again.
+        $end = $timeout === null ? null : microtime(true) + $timeout;
+        while (true) {
+            $now = microtime(true);
+            $doneAt = null;
             foreach ($cases as $case) {
-                ($case instanceof Channel ? $case : $case[0])->remove($waiter);
+                if ($case instanceof Channel && ($at = $case->context()?->deadlineAt()) !== null && $at > $now) {
+                    $doneAt = $doneAt === null ? $at : min($doneAt, $at);
+                }
             }
-        }
-        if ($waiter->done) {
-            if ($waiter->error !== null) {
-                throw $waiter->error;
+            $wait = $end === null ? -1.0 : max(0.0, $end - microtime(true));
+            $forDone = false;
+            if ($doneAt !== null && ($wait < 0 || $doneAt - microtime(true) < $wait)) {
+                $wait = max(0.0, $doneAt - microtime(true)) + 0.001;
+                $forDone = true;
             }
-            return $waiter->result;
-        }
-        if (isset($event['error'])) {
-            $ctx->ended((string) $event['error']);
-            // A done() channel among the cases is now closed.
+            $waiter = new Internal\Waiter();
+            foreach ($cases as $key => $case) {
+                if ($case instanceof Channel) {
+                    $case->addReceiver($waiter, $key);
+                } else {
+                    $case[0]->addSender($waiter, $key, $case[1]);
+                }
+            }
+            try {
+                $event = Internal\Scheduler::instance()->park($waiter, $wait);
+            } finally {
+                foreach ($cases as $case) {
+                    ($case instanceof Channel ? $case : $case[0])->remove($waiter);
+                }
+            }
+            if ($waiter->done) {
+                if ($waiter->error !== null) {
+                    throw $waiter->error;
+                }
+                return $waiter->result;
+            }
+            if (isset($event['error'])) {
+                $ctx->ended((string) $event['error']);
+                // A done() channel among the cases is now closed.
+                if (($ready = $poll()) !== null) {
+                    return $ready;
+                }
+                throw $event['error'] === 'canceled' ? new Context\Canceled() : new Context\DeadlineExceeded();
+            }
+            if (!$forDone) {
+                return [null, null, false];   // timeout
+            }
             if (($ready = $poll()) !== null) {
                 return $ready;
             }
-            throw $event['error'] === 'canceled' ? new Context\Canceled() : new Context\DeadlineExceeded();
         }
-        return [null, null, false];   // timeout
     }
 
     /** A unit of concurrent work started with async(). */
@@ -2455,6 +2625,7 @@ namespace Cairo\Internal {
         {
             $id = (int) $event['id'];   // the request's root fiber is served by the request goroutine
             $context = new Context($id, $id, isset($event['deadline']) ? (float) $event['deadline'] : null);
+            $context->setGoValues((array) ($event['values'] ?? []));
             $this->active++;
             $fiber = new \Fiber(function () use ($fn, $context): void {
                 try {

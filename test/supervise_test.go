@@ -140,3 +140,26 @@ func TestMaxMemoryRecyclesThread(t *testing.T) {
 		t.Fatalf("memory grew by 48 MiB with maxMemory('24M') and the thread was never replaced")
 	}
 }
+
+// maxInFlight(5) on one thread: 10 requests that each wait 1s run five at a
+// time, so they take about 2s; the rest wait in Go, and all succeed.
+func TestMaxInFlightQueuesInGo(t *testing.T) {
+	fetch := startSupervise(t, "CAIRO_MAX_IN_FLIGHT=5")
+	start := time.Now()
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if code, body := fetch("/slow"); code != 200 {
+				t.Errorf("/slow: %d %q", code, body)
+			}
+		}()
+	}
+	wg.Wait()
+	took := time.Since(start)
+	if took < 1900*time.Millisecond || took > 3500*time.Millisecond {
+		t.Fatalf("10 requests of 1s with maxInFlight(5) on 1 thread took %s, want about 2s", took)
+	}
+	t.Logf("10 requests of 1s, 5 in flight at a time: %s", took.Round(time.Millisecond))
+}

@@ -512,6 +512,10 @@ $app->maxRequests(10_000)   // after this many requests
 
 Cairo starts the replacement first and sends new requests to it, then lets the
 old thread finish the requests it holds before it exits, so no request fails.
+
+`$app->maxInFlight(100)` caps the requests each request thread holds at once.
+Requests over the cap wait in Go until one finishes, or until their own
+deadline. A waiting request costs a goroutine, not PHP memory.
 `examples/supervise` shows both.
 
 ## Building

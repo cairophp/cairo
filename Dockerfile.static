@@ -18,6 +18,7 @@ RUN STAGE=php scripts/build-static.sh "$PHP_VERSION"
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+ARG CAIRO_VERSION=dev
 RUN --mount=type=cache,target=/root/.cache/go-build scripts/build-static.sh "$PHP_VERSION" /out/cairo
 
 FROM scratch

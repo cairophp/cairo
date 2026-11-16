@@ -1,5 +1,6 @@
 PHP_PREFIX ?= /opt/php-zts
 PHP_CONFIG ?= $(PHP_PREFIX)/bin/php-config
+VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 export CGO_ENABLED = 1
 export CGO_CFLAGS  = $(shell $(PHP_CONFIG) --includes)
@@ -8,7 +9,7 @@ export CGO_LDFLAGS = -L$(PHP_PREFIX)/lib -Wl,-rpath,$(PHP_PREFIX)/lib
 .PHONY: build test run php static stubs
 
 build:
-	go build -o bin/cairo ./cmd/cairo
+	go build -ldflags "-X main.version=$(VERSION)" -o bin/cairo ./cmd/cairo
 
 test:
 	go vet ./...
@@ -24,7 +25,7 @@ php:
 
 # One static binary (musl, PHP and its extensions linked in) in dist/cairo. Needs Docker.
 static:
-	docker build -f Dockerfile.static --output dist .
+	docker build -f Dockerfile.static --build-arg CAIRO_VERSION=$(VERSION) --output dist .
 
 # Regenerate stubs/cairo.php (Cairo's PHP API for IDEs) from php/runtime.php.
 stubs:

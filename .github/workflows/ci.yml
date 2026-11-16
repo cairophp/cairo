@@ -59,9 +59,18 @@ jobs:
           CAIRO_TEST_PGSQL_PASSWORD: cairo
         run: make test
 
-  # One static binary (Dockerfile.static), then the whole suite against it.
+  # One static binary (Dockerfile.static) per architecture, then the whole
+  # suite against it.
   static:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     services:
       mysql:
         image: mariadb:11.4
@@ -93,8 +102,8 @@ jobs:
           context: .
           file: Dockerfile.static
           outputs: type=local,dest=dist
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=static-${{ matrix.arch }}
+          cache-to: type=gha,scope=static-${{ matrix.arch }},mode=max
       - name: Inspect it
         run: |
           file dist/cairo
@@ -113,5 +122,5 @@ jobs:
         run: go test ./test -count=1 -v
       - uses: actions/upload-artifact@v4
         with:
-          name: cairo-linux-amd64-static
+          name: cairo-linux-${{ matrix.arch }}-static
           path: dist/cairo

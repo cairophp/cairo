@@ -9,8 +9,8 @@ shutdown, output, header and logging callbacks, and the boot and per-thread
 request setup in cairo_boot and cairo_thread_run) is adapted from PHP's embed
 SAPI, sapi/embed/php_embed.c, in the PHP source distribution
 (https://github.com/php/php-src, PHP 8.3). That code is distributed under the
-PHP License, version 3.01, reproduced below. Cairo's changes are under Cairo's
-own license.
+PHP License, version 3.01, reproduced below. Cairo's changes are under
+Cairo's own license, the Apache License 2.0 (LICENSE).
 
 This product includes PHP software, freely available from
 <http://www.php.net/software/>.

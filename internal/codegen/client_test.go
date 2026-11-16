@@ -30,7 +30,7 @@ func TestServiceClient(t *testing.T) {
 	for _, want := range []string{
 		`public function Get(\Shop\V1\Order $request, array $options = []): \Shop\V1\Order`,
 		`$this->client->call('/shop.v1.Orders/Get', $request->toArray(), $options)`,
-		`// Watch is a streaming method`,
+		`public function Watch(\Shop\V1\Order $request, array $options = []): \Cairo\Grpc\ClientStream`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("missing %q in:\n%s", want, src)

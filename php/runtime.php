@@ -1272,9 +1272,20 @@ namespace Cairo\Grpc {
          */
         public function invoke(string $method, array|object $request, array $options = []): Reply
         {
-            if (is_object($request)) {
-                $request = method_exists($request, 'toArray') ? $request->toArray() : get_object_vars($request);
+            $result = \Cairo\Internal\Go::call('grpc.call', $this->payload($method, $request, $options, 30));
+            if (!($result['ok'] ?? false)) {
+                throw new Exception((int) ($result['code'] ?? Code::UNKNOWN), (string) ($result['error'] ?? 'call failed'));
             }
+            return new Reply($result['message'], $result['headers'] ?: [], $result['trailers'] ?: []);
+        }
+
+        /**
+         * @param array<string, mixed>|object|null $request
+         * @param array<string, mixed> $options
+         * @return array<string, mixed>
+         */
+        private function payload(string $method, array|object|null $request, array $options, float $timeout): array
+        {
             $tls = $this->options['tls'] ?? false;
             $tlsOpts = is_array($tls) ? $tls : [];
             $metadata = [];
@@ -1283,14 +1294,14 @@ namespace Cairo\Grpc {
                     $metadata[strtolower((string) $key)] = array_map('strval', (array) $value);
                 }
             }
-            $result = \Cairo\Internal\Go::call('grpc.call', [
+            return [
                 'target' => $this->target,
                 'method' => $method,
                 'protos' => array_values((array) ($this->options['protos'] ?? [])),
                 'descriptors' => (string) ($this->options['descriptors'] ?? ''),
-                'message' => $request === [] ? new \stdClass() : $request,
+                'message' => $request === null ? null : Stream::encode($request),
                 'metadata' => (object) $metadata,
-                'timeout' => (float) ($options['timeout'] ?? $this->options['timeout'] ?? 30),
+                'timeout' => (float) ($options['timeout'] ?? $this->options['timeout'] ?? $timeout),
                 'tls' => [
                     'enabled' => $tls !== false,
                     'cafile' => (string) ($tlsOpts['cafile'] ?? ''),
@@ -1299,11 +1310,187 @@ namespace Cairo\Grpc {
                     'server_name' => (string) ($tlsOpts['server_name'] ?? ''),
                     'verify' => (bool) ($tlsOpts['verify'] ?? true),
                 ],
-            ]);
-            if (!($result['ok'] ?? false)) {
-                throw new Exception((int) ($result['code'] ?? Code::UNKNOWN), (string) ($result['error'] ?? 'call failed'));
+            ];
+        }
+
+        /**
+         * Opens a streaming call (client-streaming or bidirectional). $class
+         * is the generated reply class recv() builds, or null for arrays.
+         *
+         * @param array{metadata?: array<string, string|list<string>>, timeout?: float} $options
+         */
+        public function stream(string $method, array $options = [], ?string $class = null): ClientStream
+        {
+            $r = Stream::call('grpc.stream.open', $this->payload($method, null, $options, 0));
+            return new ClientStream((int) $r['id'], $class);
+        }
+
+        /**
+         * Starts a server-streaming call with its one request; read the
+         * replies with recv() or foreach.
+         *
+         * @param array<string, mixed>|object $request
+         * @param array{metadata?: array<string, string|list<string>>, timeout?: float} $options
+         */
+        public function serverStream(string $method, array|object $request, array $options = [], ?string $class = null): ClientStream
+        {
+            $stream = $this->stream($method, $options, $class);
+            $stream->send($request);
+            $stream->closeSend();
+            return $stream;
+        }
+    }
+
+    /**
+     * The stream of a streaming method being served. recv() returns the
+     * client's next message (a generated object when the service implements
+     * a generated interface, else a protojson array), or null once the client
+     * has finished; send() sends one reply.
+     *
+     * @implements \IteratorAggregate<int, mixed>
+     */
+    final class ServerStream implements \IteratorAggregate
+    {
+        /** @internal */
+        public function __construct(private readonly int $id, private readonly ?string $class = null)
+        {
+        }
+
+        public function recv(): array|object|null
+        {
+            $r = Stream::call('grpc.server.recv', ['id' => $this->id]);
+            if (!empty($r['eof'])) {
+                return null;
             }
-            return new Reply($result['message'], $result['headers'] ?: [], $result['trailers'] ?: []);
+            return Stream::decode($r['message'], $this->class);
+        }
+
+        /** @param array<string, mixed>|object $message */
+        public function send(array|object $message): void
+        {
+            Stream::call('grpc.server.send', ['id' => $this->id, 'message' => Stream::encode($message)]);
+        }
+
+        public function getIterator(): \Generator
+        {
+            while (($m = $this->recv()) !== null) {
+                yield $m;
+            }
+        }
+    }
+
+    /**
+     * A streaming call made with Client::stream() or serverStream(), or a
+     * generated client's streaming method. send() and closeSend() for the
+     * requests, recv() for the replies (null at the end; a failed call
+     * throws Cairo\Grpc\Exception). Iterating reads the replies.
+     *
+     * @implements \IteratorAggregate<int, mixed>
+     */
+    final class ClientStream implements \IteratorAggregate
+    {
+        private bool $closed = false;
+        /** @var array<string, list<string>> */
+        private array $headers = [];
+        /** @var array<string, list<string>> */
+        private array $trailers = [];
+
+        /** @internal */
+        public function __construct(private readonly int $id, private readonly ?string $class = null)
+        {
+        }
+
+        public function __destruct()
+        {
+            $this->close();
+        }
+
+        /** @param array<string, mixed>|object $message */
+        public function send(array|object $message): void
+        {
+            Stream::call('grpc.stream.send', ['id' => $this->id, 'message' => Stream::encode($message)]);
+        }
+
+        /** No more requests: the server sees the end of the client's stream. */
+        public function closeSend(): void
+        {
+            Stream::call('grpc.stream.closeSend', ['id' => $this->id]);
+        }
+
+        public function recv(): array|object|null
+        {
+            $r = Stream::call('grpc.stream.recv', ['id' => $this->id]);
+            if (!empty($r['eof'])) {
+                $this->headers = $r['headers'] ?: [];
+                $this->trailers = $r['trailers'] ?: [];
+                return null;
+            }
+            return Stream::decode($r['message'], $this->class);
+        }
+
+        /** For client-streaming methods: end the requests and read the one reply. */
+        public function closeAndRecv(): array|object
+        {
+            $this->closeSend();
+            $reply = $this->recv() ?? throw new Exception(Code::INTERNAL, 'the server sent no reply');
+            $this->recv();   // the end of the stream, with the trailers
+            return $reply;
+        }
+
+        /** Cancels the call if it is still running. */
+        public function close(): void
+        {
+            if (!$this->closed) {
+                $this->closed = true;
+                \cairo_go_call('grpc.stream.close', json_encode(['id' => $this->id], JSON_THROW_ON_ERROR));
+            }
+        }
+
+        /** @return array<string, list<string>> response headers, once the stream has ended */
+        public function headers(): array
+        {
+            return $this->headers;
+        }
+
+        /** @return array<string, list<string>> trailers, once the stream has ended */
+        public function trailers(): array
+        {
+            return $this->trailers;
+        }
+
+        public function getIterator(): \Generator
+        {
+            while (($m = $this->recv()) !== null) {
+                yield $m;
+            }
+        }
+    }
+
+    /** @internal */
+    final class Stream
+    {
+        /** @param array<string, mixed> $payload */
+        public static function call(string $op, array $payload): array
+        {
+            $r = \Cairo\Internal\Go::call($op, $payload);
+            if (!is_array($r) || !($r['ok'] ?? false)) {
+                throw new Exception((int) ($r['code'] ?? Code::UNKNOWN), (string) ($r['error'] ?? 'stream failed'));
+            }
+            return $r;
+        }
+
+        public static function encode(array|object $message): mixed
+        {
+            if (is_object($message)) {
+                $message = method_exists($message, 'toArray') ? $message->toArray() : get_object_vars($message);
+            }
+            return $message === [] ? new \stdClass() : $message;
+        }
+
+        public static function decode(mixed $message, ?string $class): array|object
+        {
+            $message = is_array($message) ? $message : [];
+            return $class !== null ? $class::fromArray($message) : $message;
         }
     }
 
@@ -1565,6 +1752,27 @@ namespace Cairo\Internal {
             return $this->requestClasses[$key] = $class;
         }
 
+        /**
+         * A streaming method: server streaming handlers get (request, stream,
+         * ctx) and send their replies; client-streaming and bidirectional ones
+         * get (stream, ctx). A client-streaming handler returns its reply.
+         */
+        private function grpcStream(object $service, string $method, array $event, array $message): mixed
+        {
+            // Generated interfaces list each streaming method's message classes.
+            $const = $service::class . '::STREAMING';
+            [$in] = (defined($const) ? (constant($const)[$method] ?? null) : null) ?? [null, null];
+            $stream = new Grpc\ServerStream((int) $event['stream'], $in);
+            if (!empty($event['client_streaming'])) {
+                $result = $service->{$method}($stream, Context::current());
+            } else {
+                $class = $this->requestClass($service, $method) ?? $in;
+                $request = $class !== null ? $class::fromArray($message) : $message;
+                $result = $service->{$method}($request, $stream, Context::current());
+            }
+            return empty($event['server_streaming']) ? $result : null;
+        }
+
         private function grpc(array $event): void
         {
             try {
@@ -1574,9 +1782,13 @@ namespace Cairo\Internal {
                     throw new Grpc\Exception(Grpc\Code::UNIMPLEMENTED, "method $method is not implemented");
                 }
                 $message = $event['message'] ?? [];
-                $class = $this->requestClass($service, $method);
-                $request = $class !== null ? $class::fromArray($message) : $message;
-                $result = $service->{$method}($request, Context::current());
+                if (isset($event['stream'])) {
+                    $result = $this->grpcStream($service, $method, $event, $message);
+                } else {
+                    $class = $this->requestClass($service, $method);
+                    $request = $class !== null ? $class::fromArray($message) : $message;
+                    $result = $service->{$method}($request, Context::current());
+                }
                 if (is_object($result) && method_exists($result, 'toArray')) {
                     $result = $result->toArray();   // a class generated by cairo gen
                 }

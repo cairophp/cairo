@@ -12,6 +12,19 @@ namespace Helloworld;
  */
 interface GreeterInterface
 {
+    /** The message classes of the streaming methods: [request, reply]. */
+    public const STREAMING = [
+        'CountUp' => [\Helloworld\CountRequest::class, \Helloworld\HelloReply::class],
+        'JoinNames' => [\Helloworld\HelloRequest::class, \Helloworld\HelloReply::class],
+        'Chat' => [\Helloworld\HelloRequest::class, \Helloworld\HelloReply::class],
+    ];
+
     public function SayHello(\Helloworld\HelloRequest $request, \Cairo\Context $ctx): \Helloworld\HelloReply;
     public function SlowHello(\Helloworld\SlowHelloRequest $request, \Cairo\Context $ctx): \Helloworld\HelloReply;
+    /** Server streaming: send() each \Helloworld\HelloReply to $stream. */
+    public function CountUp(\Helloworld\CountRequest $request, \Cairo\Grpc\ServerStream $stream, \Cairo\Context $ctx): void;
+    /** Client streaming: recv() \Helloworld\HelloRequest from $stream until null, then return the reply. */
+    public function JoinNames(\Cairo\Grpc\ServerStream $stream, \Cairo\Context $ctx): \Helloworld\HelloReply;
+    /** Bidirectional: recv() \Helloworld\HelloRequest from $stream, send() \Helloworld\HelloReply. */
+    public function Chat(\Cairo\Grpc\ServerStream $stream, \Cairo\Context $ctx): void;
 }

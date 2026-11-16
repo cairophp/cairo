@@ -7,6 +7,7 @@ package sapi
 import "C"
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -27,8 +28,33 @@ import (
 // it. Results are read in full, like libpq's PQexec, and handed to C.
 
 type pgConn struct {
+	mu     sync.Mutex
+	conn   *pgconn.PgConn
+	notify *pgNotifyQueue
+}
+
+// pgNotifyQueue holds LISTEN/NOTIFY messages that arrived during any
+// operation until PDO::pgsqlGetNotify() takes them.
+type pgNotifyQueue struct {
 	mu   sync.Mutex
-	conn *pgconn.PgConn
+	list []*pgconn.Notification
+}
+
+func (q *pgNotifyQueue) push(n *pgconn.Notification) {
+	q.mu.Lock()
+	q.list = append(q.list, n)
+	q.mu.Unlock()
+}
+
+func (q *pgNotifyQueue) pop() *pgconn.Notification {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.list) == 0 {
+		return nil
+	}
+	n := q.list[0]
+	q.list = q.list[1:]
+	return n
 }
 
 var (
@@ -38,15 +64,17 @@ var (
 )
 
 type pgRequest struct {
-	Kind     string    `json:"kind"` // connect, exec, query, close, status
+	Kind     string    `json:"kind"` // connect, exec, query, close, status, notify, copy_in, copy_out
 	DSN      string    `json:"dsn"`
 	User     string    `json:"user"`
 	Password string    `json:"password"`
 	Timeout  float64   `json:"timeout"`
 	Conn     int64     `json:"conn"`
 	SQL      string    `json:"sql"`
-	Params   []*string `json:"params"` // base64, nil for SQL NULL
-	Binary   []int     `json:"binary"` // indexes of LOB parameters: raw bytea
+	Params   []*string `json:"params"`  // base64, nil for SQL NULL
+	Binary   []int     `json:"binary"`  // indexes of LOB parameters: raw bytea
+	Data     string    `json:"data"`    // copy_in: base64 COPY text
+	WaitMS   int64     `json:"wait_ms"` // notify: how long to wait for one
 }
 
 // pgDo runs one request. The response always has "ok"; failures carry
@@ -80,7 +108,25 @@ func pgDo(ctx context.Context, req pgRequest) map[string]any {
 	}
 	switch req.Kind {
 	case "status":
-		return map[string]any{"ok": true, "tx": string(rune(pc.conn.TxStatus())), "server_version": pc.conn.ParameterStatus("server_version")}
+		return map[string]any{"ok": true, "tx": string(rune(pc.conn.TxStatus())), "server_version": pc.conn.ParameterStatus("server_version"), "pid": pc.conn.PID()}
+	case "notify":
+		return pgNotify(ctx, pc, req.WaitMS)
+	case "copy_in":
+		data, err := base64.StdEncoding.DecodeString(req.Data)
+		if err != nil {
+			return pgFail("HY000", "bad COPY data encoding")
+		}
+		tag, err := pc.conn.CopyFrom(ctx, bytes.NewReader(data), req.SQL)
+		if err != nil {
+			return pgError(err)
+		}
+		return map[string]any{"ok": true, "affected": tag.RowsAffected()}
+	case "copy_out":
+		var buf bytes.Buffer
+		if _, err := pc.conn.CopyTo(ctx, &buf, req.SQL); err != nil {
+			return pgError(err)
+		}
+		return map[string]any{"ok": true, "data": base64.StdEncoding.EncodeToString(buf.Bytes())}
 	case "exec":
 		// PDO::exec(): the simple protocol, so several statements may be sent.
 		results, err := pc.conn.Exec(ctx, req.SQL).ReadAll()
@@ -148,6 +194,8 @@ func pgConnect(ctx context.Context, req pgRequest) map[string]any {
 	if req.Timeout > 0 {
 		cfg.ConnectTimeout = time.Duration(req.Timeout * float64(time.Second))
 	}
+	queue := &pgNotifyQueue{}
+	cfg.OnNotification = func(_ *pgconn.PgConn, n *pgconn.Notification) { queue.push(n) }
 	conn, err := pgconn.ConnectConfig(ctx, cfg)
 	if err != nil {
 		var pe *pgconn.PgError
@@ -157,8 +205,31 @@ func pgConnect(ctx context.Context, req pgRequest) map[string]any {
 		return pgFail("08006", err.Error())
 	}
 	id := pgNextID.Add(1)
-	pgConns.Store(id, &pgConn{conn: conn})
+	pgConns.Store(id, &pgConn{conn: conn, notify: queue})
 	return map[string]any{"ok": true, "conn": id}
+}
+
+// pgNotify returns the oldest queued notification, waiting up to waitMS
+// milliseconds for one to arrive ("notification": null when none did). A
+// wait that runs out leaves the connection usable.
+func pgNotify(ctx context.Context, pc *pgConn, waitMS int64) map[string]any {
+	n := pc.notify.pop()
+	if n == nil {
+		if waitMS < 1 {
+			waitMS = 1 // still read what the server already sent
+		}
+		wctx, cancel := context.WithTimeout(ctx, time.Duration(waitMS)*time.Millisecond)
+		err := pc.conn.WaitForNotification(wctx)
+		cancel()
+		if err != nil && (ctx.Err() != nil || !errors.Is(err, context.DeadlineExceeded)) {
+			return pgError(err)
+		}
+		n = pc.notify.pop()
+	}
+	if n == nil {
+		return map[string]any{"ok": true, "notification": nil}
+	}
+	return map[string]any{"ok": true, "notification": map[string]any{"channel": n.Channel, "pid": n.PID, "payload": n.Payload}}
 }
 
 func pgFail(state, msg string) map[string]any {

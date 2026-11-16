@@ -1,0 +1,15 @@
+{
+    "name": "cairo/example-frameworks",
+    "description": "PSR-15 handlers and Symfony kernels running on Cairo",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.1",
+        "nyholm/psr7": "^1.8",
+        "psr/http-server-handler": "^1.0",
+        "symfony/http-foundation": "^6.4 || ^7.0"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}

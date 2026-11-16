@@ -383,8 +383,8 @@ static void cairo_tls_options(php_stream *stream, int kind, zval *out)
 		zval *v = ctx ? php_stream_context_get_option(ctx, "ssl", bools[i]) : NULL;
 		add_assoc_bool(out, bools[i], v ? zend_is_true(v) : defaults[i]);
 	}
-	const char *strs[] = {"peer_name", "cafile"};
-	for (int i = 0; i < 2; i++) {
+	const char *strs[] = {"peer_name", "cafile", "capath", "local_cert", "local_pk", "passphrase", "SNI_server_name"};
+	for (int i = 0; i < 7; i++) {
 		zval *v = ctx ? php_stream_context_get_option(ctx, "ssl", strs[i]) : NULL;
 		if (v != NULL && Z_TYPE_P(v) == IS_STRING) {
 			add_assoc_str(out, strs[i], zend_string_copy(Z_STR_P(v)));

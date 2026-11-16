@@ -2653,7 +2653,7 @@ namespace Cairo\Sql {
         }
     }
 
-    /** A binary parameter (bytea). Values read back from bytea columns are plain strings. */
+    /** A binary parameter (bytea, BLOB). Values read back from binary columns are plain strings. */
     final class Bytes
     {
         public function __construct(public readonly string $bytes)
@@ -2669,7 +2669,8 @@ namespace Cairo\Sql {
 
         /**
          * Run a query and return every row as column => value. Parameters
-         * are PostgreSQL's $1, $2, ... Only the calling fiber waits.
+         * are $1, $2, ... for PostgreSQL and ? for MySQL. Only the calling
+         * fiber waits.
          *
          * @param list<mixed> $params
          * @return list<array<string, mixed>>
@@ -2724,7 +2725,7 @@ namespace Cairo\Sql {
             foreach (array_values($params) as $i => $p) {
                 $args[] = match (true) {
                     $p instanceof Bytes => ['$bytes' => base64_encode($p->bytes)],
-                    $p instanceof \DateTimeInterface => $p->format('Y-m-d\TH:i:s.uP'),
+                    $p instanceof \DateTimeInterface => ['$time' => $p->format('Y-m-d\TH:i:s.uP')],
                     $p instanceof \BackedEnum => $p->value,
                     $p instanceof \Stringable => (string) $p,
                     is_array($p) || is_object($p) => throw new \InvalidArgumentException(sprintf('parameter %d: %s is not a SQL value; json_encode() it', $i + 1, get_debug_type($p))),
@@ -2741,17 +2742,20 @@ namespace Cairo\Sql {
     }
 
     /**
-     * A PostgreSQL connection pool in Go (database/sql with pgx), shared by
-     * every PHP thread: Db::open() with the same DSN and options returns the
-     * same pool on each thread, so max_open bounds the connections of the
-     * whole server.
+     * A PostgreSQL or MySQL connection pool in Go (database/sql with pgx or
+     * go-sql-driver/mysql), shared by every PHP thread: Db::open() with the
+     * same DSN and options returns the same pool on each thread, so max_open
+     * bounds the connections of the whole server.
      *
      *     $db = Db::open('postgres://app:secret@127.0.0.1/app', ['max_open' => 20]);
      *     $users = $db->query('SELECT id, name FROM users WHERE team = $1', [$team]);
      *
-     * Integers, floats, booleans, strings and nulls come back as such; bytea
-     * as a string, timestamps as RFC 3339 strings, numeric, json and the rest
-     * as PostgreSQL's text form.
+     *     $db = Db::open('mysql://app:secret@127.0.0.1:3306/app');
+     *     $users = $db->query('SELECT id, name FROM users WHERE team = ?', [$team]);
+     *
+     * Integers, floats, booleans, strings and nulls come back as such; binary
+     * columns as strings, timestamps as RFC 3339 strings (MySQL DATE as
+     * Y-m-d), numeric/DECIMAL, json and the rest in the database's text form.
      */
     final class Db extends Queryable
     {
@@ -2760,6 +2764,10 @@ namespace Cairo\Sql {
         }
 
         /**
+         * $dsn is a postgres:// URL, a PostgreSQL key=value DSN, or
+         * mysql://user:pass@host:port/db (?socket=/path for a Unix socket,
+         * plus the go-sql-driver/mysql parameters such as tls or timeout).
+         *
          * Options: max_open (connections, 0 for no limit; default 10),
          * max_idle (default 2), max_lifetime and max_idle_time (seconds).
          * Connecting is lazy: a bad DSN shows on the first query.

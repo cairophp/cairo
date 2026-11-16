@@ -75,7 +75,7 @@ func HTTP(h http.Handler, decl []spec.Middleware, log *slog.Logger) (http.Handle
 			return nil, fmt.Errorf("middleware %s: %w", m.Name, err)
 		}
 	}
-	return h, nil
+	return recoverHTTP(h, log), nil
 }
 
 // timeoutOf reads the timeout middleware's "seconds".

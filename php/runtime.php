@@ -260,6 +260,16 @@ namespace Cairo {
             return $root->answered;
         }
 
+        /** @internal the request's own context, which every other one derives from */
+        public function root(): self
+        {
+            $root = $this;
+            while ($root->parent !== null) {
+                $root = $root->parent;
+            }
+            return $root;
+        }
+
         /** @internal the context of a child fiber served by goroutine $fiberId */
         public function child(int $fiberId): self
         {
@@ -889,29 +899,7 @@ namespace Cairo {
      */
     function async(callable $fn): Task
     {
-        $task = new Task();
-        $parent = Context::current();
-        // Go starts the goroutine that will serve this fiber.
-        $goroutine = \cairo_fiber_open($parent->fiberId);
-        $context = $parent->child($goroutine);
-        $fiber = new \Fiber(static function () use ($fn, $task, $goroutine, $context): void {
-            try {
-                $task->result = \cairo_guard($fn);
-            } catch (\Throwable $e) {
-                $task->error = $e;
-            } finally {
-                $context->finish();
-                \cairo_fiber_close($goroutine);
-            }
-            $task->done = true;
-            foreach ($task->waiters as $waiter) {
-                Scheduler::instance()->ready($waiter);
-            }
-            $task->waiters = [];
-        });
-        Context::bind($fiber, $context);
-        $fiber->start();
-        return $task;
+        return Internal\spawnTask(Context::current(), $fn);
     }
 
     /** Wait for a task; rethrows its exception. */
@@ -2454,6 +2442,8 @@ namespace Cairo\Internal {
         /** @var array<int, \Fiber> I/O operation id => waiting fiber */
         private array $io = [];
         private \SplQueue $ready;
+        /** @var \SplQueue<\Closure> work to start from this loop, outside any fiber */
+        private \SplQueue $later;
         /** @var array<int, mixed> handler id => resolved handler */
         private array $resolved = [];
 
@@ -2470,6 +2460,7 @@ namespace Cairo\Internal {
         public function __construct(private readonly App $app)
         {
             $this->ready = new \SplQueue();
+            $this->later = new \SplQueue();
             $this->pending = new \SplQueue();
             self::$instance = $this;
         }
@@ -2533,12 +2524,26 @@ namespace Cairo\Internal {
             $this->ready->enqueue($fiber);
         }
 
+        /**
+         * Run $fn from the scheduler's loop, once the running fiber yields.
+         * Safe where switching fibers is not, such as in a destructor run by
+         * the garbage collector.
+         */
+        public function later(\Closure $fn): void
+        {
+            $this->later->enqueue($fn);
+        }
+
         public function run(): void
         {
             while (true) {
                 do {
-                    while (!$this->ready->isEmpty()) {
-                        $this->ready->dequeue()->resume();
+                    while (!$this->ready->isEmpty() || !$this->later->isEmpty()) {
+                        if (!$this->ready->isEmpty()) {
+                            $this->ready->dequeue()->resume();
+                        } else {
+                            ($this->later->dequeue())();
+                        }
                     }
                     // Isolated mode: start the next request once the thread is free.
                     if (!$this->busy && !$this->pending->isEmpty()) {
@@ -3170,6 +3175,33 @@ namespace Cairo\Internal {
      * request's deadline passed (see cairo_on_interrupt in cairo.c): whether
      * the fiber's code, in $file, is to be stopped.
      */
+/** @internal async(), with the parent context given: start $fn in a new fiber with its own goroutine. */
+    function spawnTask(Context $parent, callable $fn): \Cairo\Task
+    {
+        $task = new \Cairo\Task();
+        // Go starts the goroutine that will serve this fiber.
+        $goroutine = \cairo_fiber_open($parent->fiberId);
+        $context = $parent->child($goroutine);
+        $fiber = new \Fiber(static function () use ($fn, $task, $goroutine, $context): void {
+            try {
+                $task->result = \cairo_guard($fn);
+            } catch (\Throwable $e) {
+                $task->error = $e;
+            } finally {
+                $context->finish();
+                \cairo_fiber_close($goroutine);
+            }
+            $task->done = true;
+            foreach ($task->waiters as $waiter) {
+                Scheduler::instance()->ready($waiter);
+            }
+            $task->waiters = [];
+        });
+        Context::bind($fiber, $context);
+        $fiber->start();
+        return $task;
+    }
+
     function interrupt(?string $file): bool
     {
         if ($file === __FILE__) {
@@ -3182,6 +3214,16 @@ namespace Cairo\Internal {
     function main(): void
     {
         $info = json_decode(\cairo_info(), true, 512, JSON_THROW_ON_ERROR);
+        // Cairo\Revolt\Driver implements Revolt's interface, so it can only be
+        // declared once revolt/event-loop is loadable: on first use.
+        spl_autoload_register(static function (string $class): void {
+            if (str_starts_with($class, 'Cairo\\Revolt\\')) {
+                if (!interface_exists(\Revolt\EventLoop\Driver::class)) {
+                    throw new \LogicException("$class needs revolt/event-loop: composer require revolt/event-loop, and load vendor/autoload.php first");
+                }
+                require_once __DIR__ . '/revolt.php';
+            }
+        });
         $app = (static fn (string $file): mixed => require $file)($info['server']);
         if (!$app instanceof App) {
             throw new \RuntimeException($info['server'] . ' must return a Cairo\App');

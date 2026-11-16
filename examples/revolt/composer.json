@@ -1,0 +1,14 @@
+{
+    "name": "cairo/example-revolt",
+    "description": "Amp and Revolt on Cairo's scheduler",
+    "type": "project",
+    "require": {
+        "php": ">=8.1",
+        "amphp/amp": "^3.0",
+        "amphp/http-client": "^5.0",
+        "revolt/event-loop": "^1.0"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}

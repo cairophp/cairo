@@ -140,6 +140,25 @@ PHP_FUNCTION(cairo_fiber_op)
 	RETURN_LONG((zend_long)goFiberOp((long long)fiber, json, (int)len));
 }
 
+// cairo_go_call(string $op, string $json): string. Runs a Go operation on
+// this thread, outside a fiber; returns {"result": ...} or {"error": ...}.
+ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_go_call, 0, 0, 2)
+	ZEND_ARG_INFO(0, op)
+	ZEND_ARG_INFO(0, json)
+ZEND_END_ARG_INFO()
+
+PHP_FUNCTION(cairo_go_call)
+{
+	zend_string *name, *json;
+	ZEND_PARSE_PARAMETERS_START(2, 2)
+		Z_PARAM_STR(name)
+		Z_PARAM_STR(json)
+	ZEND_PARSE_PARAMETERS_END();
+	char *res = goCall(ZSTR_VAL(name), ZSTR_VAL(json), (int)ZSTR_LEN(json));
+	RETVAL_STRING(res);
+	free(res);
+}
+
 static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_info, arginfo_cairo_none)
 	PHP_FE(cairo_spec, arginfo_cairo_spec)
@@ -148,6 +167,7 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_fiber_open, arginfo_cairo_fiber_open)
 	PHP_FE(cairo_fiber_close, arginfo_cairo_fiber_close)
 	PHP_FE(cairo_fiber_op, arginfo_cairo_fiber_op)
+	PHP_FE(cairo_go_call, arginfo_cairo_go_call)
 	PHP_FE_END
 };
 

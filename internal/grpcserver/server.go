@@ -193,6 +193,10 @@ func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 	}
 	raw, err := s.php.Dispatch(ctx, ev)
 	if err != nil {
+		if ctx.Err() == nil {
+			// The PHP thread died with the call (a fatal error).
+			return status.Error(codes.Internal, err.Error())
+		}
 		return status.FromContextError(err).Err()
 	}
 	var res phpResult

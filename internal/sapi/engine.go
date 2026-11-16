@@ -51,9 +51,13 @@ type Engine struct {
 	log         *slog.Logger
 	phpIni      string
 
-	threads []*thread // all PHP threads; index = thread id
-	workers []*thread // run requests as fibers
-	offload []*thread // run Cairo\offload() jobs, one at a time each
+	table   [maxThreads]atomic.Pointer[thread] // live PHP threads by thread id
+	workers []atomic.Pointer[thread]           // run requests as fibers; a slot's thread is replaced on recycle
+	offload []atomic.Pointer[thread]           // run Cairo\offload() jobs, one at a time each
+
+	tidMu    sync.Mutex
+	freeTids []int // thread ids of recycled threads, for reuse
+	nextTid  int
 
 	spec    *spec.Spec
 	rawSpec []byte
@@ -63,6 +67,7 @@ type Engine struct {
 	fibers sync.Map // fiber id -> *fiber (the goroutine that serves a PHP fiber)
 
 	bootDone   chan error
+	lifeMu     sync.Mutex // orders thread starts against Shutdown
 	shutdownCh chan struct{}
 	stopped    chan struct{}
 	threadsWG  sync.WaitGroup
@@ -79,14 +84,32 @@ const (
 type thread struct {
 	id       int
 	pool     pool
-	inbox    chan []byte
+	slot     int // index in its pool
+	inbox    chan event
 	inflight atomic.Int64
+
+	// Supervision (see supervise.go).
+	sendMu   sync.RWMutex // held for reading while a request is queued; retire takes it to set retired
+	retired  bool         // no new requests may be queued here
+	retiring atomic.Bool  // a replacement was asked for; the thread exits once idle
+	served   atomic.Int64 // requests and jobs the thread has taken
+	crashes  int          // crashes in a row without taking work in between
+	bootMark int64        // served when the thread last started
+}
+
+// event is one message for a PHP thread. call is set for a request or an
+// offload job, so Go knows when PHP has taken it.
+type event struct {
+	data []byte
+	call *call
 }
 
 // call is one unit of work sent to a PHP thread, waiting for cairo_respond().
+// resp receives nil when the thread died before answering.
 type call struct {
-	thread *thread
-	resp   chan []byte
+	thread  *thread
+	resp    chan []byte
+	started atomic.Bool // PHP took it from the inbox
 }
 
 // fiber is the goroutine side of one PHP fiber.
@@ -176,17 +199,25 @@ func Start(opts Options) (*Engine, error) {
 
 	nw := pick(opts.Threads, e.spec.Threads)
 	no := pick(opts.OffloadThreads, e.spec.OffloadThreads)
-	for i := 0; i < nw+no; i++ {
-		t := &thread{id: i, pool: poolWorker, inbox: make(chan []byte, inboxSize)}
-		if i >= nw {
-			t.pool = poolOffload
-			e.offload = append(e.offload, t)
-		} else {
-			e.workers = append(e.workers, t)
-		}
-		e.threads = append(e.threads, t)
+	if nw+no > maxThreads/2 {
+		return nil, fmt.Errorf("too many PHP threads: %d (at most %d)", nw+no, maxThreads/2)
 	}
-	for _, t := range e.threads {
+	e.workers = make([]atomic.Pointer[thread], nw)
+	e.offload = make([]atomic.Pointer[thread], no)
+	var all []*thread
+	for i := 0; i < nw+no; i++ {
+		tid, _ := e.allocTid()
+		t := &thread{id: tid, pool: poolWorker, slot: i, inbox: make(chan event, inboxSize)}
+		if i >= nw {
+			t.pool, t.slot = poolOffload, i-nw
+			e.offload[t.slot].Store(t)
+		} else {
+			e.workers[t.slot].Store(t)
+		}
+		e.table[tid].Store(t)
+		all = append(all, t)
+	}
+	for _, t := range all {
 		e.threadsWG.Add(1)
 		if err := e.startThread(t); err != nil {
 			e.threadsWG.Done()
@@ -210,7 +241,7 @@ func pick(override, declared int) int {
 // Spec is what server.php declared.
 func (e *Engine) Spec() *spec.Spec { return e.spec }
 
-// Errors reports a PHP thread that stopped unexpectedly.
+// Errors reports a PHP thread that could not be restarted (see supervise.go).
 func (e *Engine) Errors() <-chan error { return e.threadErrs }
 
 func (e *Engine) bootThread() {
@@ -251,15 +282,20 @@ func (e *Engine) startThread(t *thread) error {
 // Shutdown stops the PHP threads after the work they hold, then shuts PHP
 // down. Callers should stop accepting requests first.
 func (e *Engine) Shutdown(ctx context.Context) error {
+	e.lifeMu.Lock()
 	select {
 	case <-e.shutdownCh:
+		e.lifeMu.Unlock()
 		return nil
 	default:
 	}
 	close(e.shutdownCh)
+	e.lifeMu.Unlock()
 	stop, _ := json.Marshal(map[string]string{"type": "shutdown"})
-	for _, t := range e.threads {
-		t.inbox <- stop
+	for i := range e.table {
+		if t := e.table[i].Load(); t != nil {
+			t.inbox <- event{data: stop}
+		}
 	}
 	select {
 	case <-e.stopped:
@@ -278,7 +314,7 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 // the context's error) until PHP finishes.
 func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error) {
 	ctx, cancel := context.WithCancel(ctx)
-	t := leastBusy(e.workers)
+	t := acquire(e.workers)
 	c := &call{thread: t, resp: make(chan []byte, 1)}
 	f := &fiber{ctx: ctx, cancel: cancel, thread: t, ops: make(chan op, 1)}
 	id := e.nextID.Add(1)
@@ -293,12 +329,15 @@ func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error
 	}
 	b, err := json.Marshal(ev)
 	if err != nil {
+		t.sendMu.RUnlock()
 		e.forget(id, c, f)
 		return nil, err
 	}
 	select {
-	case t.inbox <- b:
+	case t.inbox <- event{data: b, call: c}:
+		t.sendMu.RUnlock()
 	case <-ctx.Done():
+		t.sendMu.RUnlock()
 		e.forget(id, c, f)
 		return nil, ctx.Err()
 	}
@@ -307,6 +346,9 @@ func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error
 		case r := <-c.resp:
 			e.fibers.Delete(id)
 			cancel()
+			if r == nil {
+				return nil, ErrThreadStopped
+			}
 			return r, nil
 		case o := <-f.ops:
 			e.runOp(f, o)
@@ -518,21 +560,27 @@ func (e *Engine) runOffload(ctx context.Context, payload string) (string, error)
 	if len(e.offload) == 0 {
 		return "", errors.New("no offload threads")
 	}
-	t := leastBusy(e.offload)
+	t := acquire(e.offload)
 	c := &call{thread: t, resp: make(chan []byte, 1)}
 	id := e.nextID.Add(1)
 	e.calls.Store(id, c)
 	t.inflight.Add(1)
 	b, _ := json.Marshal(map[string]any{"type": "offload", "id": id, "payload": payload})
 	select {
-	case t.inbox <- b:
+	case t.inbox <- event{data: b, call: c}:
+		t.sendMu.RUnlock()
 	case <-ctx.Done():
-		e.calls.Delete(id)
-		t.inflight.Add(-1)
+		t.sendMu.RUnlock()
+		if _, ok := e.calls.LoadAndDelete(id); ok {
+			t.inflight.Add(-1)
+		}
 		return "", ctx.Err()
 	}
 	select {
 	case r := <-c.resp:
+		if r == nil {
+			return "", ErrThreadStopped
+		}
 		var out struct {
 			Payload string `json:"payload"`
 		}
@@ -547,15 +595,30 @@ func (e *Engine) runOffload(ctx context.Context, payload string) (string, error)
 }
 
 // leastBusy returns the thread with the fewest calls in flight.
-func leastBusy(ts []*thread) *thread {
-	best := ts[0]
+func leastBusy(ts []atomic.Pointer[thread]) *thread {
+	best := ts[0].Load()
 	min := best.inflight.Load()
-	for _, t := range ts[1:] {
+	for i := 1; i < len(ts); i++ {
+		t := ts[i].Load()
 		if n := t.inflight.Load(); n < min {
 			best, min = t, n
 		}
 	}
 	return best
+}
+
+// acquire picks the least busy thread that still takes work and returns it
+// with sendMu held for reading: the caller queues its event, then unlocks.
+func acquire(ts []atomic.Pointer[thread]) *thread {
+	for {
+		t := leastBusy(ts)
+		t.sendMu.RLock()
+		if !t.retired {
+			return t
+		}
+		t.sendMu.RUnlock()
+		runtime.Gosched() // its replacement is being put in place
+	}
 }
 
 func (e *Engine) post(t *thread, ev any) {
@@ -564,7 +627,7 @@ func (e *Engine) post(t *thread, ev any) {
 		e.log.Error("encode event", "err", err)
 		return
 	}
-	t.inbox <- b
+	t.inbox <- event{data: b}
 }
 
 func ctxError(ctx context.Context) string {
@@ -592,16 +655,17 @@ func writeRuntime() (string, error) {
 func goThreadDone(tid C.int, status C.int) {
 	e := engine
 	defer e.threadsWG.Done()
-	select {
-	case <-e.shutdownCh:
-		return
-	default:
-	}
-	err := fmt.Errorf("php thread %d stopped unexpectedly (exit status %d)", int(tid), int(status))
-	select {
-	case e.threadErrs <- err:
-	default:
-	}
+	e.threadExited(e.table[int(tid)].Load(), int(status))
+}
+
+//export goThreadRetire
+func goThreadRetire(tid C.int, reason *C.char, n C.int) {
+	e := engine
+	t := e.table[int(tid)].Load()
+	why := C.GoStringN(reason, n)
+	// Not on this thread: putting the replacement in place can wait for
+	// senders that wait on this thread's inbox.
+	go e.retire(t, why)
 }
 
 // goPHPLog receives PHP's log lines (errors, warnings, error_log()) from the
@@ -631,7 +695,7 @@ func goCairoInfo(tid C.int) *C.char {
 	mode := "declare"
 	if tid >= 0 {
 		mode = "serve"
-		if e.threads[int(tid)].pool == poolOffload {
+		if e.table[int(tid)].Load().pool == poolOffload {
 			mode = "offload"
 		}
 	}
@@ -731,8 +795,13 @@ func goStopTLS(fd C.int, timeoutSec C.double, errOut **C.char) C.int {
 
 //export goNextEvent
 func goNextEvent(tid C.int) *C.char {
-	b := <-engine.threads[int(tid)].inbox
-	return C.CString(string(b))
+	t := engine.table[int(tid)].Load()
+	ev := <-t.inbox
+	if ev.call != nil {
+		ev.call.started.Store(true)
+		t.served.Add(1)
+	}
+	return C.CString(string(ev.data))
 }
 
 //export goRespond
@@ -759,7 +828,7 @@ func goFiberOpen(tid C.int, parent C.longlong) C.longlong {
 	}
 	ctx, cancel := context.WithCancel(pctx)
 	f := &fiber{
-		id: e.nextID.Add(1), ctx: ctx, cancel: cancel, thread: e.threads[int(tid)],
+		id: e.nextID.Add(1), ctx: ctx, cancel: cancel, thread: e.table[int(tid)].Load(),
 		ops: make(chan op, 1), closed: make(chan struct{}),
 	}
 	e.fibers.Store(f.id, f)

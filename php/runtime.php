@@ -21,6 +21,8 @@ namespace Cairo {
         private array $servers = [];
         private int $threads = 0;
         private int $offloadThreads = 0;
+        private int $maxRequests = 0;
+        private int $maxMemory = 0;
         private int $hooks = Hook::ALL;
         private string $concurrency = 'fibers';
         /** @var list<object|callable> */
@@ -73,6 +75,54 @@ namespace Cairo {
         public function isolated(): bool
         {
             return $this->concurrency === 'isolated';
+        }
+
+        /**
+         * Replace a request thread with a fresh one after it has served $n
+         * requests (0, the default, never). The old thread finishes the
+         * requests it holds first, so none fail. Use it to bound slow leaks.
+         */
+        public function maxRequests(int $n): static
+        {
+            if ($n < 0) {
+                throw new \InvalidArgumentException('maxRequests must be 0 or more');
+            }
+            $this->maxRequests = $n;
+            return $this;
+        }
+
+        /**
+         * Replace a request thread with a fresh one once, after a request, its
+         * PHP memory use (memory_get_usage()) is at least $limit: bytes, or a
+         * string such as '256M' (0, the default, never).
+         */
+        public function maxMemory(int|string $limit): static
+        {
+            $bytes = is_int($limit) ? $limit : self::bytes($limit);
+            if ($bytes < 0) {
+                throw new \InvalidArgumentException('maxMemory must be 0 or more');
+            }
+            $this->maxMemory = $bytes;
+            return $this;
+        }
+
+        private static function bytes(string $size): int
+        {
+            if (!preg_match('/^\s*(\d+)\s*([KMG]?)B?\s*$/i', $size, $m)) {
+                throw new \InvalidArgumentException("invalid memory size '$size'; use bytes or a number with K, M or G");
+            }
+            return (int) $m[1] * match (strtoupper($m[2])) {
+                'K' => 1024,
+                'M' => 1024 ** 2,
+                'G' => 1024 ** 3,
+                default => 1,
+            };
+        }
+
+        /** @return array{int, int} maxRequests and maxMemory in bytes; 0 means no limit */
+        public function recycleLimits(): array
+        {
+            return [$this->maxRequests, $this->maxMemory];
         }
 
         /**
@@ -1880,6 +1930,12 @@ namespace Cairo\Internal {
         private \SplQueue $pending;
         private bool $busy = false;
 
+        /** Thread recycling (App::maxRequests(), App::maxMemory()). */
+        private int $active = 0;
+        private int $served = 0;
+        private bool $retireAsked = false;
+        private bool $retiring = false;
+
         public function __construct(private readonly App $app)
         {
             $this->ready = new \SplQueue();
@@ -1941,6 +1997,9 @@ namespace Cairo\Internal {
                     }
                     break;
                 } while (true);
+                if ($this->retiring && $this->active === 0 && $this->pending->isEmpty()) {
+                    return;   // recycled: Go already runs a replacement thread
+                }
                 $event = json_decode(\cairo_next_event(), true, 512, JSON_THROW_ON_ERROR);
                 switch ($event['type']) {
                     case 'io':
@@ -1956,6 +2015,10 @@ namespace Cairo\Internal {
                             $this->start($event);
                         }
                         break;
+                    case 'retire':
+                        // Go queues no more requests here; finish the ones held.
+                        $this->retiring = true;
+                        break;
                     case 'shutdown':
                         return;
                 }
@@ -1965,6 +2028,24 @@ namespace Cairo\Internal {
         public function app(): App
         {
             return $this->app;
+        }
+
+        /** After a request: ask Go for a fresh thread once a recycle limit is reached. */
+        private function checkRecycle(): void
+        {
+            if ($this->retireAsked) {
+                return;
+            }
+            [$maxRequests, $maxMemory] = $this->app->recycleLimits();
+            $reason = match (true) {
+                $maxRequests > 0 && $this->served >= $maxRequests => 'max_requests',
+                $maxMemory > 0 && memory_get_usage() >= $maxMemory => 'max_memory',
+                default => null,
+            };
+            if ($reason !== null) {
+                $this->retireAsked = true;
+                \cairo_retire($reason);
+            }
         }
 
         private function start(array $event): void
@@ -1994,11 +2075,15 @@ namespace Cairo\Internal {
         {
             $id = (int) $event['id'];   // the request's root fiber is served by the request goroutine
             $context = new Context($id, $id, isset($event['deadline']) ? (float) $event['deadline'] : null);
-            $fiber = new \Fiber(static function () use ($fn, $context): void {
+            $this->active++;
+            $fiber = new \Fiber(function () use ($fn, $context): void {
                 try {
                     $fn();
                 } finally {
                     $context->finish();
+                    $this->active--;
+                    $this->served++;
+                    $this->checkRecycle();
                 }
             });
             Context::bind($fiber, $context);

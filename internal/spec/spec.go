@@ -47,8 +47,8 @@ type StaticPath struct {
 
 // GRPCServer is one `$app->grpc(':9000')` declaration.
 type GRPCServer struct {
-	Listen      string    `json:"listen"`
-	Protos      []string  `json:"protos"`
+	Listen      string       `json:"listen"`
+	Protos      []string     `json:"protos"`
 	MaxDuration float64      `json:"max_duration"`
 	Services    []Service    `json:"services"`
 	Middleware  []Middleware `json:"middleware"`

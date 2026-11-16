@@ -124,6 +124,17 @@ PHP_FUNCTION(cairo_retire)
 	goThreadRetire(cairo_tid, reason, (int)len);
 }
 
+// cairo_wake(int $op): void. Wakes a fiber parked by a "park" operation
+// (Cairo\Channel, select()); harmless if it already woke.
+PHP_FUNCTION(cairo_wake)
+{
+	zend_long op;
+	ZEND_PARSE_PARAMETERS_START(1, 1)
+		Z_PARAM_LONG(op)
+	ZEND_PARSE_PARAMETERS_END();
+	goFiberWake((long long)op);
+}
+
 // cairo_fiber_open(int $parentFiber): int. Gives a new fiber its own
 // goroutine, with a child of the parent fiber's context.
 PHP_FUNCTION(cairo_fiber_open)
@@ -184,6 +195,10 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_retire, 0, 0, 1)
 	ZEND_ARG_INFO(0, reason)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_wake, 0, 0, 1)
+	ZEND_ARG_INFO(0, op)
+ZEND_END_ARG_INFO()
+
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_guard, 0, 0, 1)
 	ZEND_ARG_INFO(0, fn)
 ZEND_END_ARG_INFO()
@@ -193,6 +208,7 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_spec, arginfo_cairo_spec)
 	PHP_FE(cairo_next_event, arginfo_cairo_none)
 	PHP_FE(cairo_respond, arginfo_cairo_respond)
+	PHP_FE(cairo_wake, arginfo_cairo_wake)
 	PHP_FE(cairo_retire, arginfo_cairo_retire)
 	PHP_FE(cairo_fiber_open, arginfo_cairo_fiber_open)
 	PHP_FE(cairo_fiber_close, arginfo_cairo_fiber_close)

@@ -22,6 +22,9 @@ namespace Cairo {
         private int $threads = 0;
         private int $offloadThreads = 0;
         private int $hooks = Hook::ALL;
+        private string $concurrency = 'fibers';
+        /** @var list<object|callable> */
+        private array $resets = [];
         /** @var list<mixed> handler id => handler */
         private array $handlers = [];
 
@@ -48,6 +51,57 @@ namespace Cairo {
                 return $threads;
             }
             throw new \InvalidArgumentException("threads must be 'auto' or a positive integer");
+        }
+
+        /**
+         * 'fibers' (the default): each PHP thread runs many requests at once.
+         * 'isolated': each thread runs one request at a time, for apps that keep
+         * request state in globals or singletons. Isolated requests also get
+         * $_GET, $_POST, $_COOKIE, $_SERVER and $_REQUEST, and may echo their
+         * output and call header() instead of returning a Response.
+         */
+        public function concurrency(string $mode): static
+        {
+            if ($mode !== 'fibers' && $mode !== 'isolated') {
+                throw new \InvalidArgumentException("concurrency must be 'fibers' or 'isolated'");
+            }
+            $this->concurrency = $mode;
+            return $this;
+        }
+
+        /** @internal */
+        public function isolated(): bool
+        {
+            return $this->concurrency === 'isolated';
+        }
+
+        /**
+         * Things to reset after every request in isolated mode: objects with a
+         * reset() method (Cairo\Resettable, Symfony's ResetInterface) or
+         * callables. Use it for services that keep per-request state.
+         */
+        public function resetAfterRequest(object|callable ...$things): static
+        {
+            foreach ($things as $thing) {
+                $this->resets[] = $thing;
+            }
+            return $this;
+        }
+
+        /** @internal */
+        public function runResets(): void
+        {
+            foreach ($this->resets as $thing) {
+                try {
+                    if (is_object($thing) && !$thing instanceof \Closure && method_exists($thing, 'reset')) {
+                        $thing->reset();
+                    } else {
+                        $thing();
+                    }
+                } catch (\Throwable $e) {
+                    error_log('cairo: reset after request failed: ' . $e);
+                }
+            }
         }
 
         /**
@@ -252,6 +306,12 @@ namespace Cairo {
                 throw $err;
             }
         }
+    }
+
+    /** A service that keeps per-request state; see App::resetAfterRequest(). */
+    interface Resettable
+    {
+        public function reset(): void;
     }
 
     /** A unit of concurrent work started with async(). */
@@ -924,9 +984,14 @@ namespace Cairo\Internal {
         /** @var array<int, mixed> handler id => resolved handler */
         private array $resolved = [];
 
+        /** Isolated mode: requests waiting for the one in progress to finish. */
+        private \SplQueue $pending;
+        private bool $busy = false;
+
         public function __construct(private readonly App $app)
         {
             $this->ready = new \SplQueue();
+            $this->pending = new \SplQueue();
             self::$instance = $this;
         }
 
@@ -973,9 +1038,17 @@ namespace Cairo\Internal {
         public function run(): void
         {
             while (true) {
-                while (!$this->ready->isEmpty()) {
-                    $this->ready->dequeue()->resume();
-                }
+                do {
+                    while (!$this->ready->isEmpty()) {
+                        $this->ready->dequeue()->resume();
+                    }
+                    // Isolated mode: start the next request once the thread is free.
+                    if (!$this->busy && !$this->pending->isEmpty()) {
+                        $this->start($this->pending->dequeue());
+                        continue;
+                    }
+                    break;
+                } while (true);
                 $event = json_decode(\cairo_next_event(), true, 512, JSON_THROW_ON_ERROR);
                 switch ($event['type']) {
                     case 'io':
@@ -984,10 +1057,12 @@ namespace Cairo\Internal {
                         $fiber?->resume($event);
                         break;
                     case 'http':
-                        $this->spawn($event, fn () => $this->http($event));
-                        break;
                     case 'grpc':
-                        $this->spawn($event, fn () => $this->grpc($event));
+                        if ($this->app->isolated() && $this->busy) {
+                            $this->pending->enqueue($event);
+                        } else {
+                            $this->start($event);
+                        }
                         break;
                     case 'shutdown':
                         return;
@@ -998,6 +1073,29 @@ namespace Cairo\Internal {
         public function app(): App
         {
             return $this->app;
+        }
+
+        private function start(array $event): void
+        {
+            if (!$this->app->isolated()) {
+                $this->spawn($event, $event['type'] === 'http' ? fn () => $this->http($event) : fn () => $this->grpc($event));
+                return;
+            }
+            $this->busy = true;
+            $this->spawn($event, function () use ($event): void {
+                try {
+                    if ($event['type'] === 'http') {
+                        Superglobals::fill($event);
+                        $this->http($event);
+                    } else {
+                        $this->grpc($event);
+                    }
+                } finally {
+                    Superglobals::clear();
+                    $this->app->runResets();
+                    $this->busy = false;
+                }
+            });
         }
 
         private function spawn(array $event, \Closure $fn): void
@@ -1031,8 +1129,26 @@ namespace Cairo\Internal {
 
         private function http(array $event): void
         {
+            $isolated = $this->app->isolated();
             try {
-                $response = ($this->resolve((int) $event['route']))(new Http\Request($event), Context::current());
+                if ($isolated) {
+                    // Classic PHP style: echo and header() become the response.
+                    ob_start();
+                    header_remove();
+                    http_response_code(200);
+                }
+                try {
+                    $response = ($this->resolve((int) $event['route']))(new Http\Request($event), Context::current());
+                } finally {
+                    $output = $isolated ? (string) ob_get_clean() : '';
+                }
+                if ($isolated && $response === null) {
+                    $headers = self::sentHeaders();
+                    if (!isset(array_change_key_case($headers)['content-type'])) {
+                        $headers['Content-Type'] = ['text/html; charset=UTF-8'];   // PHP's default
+                    }
+                    $response = new Http\Response((int) (http_response_code() ?: 200), $headers, $output);
+                }
                 if (!$response instanceof Http\Response) {
                     $response = is_string($response) ? Http\Response::text($response) : Http\Response::json($response);
                 }
@@ -1051,6 +1167,18 @@ namespace Cairo\Internal {
                 'headers' => (object) $headers,
                 'body' => base64_encode($response->body),
             ], JSON_THROW_ON_ERROR));
+        }
+
+        /** @return array<string, list<string>> the headers set with header() */
+        private static function sentHeaders(): array
+        {
+            $out = [];
+            foreach (headers_list() as $line) {
+                [$name, $value] = array_pad(explode(':', $line, 2), 2, '');
+                $out[trim($name)][] = ltrim($value);
+            }
+            header_remove();
+            return $out;
         }
 
         /** @var array<string, ?string> "class::method" => request class, or null for arrays */
@@ -1105,6 +1233,75 @@ namespace Cairo\Internal {
                 $out = ['ok' => false, 'code' => Grpc\Code::INTERNAL, 'message' => 'internal error'];
             }
             \cairo_respond((int) $event['id'], json_encode($out, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+        }
+    }
+
+    /** Fills and clears PHP's superglobals for isolated-mode requests. */
+    final class Superglobals
+    {
+        public static function fill(array $event): void
+        {
+            $headers = $event['headers'] ?? [];
+            parse_str((string) ($event['query'] ?? ''), $get);
+            $cookies = [];
+            $server = [
+                'REQUEST_METHOD' => $event['method'],
+                'REQUEST_URI' => $event['path'] . (($event['query'] ?? '') !== '' ? '?' . $event['query'] : ''),
+                'SCRIPT_NAME' => '',
+                'PATH_INFO' => $event['path'],
+                'QUERY_STRING' => (string) ($event['query'] ?? ''),
+                'SERVER_PROTOCOL' => (string) ($event['proto'] ?? 'HTTP/1.1'),
+                'HTTPS' => !empty($event['tls']) ? 'on' : '',
+                'REQUEST_TIME_FLOAT' => microtime(true),
+                'REQUEST_TIME' => time(),
+            ];
+            [$host, $port] = self::split((string) ($event['remote'] ?? ''));
+            $server['REMOTE_ADDR'] = $host;
+            $server['REMOTE_PORT'] = $port;
+            $server['SERVER_NAME'] = explode(':', (string) ($event['host'] ?? ''))[0];
+            foreach ($headers as $name => $values) {
+                $value = implode(', ', (array) $values);
+                $key = strtoupper(str_replace('-', '_', (string) $name));
+                if ($key === 'CONTENT_TYPE' || $key === 'CONTENT_LENGTH') {
+                    $server[$key] = $value;
+                } else {
+                    $server['HTTP_' . $key] = $value;
+                }
+                if ($key === 'COOKIE') {
+                    foreach (explode(';', $value) as $pair) {
+                        [$k, $v] = array_pad(explode('=', trim($pair), 2), 2, '');
+                        if ($k !== '') {
+                            $cookies[urldecode($k)] = urldecode($v);
+                        }
+                    }
+                }
+            }
+            $post = [];
+            if (str_starts_with(strtolower($server['CONTENT_TYPE'] ?? ''), 'application/x-www-form-urlencoded')) {
+                parse_str(base64_decode((string) ($event['body'] ?? '')), $post);
+            }
+            $_GET = $get;
+            $_POST = $post;
+            $_COOKIE = $cookies;
+            $_SERVER = $server;
+            $_REQUEST = array_merge($get, $post);
+            $_FILES = [];
+        }
+
+        public static function clear(): void
+        {
+            $_GET = $_POST = $_COOKIE = $_REQUEST = $_FILES = [];
+            $_SERVER = [];
+        }
+
+        /** @return array{string, string} */
+        private static function split(string $addr): array
+        {
+            $i = strrpos($addr, ':');
+            if ($i === false) {
+                return [$addr, ''];
+            }
+            return [trim(substr($addr, 0, $i), '[]'), substr($addr, $i + 1)];
         }
     }
 

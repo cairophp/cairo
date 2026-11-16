@@ -423,7 +423,20 @@ make run            # serves examples/greeter
 
 Or with Docker: `docker build -t cairo . && docker run -p 8080:8080 -p 9000:9000 cairo`.
 
-Requirements: Go 1.24+, a C toolchain, libcurl headers (`libcurl4-openssl-dev`), and PHP 8.1 or newer (fibers).
+`make php` builds PHP with opcache and the extensions most applications
+expect: mbstring, intl, openssl, sodium, zip, gd (JPEG, WebP, FreeType), bcmath,
+gmp, calendar, exif, sockets, iconv, zlib, bz2, curl, PDO with MySQL and SQLite,
+mysqli, sqlite3, and PHP's defaults (ctype, dom, fileinfo, filter, json,
+session, simplexml, tokenizer, xml and the rest). `scripts/build-php.sh` lists
+the system packages they need.
+
+Opcache is loaded as a Zend extension at startup, so scripts are compiled once
+per process and shared by all PHP threads. It does not accept the embed SAPI by
+name, so Cairo presents itself under another name only while opcache starts;
+`PHP_SAPI` is still `embed`. Its usual ini settings apply, and `CAIRO_OPCACHE=0`
+leaves it out.
+
+Requirements: Go 1.24+, a C toolchain, the -dev packages listed in `scripts/build-php.sh`, and PHP 8.1 or newer (fibers).
 
 ## Layout
 
@@ -444,5 +457,4 @@ test/                 end-to-end tests
 ## Not done yet
 
 - Hard interruption of PHP code at a deadline.
-- Opcache and a wider set of PHP extensions in the default build.
 - A Cairo-owned SAPI adapted from FrankenPHP; this prototype uses PHP's embed SAPI.

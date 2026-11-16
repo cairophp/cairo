@@ -405,6 +405,14 @@ func (e *Engine) runOp(f *fiber, o op) {
 			timer.Stop()
 			ev["error"] = ctxError(f.ctx)
 		}
+	case "park":
+		// A fiber blocked on Cairo\Channel or select(): wait until PHP wakes
+		// it (cairo_wake), the timeout passes or the context ends.
+		ev["result"] = e.park(f.ctx, o.ID, o.Timeout)
+		if ev["result"] == "done" {
+			delete(ev, "result")
+			ev["error"] = ctxError(f.ctx)
+		}
 	case "offload":
 		res, err := e.runOffload(f.ctx, o.Payload)
 		if err != nil {

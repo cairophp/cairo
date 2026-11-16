@@ -56,4 +56,32 @@ $http->post('/form', function (): void {
     echo 'hello ' . ($_POST['name'] ?? '?') . ' (' . ($_COOKIE['session'] ?? 'no session') . ')';
 });
 
+// File uploads fill $_FILES; move_uploaded_file() and is_uploaded_file()
+// work as in classic PHP.
+$http->post('/upload', function (): void {
+    $dir = sys_get_temp_dir() . '/cairo-isolated-uploads';
+    @mkdir($dir);
+    $moved = [];
+    foreach ((array) ($_FILES['docs']['tmp_name'] ?? []) as $i => $tmp) {
+        $target = $dir . '/' . basename($_FILES['docs']['name'][$i]);
+        $moved[] = is_uploaded_file($tmp) && move_uploaded_file($tmp, $target) ? file_get_contents($target) : null;
+        @unlink($target);
+    }
+    header('Content-Type: application/json');
+    echo json_encode([
+        'post' => $_POST,
+        'avatar' => [
+            'name' => $_FILES['avatar']['name'] ?? null,
+            'size' => $_FILES['avatar']['size'] ?? null,
+            'type' => $_FILES['avatar']['type'] ?? null,
+            'error' => $_FILES['avatar']['error'] ?? null,
+        ],
+        'empty_error' => $_FILES['empty']['error'] ?? null,
+        'docs' => $moved,
+        'docs_names' => $_FILES['docs']['name'] ?? null,
+        'fake_is_upload' => is_uploaded_file(__FILE__),
+        'fake_move' => @move_uploaded_file(__FILE__, '/tmp/should-not-exist'),
+    ]);
+});
+
 return $app;

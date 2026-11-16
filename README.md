@@ -568,6 +568,13 @@ only once per thread, when `server.php` and the classes it loads are first
 used. CI builds it and runs the end-to-end tests against it.
 `scripts/build-static.sh` does the work and also runs outside Docker on Alpine.
 
+## License notices
+
+Cairo's SAPI is adapted from PHP's embed SAPI (PHP License 3.01) and follows
+FrankenPHP (MIT) in places; `third_party/NOTICES` has both licenses. The static
+binary also links PHP, its extensions and their libraries, under their own
+licenses.
+
 ## Layout
 
 ```
@@ -583,4 +590,5 @@ examples/greeter/     HTTP + gRPC example
 examples/isolated/    isolated mode: superglobals, echo/header(), resets
 examples/supervise/   thread restart after a fatal error, maxRequests and maxMemory
 test/                 end-to-end tests
+third_party/NOTICES   licenses of code Cairo adapts (PHP embed SAPI, FrankenPHP)
 ```

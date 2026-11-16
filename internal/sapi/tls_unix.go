@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -224,6 +225,30 @@ func startTLS(ctx context.Context, fd int, host string, timeout time.Duration, o
 	return tlsPair(conn)
 }
 
+// tlsSession is one TLS connection handed to PHP through a socket pair. It
+// is found again by PHP's end of the pair (device and inode, which survive
+// the dup2 of STARTTLS) when PHP turns TLS off.
+type tlsSession struct {
+	key      tlsKey
+	conn     *tls.Conn
+	local    *net.UnixConn
+	stopping atomic.Bool
+	upDone   chan error // the PHP -> TLS pump handed over (nil) or failed
+	downDone chan error // the TLS -> PHP pump ended (nil: close_notify or EOF)
+}
+
+type tlsKey struct{ dev, ino uint64 }
+
+var tlsSessions sync.Map // tlsKey -> *tlsSession
+
+func tlsKeyOf(fd int) (tlsKey, error) {
+	var st syscall.Stat_t
+	if err := syscall.Fstat(fd, &st); err != nil {
+		return tlsKey{}, err
+	}
+	return tlsKey{uint64(st.Dev), uint64(st.Ino)}, nil
+}
+
 // tlsPair hands a TLS connection to PHP as one end of a socket pair, with Go
 // pumping between the other end and the connection.
 func tlsPair(conn *tls.Conn) (int, error) {
@@ -238,6 +263,13 @@ func tlsPair(conn *tls.Conn) (int, error) {
 		conn.Close()
 		return -1, err
 	}
+	key, err := tlsKeyOf(fds[0])
+	if err != nil {
+		syscall.Close(fds[0])
+		syscall.Close(fds[1])
+		conn.Close()
+		return -1, err
+	}
 	f := os.NewFile(uintptr(fds[1]), "cairo-tls")
 	local, err := net.FileConn(f)
 	f.Close()
@@ -246,25 +278,148 @@ func tlsPair(conn *tls.Conn) (int, error) {
 		conn.Close()
 		return -1, err
 	}
-	go pumpTLS(conn, local.(*net.UnixConn))
+	s := &tlsSession{key: key, conn: conn, local: local.(*net.UnixConn), upDone: make(chan error, 1), downDone: make(chan error, 1)}
+	tlsSessions.Store(key, s)
+	go s.pump()
 	return fds[0], nil
 }
 
-// pumpTLS copies between PHP's socket and the TLS connection. When the server
+// pump copies between PHP's socket and the TLS connection. When the server
 // closes, PHP reads EOF; when PHP closes its stream, the TLS connection is
-// closed with a close_notify.
-func pumpTLS(conn *tls.Conn, local *net.UnixConn) {
-	var once sync.Once
-	closeAll := func() {
-		once.Do(func() {
-			_ = conn.Close()
-			_ = local.Close()
-		})
-	}
+// closed with a close_notify. When PHP turns TLS off (stop), the pumps hand
+// over instead of closing.
+func (s *tlsSession) pump() {
 	go func() {
-		_, _ = io.Copy(local, conn)
-		_ = local.CloseWrite() // PHP sees EOF; the stream stays open until PHP closes it
+		_, err := io.Copy(s.local, s.conn)
+		s.downDone <- err
+		if !s.stopping.Load() {
+			_ = s.local.CloseWrite() // PHP sees EOF; the stream stays open until PHP closes it
+		}
 	}()
-	_, _ = io.Copy(conn, local)
-	closeAll()
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := s.local.Read(buf)
+		if n > 0 {
+			if _, werr := s.conn.Write(buf[:n]); werr != nil {
+				err = werr
+			}
+		}
+		if err != nil {
+			if s.stopping.Load() && errors.Is(err, os.ErrDeadlineExceeded) {
+				s.upDone <- s.drain(buf)
+				return
+			}
+			break
+		}
+	}
+	if !s.stopping.Load() {
+		tlsSessions.Delete(s.key)
+		_ = s.conn.Close()
+		_ = s.local.Close()
+	} else {
+		s.upDone <- errors.New("the connection failed while TLS was being turned off")
+	}
+}
+
+// drain sends what PHP wrote before turning TLS off and is still queued.
+func (s *tlsSession) drain(buf []byte) error {
+	_ = s.local.SetReadDeadline(time.Time{})
+	raw, err := s.local.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var werr error
+	rerr := raw.Read(func(fd uintptr) bool {
+		for {
+			n, err := syscall.Read(int(fd), buf)
+			if n > 0 {
+				if _, werr = s.conn.Write(buf[:n]); werr != nil {
+					return true
+				}
+			}
+			if err != nil || n <= 0 {
+				return true // EAGAIN: nothing more queued
+			}
+		}
+	})
+	if werr != nil {
+		return werr
+	}
+	return rerr
+}
+
+// stopTLS turns TLS off on the stream whose descriptor is fd (PHP's end of a
+// socket pair): what PHP wrote is sent, then a close_notify, and what the
+// peer sent up to its own close_notify is passed to PHP's end. It returns a
+// new descriptor for the plain connection, which the caller puts in place of
+// fd with dup2 (after reading what is left on fd).
+func stopTLS(ctx context.Context, fd int, timeout time.Duration) (int, error) {
+	key, err := tlsKeyOf(fd)
+	if err != nil {
+		return -1, err
+	}
+	v, ok := tlsSessions.LoadAndDelete(key)
+	if !ok {
+		return -1, errors.New("TLS is not on for this stream")
+	}
+	s := v.(*tlsSession)
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	fail := func(err error) (int, error) {
+		_ = s.conn.Close()
+		_ = s.local.Close()
+		return -1, err
+	}
+
+	s.stopping.Store(true)
+	_ = s.local.SetReadDeadline(time.Now()) // stops the PHP -> TLS pump
+	select {
+	case err := <-s.upDone:
+		if err != nil {
+			return fail(err)
+		}
+	case <-ctx.Done():
+		return fail(ctx.Err())
+	}
+	if err := s.conn.CloseWrite(); err != nil {
+		return fail(err)
+	}
+	select {
+	case err := <-s.downDone:
+		if err != nil {
+			return fail(fmt.Errorf("waiting for the peer's close_notify: %w", err))
+		}
+	case <-ctx.Done():
+		return fail(fmt.Errorf("the peer did not answer the close_notify: %w", ctx.Err()))
+	}
+
+	raw, ok := s.conn.NetConn().(syscall.Conn)
+	if !ok {
+		return fail(errors.New("the connection has no descriptor"))
+	}
+	rc, err := raw.SyscallConn()
+	if err != nil {
+		return fail(err)
+	}
+	nfd := -1
+	var derr error
+	if err := rc.Control(func(fd uintptr) {
+		syscall.ForkLock.RLock()
+		nfd, derr = syscall.Dup(int(fd))
+		if derr == nil {
+			syscall.CloseOnExec(nfd)
+		}
+		syscall.ForkLock.RUnlock()
+	}); err != nil {
+		return fail(err)
+	}
+	if derr != nil {
+		return fail(derr)
+	}
+	_ = s.conn.NetConn().Close() // Go's copy; PHP gets nfd
+	_ = s.local.Close()
+	return nfd, nil
 }

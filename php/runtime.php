@@ -2432,6 +2432,15 @@ namespace Cairo\Internal {
             return isset($result['fd']) ? (int) $result['fd'] : (string) ($result['err'] ?? 'TLS handshake failed');
         }
 
+        public static function stopTLS(int $fd, float $timeout): int|string|null
+        {
+            if (!self::on(\Cairo\Hook::CONNECT)) {
+                return null;
+            }
+            $result = Scheduler::instance()->op(['op' => 'stoptls', 'fd' => $fd, 'timeout' => $timeout]);
+            return isset($result['fd']) ? (int) $result['fd'] : (string) ($result['err'] ?? 'TLS shutdown failed');
+        }
+
         public static function gethostbyname(mixed $hostname = null): ?string
         {
             if (!is_string($hostname) || !self::on(\Cairo\Hook::DNS)) {

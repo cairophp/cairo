@@ -659,6 +659,98 @@ static int cairo_sock_enable_crypto(php_stream *stream, php_netstream_data_t *so
 	return out;
 }
 
+// Appends bytes to the stream's read buffer, ahead of what the socket gives
+// next.
+static void cairo_stream_unread(php_stream *stream, const char *buf, size_t n)
+{
+	if (stream->readpos > 0) {
+		memmove(stream->readbuf, stream->readbuf + stream->readpos, stream->writepos - stream->readpos);
+		stream->writepos -= stream->readpos;
+		stream->readpos = 0;
+	}
+	if (stream->readbuflen - stream->writepos < n) {
+		stream->readbuflen = stream->writepos + n;
+		stream->readbuf = perealloc(stream->readbuf, stream->readbuflen, stream->is_persistent);
+	}
+	memcpy(stream->readbuf + stream->writepos, buf, n);
+	stream->writepos += n;
+}
+
+// stream_socket_enable_crypto($s, false): Go sends what PHP wrote and a
+// close_notify, and passes on what the peer sent up to its close_notify;
+// that is read from the old descriptor into the stream's buffer, and the
+// plain connection takes the descriptor's place.
+static int cairo_sock_disable_crypto(php_stream *stream, php_netstream_data_t *sock)
+{
+	double timeout = -1;
+	if (sock->timeout.tv_sec != -1) {
+		timeout = (double)sock->timeout.tv_sec + (double)sock->timeout.tv_usec / 1e6;
+	}
+	int fd = sock->socket;
+	int fl = fcntl(fd, F_GETFL);
+	int fdfl = fcntl(fd, F_GETFD);
+
+	zval result;
+	ZVAL_UNDEF(&result);
+	if (EG(active_fiber) != NULL) {
+		zval fname, args[2];
+		ZVAL_STRING(&fname, "Cairo\\Internal\\Hooks::stopTLS");
+		ZVAL_LONG(&args[0], fd);
+		ZVAL_DOUBLE(&args[1], timeout);
+		int rc = call_user_function(NULL, NULL, &fname, &result, 2, args);
+		zval_ptr_dtor(&fname);
+		if (rc != SUCCESS) {
+			zval_ptr_dtor(&result);
+			ZVAL_UNDEF(&result);
+		}
+	}
+	if (EG(exception) == NULL && (Z_TYPE(result) == IS_UNDEF || Z_TYPE(result) == IS_NULL)) {
+		char *errmsg = NULL;
+		int nfd = goStopTLS(fd, timeout, &errmsg);
+		if (nfd >= 0) {
+			ZVAL_LONG(&result, nfd);
+		} else {
+			ZVAL_STRING(&result, errmsg != NULL ? errmsg : "TLS shutdown failed");
+		}
+		free(errmsg);
+	}
+
+	int out = -1;
+	if (Z_TYPE(result) == IS_LONG && Z_LVAL(result) >= 0) {
+		int nfd = (int)Z_LVAL(result);
+		// Go has closed its end of the pair: read what it left until EOF.
+		fcntl(fd, F_SETFL, (fl >= 0 ? fl : 0) | O_NONBLOCK);
+		char buf[8192];
+		for (;;) {
+			ssize_t n = read(fd, buf, sizeof(buf));
+			if (n > 0) {
+				cairo_stream_unread(stream, buf, (size_t)n);
+				continue;
+			}
+			if (n < 0 && errno == EINTR) {
+				continue;
+			}
+			break;
+		}
+		if (dup2(nfd, fd) >= 0) {
+			out = 1;
+		} else {
+			php_error_docref(NULL, E_WARNING, "SSL: could not swap the socket: %s", strerror(errno));
+		}
+		close(nfd);
+	} else if (Z_TYPE(result) == IS_STRING) {
+		php_error_docref(NULL, E_WARNING, "SSL: could not turn TLS off: %s", Z_STRVAL(result));
+	}
+	if (fl >= 0) {
+		fcntl(fd, F_SETFL, fl);
+	}
+	if (fdfl >= 0) {
+		fcntl(fd, F_SETFD, fdfl);
+	}
+	zval_ptr_dtor(&result);
+	return out;
+}
+
 static int cairo_sock_set_option(php_stream *stream, int option, int value, void *ptrparam)
 {
 	const php_stream_ops *orig = find_orig_ops(stream->ops);
@@ -672,8 +764,12 @@ static int cairo_sock_set_option(php_stream *stream, int option, int value, void
 			return PHP_STREAM_OPTION_RETURN_OK;
 		}
 		if (!cp->inputs.activate) {
-			php_error_docref(NULL, E_WARNING, "Cairo cannot turn TLS off on a stream");
-			cp->outputs.returncode = -1;
+			if (sock == NULL || sock->socket == -1) {
+				cp->outputs.returncode = -1;
+				return PHP_STREAM_OPTION_RETURN_OK;
+			}
+			crypto_setup_stream = NULL;
+			cp->outputs.returncode = cairo_sock_disable_crypto(stream, sock);
 			return PHP_STREAM_OPTION_RETURN_OK;
 		}
 		if (crypto_setup_stream != stream || sock == NULL || sock->socket == -1) {

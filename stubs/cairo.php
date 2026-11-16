@@ -37,6 +37,16 @@ namespace Cairo {
         }
 
         /**
+         * Backpressure: at most $n requests in flight per request thread (0,
+         * the default, means no cap). Further requests wait in Go, which costs
+         * a goroutine, not PHP memory, until one finishes or their context
+         * ends. Use it when each request holds a lot of memory.
+         */
+        public function maxInFlight(int $n): static
+        {
+        }
+
+        /**
          * Replace a request thread with a fresh one after it has served $n
          * requests (0, the default, never). The old thread finishes the
          * requests it holds first, so none fail. Use it to bound slow leaks.
@@ -201,7 +211,85 @@ namespace Cairo {
         {
         }
 
+        /** Why the context ended (it, or a context it derives from), or null while it is live. */
         public function err(): ?Context\ContextException
+        {
+        }
+
+        /** @internal */
+        public function setGoValues(array $values): void
+        {
+        }
+
+        /**
+         * A value Go middleware attached to the request, such as 'request_id'
+         * from Middleware::requestId(). Values PHP code stores are read with
+         * Context::get().
+         */
+        public function value(string $key, mixed $default = null): mixed
+        {
+        }
+
+        /**
+         * A child context that ends $seconds from now, or earlier if this one
+         * ends. Run code under it with run(): every Cairo call it makes (HTTP,
+         * gRPC, sockets, SQL, sleep, channels, async() tasks) ends with it.
+         */
+        public function withTimeout(float $seconds): self
+        {
+        }
+
+        /** Like withTimeout(), with an absolute time. */
+        public function withDeadline(\DateTimeInterface|float $at): self
+        {
+        }
+
+        /** A child context that ends when cancel() is called on it, or when this one ends. */
+        public function withCancel(): self
+        {
+        }
+
+        /**
+         * End this context (and the ones derived from it): Cairo calls running
+         * under it throw Context\Canceled, and its done() channel closes. Only
+         * contexts made with withTimeout(), withDeadline() or withCancel() can
+         * be canceled.
+         */
+        public function cancel(): void
+        {
+        }
+
+        /**
+         * Run $fn with this context as the current one, in the current fiber;
+         * returns what $fn returns. `$ctx->withTimeout(0.5)->run(fn () => $client->get($url))`.
+         */
+        public function run(callable $fn): mixed
+        {
+        }
+
+        public function __destruct()
+        {
+        }
+
+        /**
+         * A channel that is closed when this context ends (deadline passed or
+         * canceled), for select(): `select(['job' => $jobs, 'done' => $ctx->done()])`.
+         * It never carries values.
+         */
+        public function done(): Channel
+        {
+        }
+
+        /** @internal the deadline as a Unix time, or null */
+        public function deadlineAt(): ?float
+        {
+        }
+
+        /**
+         * @internal Go reported that this fiber's context ended. Its parents
+         * ended too when the cause is theirs: a cancel, or the deadline they share.
+         */
+        public function ended(string $why): void
         {
         }
 
@@ -214,6 +302,125 @@ namespace Cairo {
     interface Resettable
     {
         public function reset(): void;
+    }
+
+    /**
+     * A channel between fibers of one PHP thread, as in Go: send() waits
+     * until a receiver takes the value (or, with a capacity, until there is
+     * room), recv() waits for a value. Waiting suspends only the fiber, and
+     * also ends when the request's context ends (Context\DeadlineExceeded or
+     * Context\Canceled is thrown). After close(), receivers drain what is
+     * buffered, then get Channel\Closed; send() throws Channel\Closed.
+     *
+     * @implements \IteratorAggregate<int, mixed>
+     */
+    final class Channel implements \IteratorAggregate, \Countable
+    {
+        public function __construct(private readonly int $capacity = 0)
+        {
+        }
+
+        /** @internal the channel behind Context::done() */
+        public static function forContext(Context $context): self
+        {
+        }
+
+        public function send(mixed $value): void
+        {
+        }
+
+        /** The next value; throws Channel\Closed once the channel is closed and drained. */
+        public function recv(): mixed
+        {
+        }
+
+        /** Like recv() without waiting: false when no value is ready. */
+        public function tryRecv(mixed &$value = null): bool
+        {
+        }
+
+        /** Like send() without waiting: false when the value cannot be taken now. */
+        public function trySend(mixed $value): bool
+        {
+        }
+
+        public function close(): void
+        {
+        }
+
+        public function isClosed(): bool
+        {
+        }
+
+        /** Values buffered now. */
+        public function count(): int
+        {
+        }
+
+        public function capacity(): int
+        {
+        }
+
+        /** Receives until the channel is closed and drained. */
+        public function getIterator(): \Generator
+        {
+        }
+
+        /** @internal a done() channel's context ended: wake whoever waits on it */
+        public function contextEnded(): void
+        {
+        }
+
+        /** @internal the context behind a done() channel */
+        public function context(): ?Context
+        {
+        }
+
+        /** @internal try to receive now: [true, value, ok] or [false] */
+        public function pollRecv(): array
+        {
+        }
+
+        /** @internal try to send now: whether the value was taken */
+        public function pollSend(mixed $value): bool
+        {
+        }
+
+        /** @internal */
+        public function addReceiver(Internal\Waiter $waiter, int|string $key): void
+        {
+        }
+
+        /** @internal */
+        public function addSender(Internal\Waiter $waiter, int|string $key, mixed $value): void
+        {
+        }
+
+        /** @internal */
+        public function remove(Internal\Waiter $waiter): void
+        {
+        }
+    }
+
+    /**
+     * Wait on several channel operations and do the first one that can go,
+     * as Go's select. Each case is a Channel (receive) or [Channel, value]
+     * (send); keys name the cases. Returns [key, value, ok]: the received
+     * value (null for a send), and ok false when a receive found the channel
+     * closed (a context's done() channel included). When several cases are
+     * ready, one is picked at random.
+     *
+     * $timeout in seconds: null waits as long as the context allows, 0 never
+     * waits. When it passes, select() returns [null, null, false]. If the
+     * context ends first and no case is ready, Context\DeadlineExceeded or
+     * Context\Canceled is thrown; add `$ctx->done()` as a case to get it as
+     * a case instead.
+     *
+     * @param array<int|string, Channel|array{Channel, mixed}> $cases
+     * @return array{int|string|null, mixed, bool}
+     */
+    function select(array $cases, ?float $timeout = null): array
+    {
     }
 
     /** A unit of concurrent work started with async(). */
@@ -257,16 +464,33 @@ namespace Cairo {
     }
 
     /**
+     * A job for offload() that carries its own input: the object is
+     * serialized, sent to an offload thread and run() there. Its class must be
+     * loadable on every thread (declared or autoloaded from server.php).
+     *
+     *     final class Thumbnail implements OffloadTask {
+     *         public function __construct(private string $path, private int $width) {}
+     *         public function run(): string { ... }
+     *     }
+     *     $png = offload(new Thumbnail($path, 200));
+     */
+    interface OffloadTask
+    {
+        public function run(): mixed;
+    }
+
+    /**
      * Run CPU-heavy work on the offload thread pool, so this request thread
      * keeps serving other fibers. The calling fiber suspends until it is done.
      *
-     * Code cannot move between PHP threads, so $fn must be a function name or
-     * [ClassName::class, 'staticMethod'] that server.php makes available, and
-     * $args and the result must be serializable. Closures are not accepted.
+     * Code cannot move between PHP threads, so $fn must be an OffloadTask
+     * object, a function name or [ClassName::class, 'staticMethod'] that
+     * server.php makes available, and the task, $args and the result must be
+     * serializable. Closures are not accepted.
      *
-     * @param callable-string|array{0:class-string,1:string} $fn
+     * @param OffloadTask|callable-string|array{0:class-string,1:string} $fn
      */
-    function offload(string|array $fn, mixed ...$args): mixed
+    function offload(OffloadTask|string|array $fn, mixed ...$args): mixed
     {
     }
 
@@ -435,6 +659,16 @@ namespace Cairo\Context {
     }
 
     final class Canceled extends ContextException
+    {
+        public function __construct()
+        {
+        }
+    }
+}
+
+namespace Cairo\Channel {
+    /** The channel was closed: no more sends, and nothing left to receive. */
+    final class Closed extends \RuntimeException
     {
         public function __construct()
         {

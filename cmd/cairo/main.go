@@ -33,7 +33,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  cairo serve <server.php> [--threads N] [--offload-threads N] [--grace 30s]
+  cairo serve <server.php> [--threads N] [--offload-threads N] [--grace 30s] [--php-ini FILE]
   cairo gen [--out DIR] [-I DIR]... <file.proto>...
   cairo version`)
 }
@@ -107,6 +107,7 @@ func serve(args []string) error {
 	threads := fs.Int("threads", 0, "PHP request threads (overrides server.php; default: one per CPU core)")
 	offloadThreads := fs.Int("offload-threads", 0, "PHP threads for Cairo\\offload() jobs (overrides server.php; default: one per CPU core)")
 	grace := fs.Duration("grace", 30*time.Second, "how long to wait for in-flight requests on shutdown")
+	phpIni := fs.String("php-ini", os.Getenv("CAIRO_PHP_INI"), "php.ini file or directory (default: $PHPRC, then PHP's own search; also CAIRO_PHP_INI)")
 	// Accept the server file before or after the flags.
 	var file string
 	if len(args) > 0 && len(args[0]) > 0 && args[0][0] != '-' {
@@ -123,7 +124,7 @@ func serve(args []string) error {
 	}
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	engine, err := sapi.Start(sapi.Options{ServerFile: file, Threads: *threads, OffloadThreads: *offloadThreads, Logger: log})
+	engine, err := sapi.Start(sapi.Options{ServerFile: file, Threads: *threads, OffloadThreads: *offloadThreads, PHPIni: *phpIni, Logger: log})
 	if err != nil {
 		return err
 	}

@@ -412,7 +412,8 @@ modes; in fiber mode use `$req->form()` and `$req->file('photo')`, which gives a
 
 ## Building
 
-Cairo links against a thread-safe (ZTS) PHP built with the embed SAPI.
+Cairo links against a thread-safe (ZTS) libphp, built with `--enable-embed`
+for the library, and runs PHP as its own SAPI: `PHP_SAPI` is `cairo`.
 
 ```sh
 make php            # builds PHP 8.3 (ZTS, embed) into /opt/php-zts
@@ -422,6 +423,15 @@ make run            # serves examples/greeter
 ```
 
 Or with Docker: `docker build -t cairo . && docker run -p 8080:8080 -p 9000:9000 cairo`.
+
+PHP settings come from a php.ini: `cairo serve --php-ini FILE` (or
+`CAIRO_PHP_INI`, or `PHPRC`), otherwise PHP's own search, never the current
+directory. Without one, errors are logged and not displayed. PHP's log lines
+(errors, warnings, `error_log()`) go to Cairo's logger with `source=php`,
+unless `error_log` names a file. `max_execution_time` and `max_input_time`
+stay off whatever the ini says, because each PHP thread runs one long request;
+request deadlines come from `Middleware::timeout()` and gRPC deadlines. `dl()`
+is not available.
 
 Requirements: Go 1.24+, a C toolchain, libcurl headers (`libcurl4-openssl-dev`), and PHP 8.1 or newer (fibers).
 
@@ -445,4 +455,3 @@ test/                 end-to-end tests
 
 - Hard interruption of PHP code at a deadline.
 - Opcache and a wider set of PHP extensions in the default build.
-- A Cairo-owned SAPI adapted from FrankenPHP; this prototype uses PHP's embed SAPI.

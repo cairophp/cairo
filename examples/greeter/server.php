@@ -7,12 +7,14 @@ use Cairo\Context;
 use Cairo\Middleware;
 use Cairo\Grpc\Code;
 use Cairo\Grpc\Exception as GrpcException;
+use Cairo\Grpc\ServerStream;
 use Cairo\Http\Request;
 use Cairo\Http\Response;
 use Cairo\Pool;
 use Helloworld\GreeterInterface;
 use Helloworld\HelloReply;
 use Helloworld\HelloRequest;
+use Helloworld\CountRequest;
 use Helloworld\SlowHelloRequest;
 
 use function Cairo\all;
@@ -43,6 +45,35 @@ final class Greeter implements GreeterInterface
             message: "Hello {$request->name}",
             remaining: is_finite($remaining) ? $remaining : 0.0,
         );
+    }
+
+    public function CountUp(CountRequest $request, ServerStream $stream, Context $ctx): void
+    {
+        for ($i = 1; $i <= $request->count; $i++) {
+            if ($i > 1 && $request->interval > 0) {
+                sleep($request->interval);
+            }
+            $stream->send(new HelloReply(message: "{$request->name} $i"));
+        }
+    }
+
+    public function JoinNames(ServerStream $stream, Context $ctx): HelloReply
+    {
+        $names = [];
+        foreach ($stream as $request) {   // HelloRequest objects, until the client is done
+            $names[] = $request->name;
+        }
+        return new HelloReply(message: 'Hello ' . implode(', ', $names));
+    }
+
+    public function Chat(ServerStream $stream, Context $ctx): void
+    {
+        while (($request = $stream->recv()) !== null) {
+            if ($request->name === '') {
+                throw new GrpcException(Code::INVALID_ARGUMENT, 'name is required');
+            }
+            $stream->send(new HelloReply(message: "Hello {$request->name}"));
+        }
     }
 }
 

@@ -86,9 +86,6 @@ func New(decl spec.GRPCServer, php Dispatcher, log *slog.Logger) (*Server, error
 		ms := sd.Methods()
 		for i := 0; i < ms.Len(); i++ {
 			md := ms.Get(i)
-			if md.IsStreamingClient() || md.IsStreamingServer() {
-				return nil, fmt.Errorf("%s/%s is a streaming method; streaming arrives in milestone 4", sv.Name, md.Name())
-			}
 			s.methods["/"+sv.Name+"/"+string(md.Name())] = method{serviceID: sv.ID, name: string(md.Name()), desc: md}
 			info.Methods = append(info.Methods, grpc.MethodInfo{Name: string(md.Name())})
 		}
@@ -162,13 +159,30 @@ func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 	if !ok {
 		return status.Errorf(codes.Unimplemented, "unknown method %s", full)
 	}
-	in := dynamicpb.NewMessage(m.desc.Input())
-	if err := stream.RecvMsg(in); err != nil {
-		return err
+	ev := map[string]any{
+		"type":    "grpc",
+		"service": m.serviceID,
+		"method":  m.name,
 	}
-	reqJSON, err := protojson.MarshalOptions{UseProtoNames: false, EmitUnpopulated: true}.Marshal(in)
-	if err != nil {
-		return status.Errorf(codes.Internal, "encode request: %v", err)
+	// A client-streaming method's messages are read by PHP through its
+	// stream; every other method starts with one request message.
+	if !m.desc.IsStreamingClient() {
+		in := dynamicpb.NewMessage(m.desc.Input())
+		if err := stream.RecvMsg(in); err != nil {
+			return err
+		}
+		reqJSON, err := protojson.MarshalOptions{UseProtoNames: false, EmitUnpopulated: true}.Marshal(in)
+		if err != nil {
+			return status.Errorf(codes.Internal, "encode request: %v", err)
+		}
+		ev["message"] = json.RawMessage(reqJSON)
+	}
+	if m.desc.IsStreamingClient() || m.desc.IsStreamingServer() {
+		id := openStream(stream, m.desc)
+		defer closeStream(id)
+		ev["stream"] = id
+		ev["client_streaming"] = m.desc.IsStreamingClient()
+		ev["server_streaming"] = m.desc.IsStreamingServer()
 	}
 
 	ctx := stream.Context()
@@ -177,12 +191,7 @@ func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 		ctx, cancel = context.WithTimeout(ctx, s.maxDuration)
 		defer cancel()
 	}
-	raw, err := s.php.Dispatch(ctx, map[string]any{
-		"type":    "grpc",
-		"service": m.serviceID,
-		"method":  m.name,
-		"message": json.RawMessage(reqJSON),
-	})
+	raw, err := s.php.Dispatch(ctx, ev)
 	if err != nil {
 		return status.FromContextError(err).Err()
 	}
@@ -194,6 +203,9 @@ func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 		var msg string
 		_ = json.Unmarshal(res.Message, &msg)
 		return status.Error(codes.Code(res.Code), msg)
+	}
+	if m.desc.IsStreamingServer() {
+		return nil // PHP sent the replies through the stream
 	}
 	out := dynamicpb.NewMessage(m.desc.Output())
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(res.Message, out); err != nil {

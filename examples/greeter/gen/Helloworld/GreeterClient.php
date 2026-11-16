@@ -16,11 +16,15 @@ namespace Helloworld;
 final class GreeterClient
 {
     /** The .proto file and its imports, as a base64 FileDescriptorSet. */
-    public const DESCRIPTORS = 'Ct8CChBoZWxsb3dvcmxkLnByb3RvEgpoZWxsb3dvcmxkIiIKDEhlbGxvUmVxdWVzdBISCgRuYW1lGAEgASgJUgRuYW1lIkAK'
-        . 'EFNsb3dIZWxsb1JlcXVlc3QSEgoEbmFtZRgBIAEoCVIEbmFtZRIYCgdzZWNvbmRzGAIgASgBUgdzZWNvbmRzIkQKCkhlbGxv'
-        . 'UmVwbHkSGAoHbWVzc2FnZRgBIAEoCVIHbWVzc2FnZRIcCglyZW1haW5pbmcYAiABKAFSCXJlbWFpbmluZzKKAQoHR3JlZXRl'
-        . 'chI8CghTYXlIZWxsbxIYLmhlbGxvd29ybGQuSGVsbG9SZXF1ZXN0GhYuaGVsbG93b3JsZC5IZWxsb1JlcGx5EkEKCVNsb3dI'
-        . 'ZWxsbxIcLmhlbGxvd29ybGQuU2xvd0hlbGxvUmVxdWVzdBoWLmhlbGxvd29ybGQuSGVsbG9SZXBseWIGcHJvdG8z';
+    public const DESCRIPTORS = 'CvMEChBoZWxsb3dvcmxkLnByb3RvEgpoZWxsb3dvcmxkIiIKDEhlbGxvUmVxdWVzdBISCgRuYW1lGAEgASgJUgRuYW1lIkAK'
+        . 'EFNsb3dIZWxsb1JlcXVlc3QSEgoEbmFtZRgBIAEoCVIEbmFtZRIYCgdzZWNvbmRzGAIgASgBUgdzZWNvbmRzIlQKDENvdW50'
+        . 'UmVxdWVzdBISCgRuYW1lGAEgASgJUgRuYW1lEhQKBWNvdW50GAIgASgFUgVjb3VudBIaCghpbnRlcnZhbBgDIAEoAVIIaW50'
+        . 'ZXJ2YWwiRAoKSGVsbG9SZXBseRIYCgdtZXNzYWdlGAEgASgJUgdtZXNzYWdlEhwKCXJlbWFpbmluZxgCIAEoAVIJcmVtYWlu'
+        . 'aW5nMsgCCgdHcmVldGVyEjwKCFNheUhlbGxvEhguaGVsbG93b3JsZC5IZWxsb1JlcXVlc3QaFi5oZWxsb3dvcmxkLkhlbGxv'
+        . 'UmVwbHkSQQoJU2xvd0hlbGxvEhwuaGVsbG93b3JsZC5TbG93SGVsbG9SZXF1ZXN0GhYuaGVsbG93b3JsZC5IZWxsb1JlcGx5'
+        . 'Ej0KB0NvdW50VXASGC5oZWxsb3dvcmxkLkNvdW50UmVxdWVzdBoWLmhlbGxvd29ybGQuSGVsbG9SZXBseTABEj8KCUpvaW5O'
+        . 'YW1lcxIYLmhlbGxvd29ybGQuSGVsbG9SZXF1ZXN0GhYuaGVsbG93b3JsZC5IZWxsb1JlcGx5KAESPAoEQ2hhdBIYLmhlbGxv'
+        . 'd29ybGQuSGVsbG9SZXF1ZXN0GhYuaGVsbG93b3JsZC5IZWxsb1JlcGx5KAEwAWIGcHJvdG8z';
 
     private \Cairo\Grpc\Client $client;
 
@@ -46,5 +50,35 @@ final class GreeterClient
     public function SlowHello(\Helloworld\SlowHelloRequest $request, array $options = []): \Helloworld\HelloReply
     {
         return \Helloworld\HelloReply::fromArray($this->client->call('/helloworld.Greeter/SlowHello', $request->toArray(), $options));
+    }
+
+    /**
+     * Server streaming: recv() or foreach for each \Helloworld\HelloReply.
+     *
+     * @param array{metadata?: array<string, string|list<string>>, timeout?: float} $options
+     */
+    public function CountUp(\Helloworld\CountRequest $request, array $options = []): \Cairo\Grpc\ClientStream
+    {
+        return $this->client->serverStream('/helloworld.Greeter/CountUp', $request, $options, \Helloworld\HelloReply::class);
+    }
+
+    /**
+     * Client streaming: send() \Helloworld\HelloRequest, then closeAndRecv() for the \Helloworld\HelloReply.
+     *
+     * @param array{metadata?: array<string, string|list<string>>, timeout?: float} $options
+     */
+    public function JoinNames(array $options = []): \Cairo\Grpc\ClientStream
+    {
+        return $this->client->stream('/helloworld.Greeter/JoinNames', $options, \Helloworld\HelloReply::class);
+    }
+
+    /**
+     * Bidirectional: send() \Helloworld\HelloRequest, closeSend(), recv() or foreach for \Helloworld\HelloReply.
+     *
+     * @param array{metadata?: array<string, string|list<string>>, timeout?: float} $options
+     */
+    public function Chat(array $options = []): \Cairo\Grpc\ClientStream
+    {
+        return $this->client->stream('/helloworld.Greeter/Chat', $options, \Helloworld\HelloReply::class);
     }
 }

@@ -7,6 +7,12 @@ service Greeter {
   // Waits `seconds` with Cairo\sleep() before replying; used to show
   // deadlines and fiber concurrency.
   rpc SlowHello (SlowHelloRequest) returns (HelloReply);
+  // Server streaming: `count` replies, `interval` seconds apart.
+  rpc CountUp (CountRequest) returns (stream HelloReply);
+  // Client streaming: reads names until the client is done, then greets them all.
+  rpc JoinNames (stream HelloRequest) returns (HelloReply);
+  // Bidirectional: greets each name as it arrives.
+  rpc Chat (stream HelloRequest) returns (stream HelloReply);
 }
 
 message HelloRequest {
@@ -16,6 +22,12 @@ message HelloRequest {
 message SlowHelloRequest {
   string name = 1;
   double seconds = 2;
+}
+
+message CountRequest {
+  string name = 1;
+  int32 count = 2;
+  double interval = 3;
 }
 
 message HelloReply {

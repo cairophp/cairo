@@ -449,14 +449,36 @@ func serviceFile(ns string, s protoreflect.ServiceDescriptor) File {
 	fmt.Fprintf(&b, "/**\n * %s. Implement it and register the class:\n *\n *     $grpc->service('%s', MyService::class);\n */\ninterface %s\n{\n",
 		s.FullName(), s.FullName(), cls)
 	ms := s.Methods()
+	var streaming []string
 	for i := 0; i < ms.Len(); i++ {
 		m := ms.Get(i)
 		if m.IsStreamingClient() || m.IsStreamingServer() {
-			fmt.Fprintf(&b, "    // %s is a streaming method; streaming handlers come in a later milestone.\n", m.Name())
-			continue
+			streaming = append(streaming, fmt.Sprintf("        '%s' => [%s, %s],\n", m.Name(), classConst(m.Input()), classConst(m.Output())))
 		}
-		fmt.Fprintf(&b, "    public function %s(%s $request, \\Cairo\\Context $ctx): %s;\n",
-			m.Name(), msgType(m.Input()), msgType(m.Output()))
+	}
+	if len(streaming) > 0 {
+		b.WriteString("    /** The message classes of the streaming methods: [request, reply]. */\n    public const STREAMING = [\n")
+		for _, l := range streaming {
+			b.WriteString(l)
+		}
+		b.WriteString("    ];\n\n")
+	}
+	for i := 0; i < ms.Len(); i++ {
+		m := ms.Get(i)
+		in, out := msgType(m.Input()), msgType(m.Output())
+		switch {
+		case m.IsStreamingClient() && m.IsStreamingServer():
+			fmt.Fprintf(&b, "    /** Bidirectional: recv() %s from $stream, send() %s. */\n", in, out)
+			fmt.Fprintf(&b, "    public function %s(\\Cairo\\Grpc\\ServerStream $stream, \\Cairo\\Context $ctx): void;\n", m.Name())
+		case m.IsStreamingClient():
+			fmt.Fprintf(&b, "    /** Client streaming: recv() %s from $stream until null, then return the reply. */\n", in)
+			fmt.Fprintf(&b, "    public function %s(\\Cairo\\Grpc\\ServerStream $stream, \\Cairo\\Context $ctx): %s;\n", m.Name(), out)
+		case m.IsStreamingServer():
+			fmt.Fprintf(&b, "    /** Server streaming: send() each %s to $stream. */\n", out)
+			fmt.Fprintf(&b, "    public function %s(%s $request, \\Cairo\\Grpc\\ServerStream $stream, \\Cairo\\Context $ctx): void;\n", m.Name(), in)
+		default:
+			fmt.Fprintf(&b, "    public function %s(%s $request, \\Cairo\\Context $ctx): %s;\n", m.Name(), in, out)
+		}
 	}
 	b.WriteString("}\n")
 	return File{Path: filePath(ns, cls), Content: b.String()}
@@ -487,11 +509,24 @@ func clientFile(ns string, s protoreflect.ServiceDescriptor) File {
 	ms := s.Methods()
 	for i := 0; i < ms.Len(); i++ {
 		m := ms.Get(i)
+		in, out := msgType(m.Input()), msgType(m.Output())
+		path := fmt.Sprintf("/%s/%s", s.FullName(), m.Name())
 		if m.IsStreamingClient() || m.IsStreamingServer() {
-			fmt.Fprintf(&b, "\n    // %s is a streaming method; streaming calls come in a later milestone.\n", m.Name())
+			opts := "     * @param array{metadata?: array<string, string|list<string>>, timeout?: float} $options\n"
+			switch {
+			case m.IsStreamingClient() && m.IsStreamingServer():
+				fmt.Fprintf(&b, "\n    /**\n     * Bidirectional: send() %s, closeSend(), recv() or foreach for %s.\n     *\n%s     */\n", in, out, opts)
+				fmt.Fprintf(&b, "    public function %s(array $options = []): \\Cairo\\Grpc\\ClientStream\n    {\n        return $this->client->stream('%s', $options, %s);\n    }\n", m.Name(), path, classConst(m.Output()))
+			case m.IsStreamingClient():
+				fmt.Fprintf(&b, "\n    /**\n     * Client streaming: send() %s, then closeAndRecv() for the %s.\n     *\n%s     */\n", in, out, opts)
+				fmt.Fprintf(&b, "    public function %s(array $options = []): \\Cairo\\Grpc\\ClientStream\n    {\n        return $this->client->stream('%s', $options, %s);\n    }\n", m.Name(), path, classConst(m.Output()))
+			default:
+				arg := "$request"
+				fmt.Fprintf(&b, "\n    /**\n     * Server streaming: recv() or foreach for each %s.\n     *\n%s     */\n", out, opts)
+				fmt.Fprintf(&b, "    public function %s(%s %s, array $options = []): \\Cairo\\Grpc\\ClientStream\n    {\n        return $this->client->serverStream('%s', %s, $options, %s);\n    }\n", m.Name(), in, arg, path, arg, classConst(m.Output()))
+			}
 			continue
 		}
-		in, out := msgType(m.Input()), msgType(m.Output())
 		arg := "$request->toArray()"
 		if in == "array" {
 			arg = "$request"
@@ -533,6 +568,15 @@ func descriptorSet(fd protoreflect.FileDescriptor) string {
 		panic(err)
 	}
 	return base64.StdEncoding.EncodeToString(raw)
+}
+
+// classConst is the generated class as a PHP class constant, or null for a
+// well-known type (kept as a protojson array).
+func classConst(m protoreflect.MessageDescriptor) string {
+	if wellKnown(m) {
+		return "null"
+	}
+	return fqcn(m) + "::class"
 }
 
 func msgType(m protoreflect.MessageDescriptor) string {

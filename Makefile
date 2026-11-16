@@ -5,7 +5,7 @@ export CGO_ENABLED = 1
 export CGO_CFLAGS  = $(shell $(PHP_CONFIG) --includes)
 export CGO_LDFLAGS = -L$(PHP_PREFIX)/lib -Wl,-rpath,$(PHP_PREFIX)/lib
 
-.PHONY: build test run php
+.PHONY: build test run php stubs
 
 build:
 	go build -o bin/cairo ./cmd/cairo
@@ -21,3 +21,7 @@ run: build
 # Needs a C toolchain, bison, re2c and the -dev packages listed in that script.
 php:
 	scripts/build-php.sh 8.3.27 $(PHP_PREFIX)
+
+# Regenerate stubs/cairo.php (Cairo's PHP API for IDEs) from php/runtime.php.
+stubs:
+	php scripts/stubs.php php/runtime.php > stubs/cairo.php

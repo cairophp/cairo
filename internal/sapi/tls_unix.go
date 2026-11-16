@@ -184,8 +184,49 @@ func dialTLS(ctx context.Context, address string, timeout time.Duration, o tlsOp
 	if err != nil {
 		return -1, err
 	}
-	conn := c.(*tls.Conn)
+	return tlsPair(c.(*tls.Conn))
+}
 
+// startTLS upgrades the connected socket fd in place (STARTTLS): Go
+// handshakes over its own copy of the socket and returns a new descriptor
+// for the plaintext side, which the caller puts in place of fd with dup2.
+// On failure fd is left as it was.
+func startTLS(ctx context.Context, fd int, host string, timeout time.Duration, o tlsOptions) (int, error) {
+	cfg, err := o.config(host)
+	if err != nil {
+		return -1, err
+	}
+	syscall.ForkLock.RLock()
+	nfd, err := syscall.Dup(fd)
+	if err == nil {
+		syscall.CloseOnExec(nfd)
+	}
+	syscall.ForkLock.RUnlock()
+	if err != nil {
+		return -1, err
+	}
+	f := os.NewFile(uintptr(nfd), "cairo-starttls")
+	raw, err := net.FileConn(f)
+	f.Close()
+	if err != nil {
+		return -1, err
+	}
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	conn := tls.Client(raw, cfg)
+	if err := conn.HandshakeContext(ctx); err != nil {
+		_ = raw.Close()
+		return -1, err
+	}
+	return tlsPair(conn)
+}
+
+// tlsPair hands a TLS connection to PHP as one end of a socket pair, with Go
+// pumping between the other end and the connection.
+func tlsPair(conn *tls.Conn) (int, error) {
 	syscall.ForkLock.RLock()
 	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
 	if err == nil {

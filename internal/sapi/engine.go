@@ -406,6 +406,25 @@ func (e *Engine) runOp(f *fiber, o op) {
 		default:
 			ev["result"] = map[string]any{"err": err.Error()}
 		}
+	case "starttls":
+		// stream_socket_enable_crypto(): the handshake runs here.
+		timeout := time.Duration(0)
+		if o.Timeout > 0 {
+			timeout = time.Duration(o.Timeout * float64(time.Second))
+		}
+		var opts tlsOptions
+		if o.TLS != nil {
+			opts = *o.TLS
+		}
+		fd, err := startTLS(f.ctx, o.Fd, o.Host, timeout, opts)
+		switch {
+		case err == nil:
+			ev["result"] = map[string]any{"fd": fd}
+		case f.ctx.Err() != nil:
+			ev["error"] = ctxError(f.ctx)
+		default:
+			ev["result"] = map[string]any{"err": err.Error()}
+		}
 	case "pg":
 		// A PDO pgsql call: runs here, on the fiber's goroutine, so the
 		// request's deadline cancels the query.
@@ -602,6 +621,33 @@ func goDialTLS(data *C.char, n C.int, errOut **C.char) C.int {
 		return -1
 	}
 	return C.int(fd)
+}
+
+// goStartTLS upgrades socket fd for code outside a Cairo fiber: the PHP
+// thread waits here. Returns the new descriptor, or -1 with *errOut set (the
+// caller frees it).
+//
+//export goStartTLS
+func goStartTLS(fd C.int, data *C.char, n C.int, errOut **C.char) C.int {
+	var req struct {
+		Host    string     `json:"host"`
+		Timeout float64    `json:"timeout"`
+		TLS     tlsOptions `json:"tls"`
+	}
+	if err := json.Unmarshal(C.GoBytes(unsafe.Pointer(data), n), &req); err != nil {
+		*errOut = C.CString(err.Error())
+		return -1
+	}
+	timeout := time.Duration(0)
+	if req.Timeout > 0 {
+		timeout = time.Duration(req.Timeout * float64(time.Second))
+	}
+	nfd, err := startTLS(context.Background(), int(fd), req.Host, timeout, req.TLS)
+	if err != nil {
+		*errOut = C.CString(err.Error())
+		return -1
+	}
+	return C.int(nfd)
 }
 
 //export goNextEvent

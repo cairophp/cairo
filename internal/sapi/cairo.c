@@ -21,7 +21,10 @@
 #include <php_network.h>
 #include <ext/json/php_json.h>
 #include <zend_smart_str.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
+#include <unistd.h>
 #include <sapi/embed/php_embed.h>
 #include <ext/standard/php_fopen_wrappers.h>
 
@@ -526,9 +529,152 @@ static int cairo_sock_connect(php_stream *stream, php_netstream_data_t *sock, ph
 	return 1;
 }
 
+// ---- STARTTLS: stream_socket_enable_crypto() on a plain socket ----------
+//
+// Go handshakes over its own copy of the socket and hands back a socket pair
+// end that carries plaintext; dup2() puts it in place of the stream's
+// descriptor, so the PHP stream (and its buffers, timeouts and hooks) stays
+// the same object. Only client-side TLS is offered; turning TLS off again is
+// not supported.
+
+// The method passed to STREAM_XPORT_CRYPTO_OP_SETUP, for the ENABLE call that
+// stream_socket_enable_crypto() makes right after it on the same thread.
+static __thread php_stream *crypto_setup_stream;
+static __thread int crypto_setup_method;
+
+// The peer's host name, from the stream's "host:port" or "tcp://host:port".
+static zend_string *crypto_peer_host(php_stream *stream)
+{
+	const char *p = stream->orig_path != NULL ? stream->orig_path : "";
+	const char *scheme = strstr(p, "://");
+	if (scheme != NULL) {
+		p = scheme + 3;
+	}
+	if (*p == '[') {
+		const char *end = strchr(p, ']');
+		return end != NULL ? zend_string_init(p + 1, end - p - 1, 0) : zend_string_init(p, strlen(p), 0);
+	}
+	const char *colon = strrchr(p, ':');
+	return zend_string_init(p, colon != NULL ? (size_t)(colon - p) : strlen(p), 0);
+}
+
+static int cairo_sock_enable_crypto(php_stream *stream, php_netstream_data_t *sock, int method)
+{
+	if (!(method & 1)) {   // the client bit of STREAM_CRYPTO_METHOD_*
+		php_error_docref(NULL, E_WARNING, "Cairo supports TLS only as a client");
+		return -1;
+	}
+	int version = 0;
+	switch (method) {
+		case STREAM_CRYPTO_METHOD_TLSv1_0_CLIENT: version = SOCK_TLS10; break;
+		case STREAM_CRYPTO_METHOD_TLSv1_1_CLIENT: version = SOCK_TLS11; break;
+		case STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT: version = SOCK_TLS12; break;
+		case STREAM_CRYPTO_METHOD_TLSv1_3_CLIENT: version = SOCK_TLS13; break;
+		default: version = SOCK_TLS; break;
+	}
+	zval opts;
+	cairo_tls_options(stream, version, &opts);
+	zend_string *host = crypto_peer_host(stream);
+	double timeout = -1;
+	if (sock->timeout.tv_sec != -1) {
+		timeout = (double)sock->timeout.tv_sec + (double)sock->timeout.tv_usec / 1e6;
+	}
+	int fd = sock->socket;
+	int fl = fcntl(fd, F_GETFL);
+	int fdfl = fcntl(fd, F_GETFD);
+
+	zval result;
+	ZVAL_UNDEF(&result);
+	if (EG(active_fiber) != NULL) {
+		zval fname, args[4];
+		ZVAL_STRING(&fname, "Cairo\\Internal\\Hooks::startTLS");
+		ZVAL_LONG(&args[0], fd);
+		ZVAL_STR_COPY(&args[1], host);
+		ZVAL_DOUBLE(&args[2], timeout);
+		ZVAL_COPY(&args[3], &opts);
+		int rc = call_user_function(NULL, NULL, &fname, &result, 4, args);
+		zval_ptr_dtor(&fname);
+		zval_ptr_dtor(&args[1]);
+		zval_ptr_dtor(&args[3]);
+		if (rc != SUCCESS) {
+			zval_ptr_dtor(&result);
+			ZVAL_UNDEF(&result);
+		}
+	}
+	if (EG(exception) == NULL && (Z_TYPE(result) == IS_UNDEF || Z_TYPE(result) == IS_NULL)) {
+		zval req;
+		array_init(&req);
+		add_assoc_str(&req, "host", zend_string_copy(host));
+		add_assoc_double(&req, "timeout", timeout);
+		Z_ADDREF(opts);
+		add_assoc_zval(&req, "tls", &opts);
+		smart_str json = {0};
+		php_json_encode(&json, &req, 0);
+		smart_str_0(&json);
+		zval_ptr_dtor(&req);
+		char *errmsg = NULL;
+		int nfd = goStartTLS(fd, ZSTR_VAL(json.s), (int)ZSTR_LEN(json.s), &errmsg);
+		smart_str_free(&json);
+		if (nfd >= 0) {
+			ZVAL_LONG(&result, nfd);
+		} else {
+			ZVAL_STRING(&result, errmsg != NULL ? errmsg : "TLS handshake failed");
+		}
+		free(errmsg);
+	}
+	zend_string_release(host);
+	zval_ptr_dtor(&opts);
+
+	int out = -1;
+	if (Z_TYPE(result) == IS_LONG && Z_LVAL(result) >= 0) {
+		int nfd = (int)Z_LVAL(result);
+		if (dup2(nfd, fd) >= 0) {
+			out = 1;
+		} else {
+			php_error_docref(NULL, E_WARNING, "SSL: could not swap the socket: %s", strerror(errno));
+		}
+		close(nfd);
+	} else if (Z_TYPE(result) == IS_STRING) {
+		php_error_docref(NULL, E_WARNING, "SSL operation failed: %s", Z_STRVAL(result));
+	}
+	// Go set the shared socket non-blocking; give the stream's descriptor back
+	// its own flags.
+	if (fl >= 0) {
+		fcntl(fd, F_SETFL, fl);
+	}
+	if (fdfl >= 0) {
+		fcntl(fd, F_SETFD, fdfl);
+	}
+	zval_ptr_dtor(&result);
+	return out;
+}
+
 static int cairo_sock_set_option(php_stream *stream, int option, int value, void *ptrparam)
 {
 	const php_stream_ops *orig = find_orig_ops(stream->ops);
+	if (option == PHP_STREAM_OPTION_CRYPTO_API && ptrparam != NULL) {
+		php_stream_xport_crypto_param *cp = (php_stream_xport_crypto_param *)ptrparam;
+		php_netstream_data_t *sock = (php_netstream_data_t *)stream->abstract;
+		if (cp->op == STREAM_XPORT_CRYPTO_OP_SETUP) {
+			crypto_setup_stream = stream;
+			crypto_setup_method = (int)cp->inputs.method;
+			cp->outputs.returncode = 0;
+			return PHP_STREAM_OPTION_RETURN_OK;
+		}
+		if (!cp->inputs.activate) {
+			php_error_docref(NULL, E_WARNING, "Cairo cannot turn TLS off on a stream");
+			cp->outputs.returncode = -1;
+			return PHP_STREAM_OPTION_RETURN_OK;
+		}
+		if (crypto_setup_stream != stream || sock == NULL || sock->socket == -1) {
+			php_error_docref(NULL, E_WARNING, "SSL/TLS was not set up on this stream");
+			cp->outputs.returncode = -1;
+			return PHP_STREAM_OPTION_RETURN_OK;
+		}
+		crypto_setup_stream = NULL;
+		cp->outputs.returncode = cairo_sock_enable_crypto(stream, sock, crypto_setup_method);
+		return PHP_STREAM_OPTION_RETURN_OK;
+	}
 	if (option == PHP_STREAM_OPTION_XPORT_API && ptrparam != NULL) {
 		php_stream_xport_param *xparam = (php_stream_xport_param *)ptrparam;
 		if (xparam->op == STREAM_XPORT_OP_CONNECT) {

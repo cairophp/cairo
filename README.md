@@ -516,6 +516,22 @@ is not available.
 
 Requirements: Go 1.24+, a C toolchain, the -dev packages listed in `scripts/build-php.sh`, and PHP 8.1 or newer (fibers).
 
+### One static binary
+
+```sh
+make static         # docker build -f Dockerfile.static --output dist .
+./dist/cairo serve server.php
+```
+
+`dist/cairo` holds Cairo, PHP and every extension above, linked against musl
+with no shared libraries, so it runs on any Linux of the same CPU
+architecture, including `FROM scratch` images. Pass `--build-arg
+PHP_VERSION=8.4.14` for another PHP. Before PHP 8.5 it has no opcache, since
+older PHP can only build opcache as a shared extension. Code is still compiled
+only once per thread, when `server.php` and the classes it loads are first
+used. CI builds it and runs the end-to-end tests against it.
+`scripts/build-static.sh` does the work and also runs outside Docker on Alpine.
+
 ## Layout
 
 ```

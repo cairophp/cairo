@@ -17,6 +17,7 @@ test:
 run: build
 	./bin/cairo serve examples/greeter/server.php
 
-# Build PHP (ZTS + embed) into $(PHP_PREFIX). Needs a C toolchain, bison, re2c, libxml2-dev, libsqlite3-dev.
+# Build PHP (ZTS + embed, opcache and the extensions in scripts/build-php.sh) into $(PHP_PREFIX).
+# Needs a C toolchain, bison, re2c and the -dev packages listed in that script.
 php:
 	scripts/build-php.sh 8.3.27 $(PHP_PREFIX)

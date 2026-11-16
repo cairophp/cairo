@@ -329,7 +329,7 @@ func messageFile(ns string, m protoreflect.MessageDescriptor) File {
 	}
 
 	// fromArray: protojson array -> object
-	b.WriteString("    /** Builds the message from its protojson array (what Cairo passes to handlers). */\n")
+	b.WriteString("    /**\n     * Builds the message from its protojson array (what Cairo passes to handlers).\n     *\n     * @param array<string, mixed> $data\n     */\n")
 	b.WriteString("    public static function fromArray(array $data): self\n    {\n        $m = new self();\n")
 	for _, f := range fields {
 		fmt.Fprintf(&b, "        if (array_key_exists('%s', $data) && $data['%s'] !== null) {\n", f.prop, f.prop)
@@ -348,7 +348,7 @@ func messageFile(ns string, m protoreflect.MessageDescriptor) File {
 	b.WriteString("        return $m;\n    }\n\n")
 
 	// toArray: object -> protojson array
-	b.WriteString("    /** The protojson array for this message (what Cairo sends back to Go). */\n")
+	b.WriteString("    /**\n     * The protojson array for this message (what Cairo sends back to Go).\n     *\n     * @return array<string, mixed>\n     */\n")
 	b.WriteString("    public function toArray(): array\n    {\n        $out = [];\n")
 	for _, f := range fields {
 		p := "$this->" + f.prop
@@ -466,15 +466,16 @@ func serviceFile(ns string, s protoreflect.ServiceDescriptor) File {
 	for i := 0; i < ms.Len(); i++ {
 		m := ms.Get(i)
 		in, out := msgType(m.Input()), msgType(m.Output())
+		stream := fmt.Sprintf("     *\n     * @param \\Cairo\\Grpc\\ServerStream<%s, %s> $stream\n     */\n", in, out)
 		switch {
 		case m.IsStreamingClient() && m.IsStreamingServer():
-			fmt.Fprintf(&b, "    /** Bidirectional: recv() %s from $stream, send() %s. */\n", in, out)
+			fmt.Fprintf(&b, "    /**\n     * Bidirectional: recv() %s from $stream, send() %s.\n%s", in, out, stream)
 			fmt.Fprintf(&b, "    public function %s(\\Cairo\\Grpc\\ServerStream $stream, \\Cairo\\Context $ctx): void;\n", m.Name())
 		case m.IsStreamingClient():
-			fmt.Fprintf(&b, "    /** Client streaming: recv() %s from $stream until null, then return the reply. */\n", in)
+			fmt.Fprintf(&b, "    /**\n     * Client streaming: recv() %s from $stream until null, then return the reply.\n%s", in, stream)
 			fmt.Fprintf(&b, "    public function %s(\\Cairo\\Grpc\\ServerStream $stream, \\Cairo\\Context $ctx): %s;\n", m.Name(), out)
 		case m.IsStreamingServer():
-			fmt.Fprintf(&b, "    /** Server streaming: send() each %s to $stream. */\n", out)
+			fmt.Fprintf(&b, "    /**\n     * Server streaming: send() each %s to $stream.\n%s", out, stream)
 			fmt.Fprintf(&b, "    public function %s(%s $request, \\Cairo\\Grpc\\ServerStream $stream, \\Cairo\\Context $ctx): void;\n", m.Name(), in)
 		default:
 			fmt.Fprintf(&b, "    public function %s(%s $request, \\Cairo\\Context $ctx): %s;\n", m.Name(), in, out)
@@ -512,7 +513,8 @@ func clientFile(ns string, s protoreflect.ServiceDescriptor) File {
 		in, out := msgType(m.Input()), msgType(m.Output())
 		path := fmt.Sprintf("/%s/%s", s.FullName(), m.Name())
 		if m.IsStreamingClient() || m.IsStreamingServer() {
-			opts := "     * @param array{metadata?: array<string, string|list<string>>, timeout?: float} $options\n"
+			opts := "     * @param array{metadata?: array<string, string|list<string>>, timeout?: float} $options\n" +
+				fmt.Sprintf("     * @return \\Cairo\\Grpc\\ClientStream<%s, %s>\n", in, out)
 			switch {
 			case m.IsStreamingClient() && m.IsStreamingServer():
 				fmt.Fprintf(&b, "\n    /**\n     * Bidirectional: send() %s, closeSend(), recv() or foreach for %s.\n     *\n%s     */\n", in, out, opts)

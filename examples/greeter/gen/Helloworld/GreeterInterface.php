@@ -21,10 +21,22 @@ interface GreeterInterface
 
     public function SayHello(\Helloworld\HelloRequest $request, \Cairo\Context $ctx): \Helloworld\HelloReply;
     public function SlowHello(\Helloworld\SlowHelloRequest $request, \Cairo\Context $ctx): \Helloworld\HelloReply;
-    /** Server streaming: send() each \Helloworld\HelloReply to $stream. */
+    /**
+     * Server streaming: send() each \Helloworld\HelloReply to $stream.
+     *
+     * @param \Cairo\Grpc\ServerStream<\Helloworld\CountRequest, \Helloworld\HelloReply> $stream
+     */
     public function CountUp(\Helloworld\CountRequest $request, \Cairo\Grpc\ServerStream $stream, \Cairo\Context $ctx): void;
-    /** Client streaming: recv() \Helloworld\HelloRequest from $stream until null, then return the reply. */
+    /**
+     * Client streaming: recv() \Helloworld\HelloRequest from $stream until null, then return the reply.
+     *
+     * @param \Cairo\Grpc\ServerStream<\Helloworld\HelloRequest, \Helloworld\HelloReply> $stream
+     */
     public function JoinNames(\Cairo\Grpc\ServerStream $stream, \Cairo\Context $ctx): \Helloworld\HelloReply;
-    /** Bidirectional: recv() \Helloworld\HelloRequest from $stream, send() \Helloworld\HelloReply. */
+    /**
+     * Bidirectional: recv() \Helloworld\HelloRequest from $stream, send() \Helloworld\HelloReply.
+     *
+     * @param \Cairo\Grpc\ServerStream<\Helloworld\HelloRequest, \Helloworld\HelloReply> $stream
+     */
     public function Chat(\Cairo\Grpc\ServerStream $stream, \Cairo\Context $ctx): void;
 }

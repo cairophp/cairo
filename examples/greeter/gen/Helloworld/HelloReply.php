@@ -19,7 +19,11 @@ final class HelloReply
         $this->remaining = $remaining;
     }
 
-    /** Builds the message from its protojson array (what Cairo passes to handlers). */
+    /**
+     * Builds the message from its protojson array (what Cairo passes to handlers).
+     *
+     * @param array<string, mixed> $data
+     */
     public static function fromArray(array $data): self
     {
         $m = new self();
@@ -32,7 +36,11 @@ final class HelloReply
         return $m;
     }
 
-    /** The protojson array for this message (what Cairo sends back to Go). */
+    /**
+     * The protojson array for this message (what Cairo sends back to Go).
+     *
+     * @return array<string, mixed>
+     */
     public function toArray(): array
     {
         $out = [];

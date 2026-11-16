@@ -514,6 +514,84 @@ namespace Cairo {
     }
 
     /**
+     * Middleware that Go runs before a request reaches PHP. Declare it on a
+     * server, in order (the first one runs first):
+     *
+     *     $http->use(Middleware::requestId())
+     *          ->use(Middleware::accessLog())
+     *          ->use(Middleware::cors(origins: ['https://app.example']))
+     *          ->use(Middleware::rateLimit(perSecond: 50, burst: 100))
+     *          ->use(Middleware::gzip());
+     *
+     * gRPC servers take requestId(), accessLog() and rateLimit().
+     */
+    final class Middleware
+    {
+        private function __construct(public readonly string $name, public readonly array $options = [])
+        {
+        }
+
+        /** Keeps a valid incoming X-Request-Id (gRPC: x-request-id) or sets a new one; it is echoed on the response. */
+        public static function requestId(): self
+        {
+            return new self('request_id');
+        }
+
+        /** One log line per request: method, path, status, bytes, time, client, request id. */
+        public static function accessLog(): self
+        {
+            return new self('access_log');
+        }
+
+        /**
+         * Cross-origin requests. Preflights are answered in Go; PHP never sees them.
+         * @param list<string> $origins allowed origins, or ['*']
+         */
+        public static function cors(
+            array $origins,
+            array $methods = [],
+            array $headers = [],
+            array $expose = [],
+            bool $credentials = false,
+            int $maxAge = 0,
+        ): self {
+            return new self('cors', [
+                'origins' => array_values($origins), 'methods' => array_values($methods),
+                'headers' => array_values($headers), 'expose' => array_values($expose),
+                'credentials' => $credentials, 'max_age' => $maxAge,
+            ]);
+        }
+
+        /**
+         * A token bucket: $perSecond requests a second, bursts up to $burst.
+         * Over the limit, HTTP answers 429 with Retry-After and gRPC answers
+         * RESOURCE_EXHAUSTED. $by is 'ip' (a bucket per client) or 'global'.
+         */
+        public static function rateLimit(float $perSecond, int $burst = 0, string $by = 'ip'): self
+        {
+            return new self('rate_limit', ['per_second' => $perSecond, 'burst' => $burst, 'by' => $by]);
+        }
+
+        /** Rejects request bodies larger than $bytes with 413. HTTP only. */
+        public static function maxBody(int $bytes): self
+        {
+            return new self('max_body', ['bytes' => $bytes]);
+        }
+
+        /** Gzips responses of at least $minBytes for clients that accept it. HTTP only. */
+        public static function gzip(int $minBytes = 1024): self
+        {
+            return new self('gzip', ['min_bytes' => $minBytes]);
+        }
+
+        /** @internal */
+        public function spec(): array
+        {
+            return ['name' => $this->name, 'options' => (object) $this->options];
+        }
+    }
+
+    /**
      * Runtime hooks: blocking PHP functions that suspend the current fiber
      * instead of blocking the whole thread. See App::hooks().
      */
@@ -574,6 +652,8 @@ namespace Cairo\Http {
         private array $static = [];
         private float $readTimeout = 0;
         private float $writeTimeout = 0;
+        /** @var list<\Cairo\Middleware> */
+        private array $middleware = [];
 
         /** @internal */
         public function __construct(private readonly App $app, private readonly string $listen)
@@ -623,6 +703,13 @@ namespace Cairo\Http {
             return $this;
         }
 
+        /** Add Go-side middleware; see Cairo\Middleware. */
+        public function use(\Cairo\Middleware $middleware): static
+        {
+            $this->middleware[] = $middleware;
+            return $this;
+        }
+
         public function timeouts(float $read = 0, float $write = 0): static
         {
             $this->readTimeout = $read;
@@ -639,6 +726,7 @@ namespace Cairo\Http {
                 'write_timeout' => $this->writeTimeout,
                 'routes' => $this->routes,
                 'static' => $this->static,
+                'middleware' => array_map(static fn ($m) => $m->spec(), $this->middleware),
             ];
         }
     }
@@ -732,6 +820,15 @@ namespace Cairo\Grpc {
         /** @var list<array{id:int,name:string}> */
         private array $services = [];
         private float $maxDuration = 0;
+        /** @var list<\Cairo\Middleware> */
+        private array $middleware = [];
+
+        /** Add Go-side middleware: requestId(), accessLog(), rateLimit(); see Cairo\Middleware. */
+        public function use(\Cairo\Middleware $middleware): static
+        {
+            $this->middleware[] = $middleware;
+            return $this;
+        }
 
         /** @internal */
         public function __construct(private readonly App $app, private readonly string $listen)
@@ -772,6 +869,7 @@ namespace Cairo\Grpc {
                 'protos' => $this->protos,
                 'max_duration' => $this->maxDuration,
                 'services' => $this->services,
+                'middleware' => array_map(static fn ($m) => $m->spec(), $this->middleware),
             ];
         }
     }

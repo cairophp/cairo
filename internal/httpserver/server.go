@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mohamed-samir907/cairo/internal/middleware"
 	"github.com/mohamed-samir907/cairo/internal/spec"
 )
 
@@ -47,13 +48,17 @@ func New(decl spec.HTTPServer, php Dispatcher, log *slog.Logger) (*Server, error
 		prefix := "/" + strings.Trim(s.Prefix, "/") + "/"
 		mux.Handle("GET "+prefix, http.StripPrefix(prefix, http.FileServer(http.Dir(s.Dir))))
 	}
+	handler, err := middleware.HTTP(mux, decl.Middleware, log)
+	if err != nil {
+		return nil, err
+	}
 	ln, err := net.Listen("tcp", decl.Listen)
 	if err != nil {
 		return nil, err
 	}
 	return &Server{
 		srv: &http.Server{
-			Handler:      mux,
+			Handler:      handler,
 			ReadTimeout:  seconds(decl.ReadTimeout),
 			WriteTimeout: seconds(decl.WriteTimeout),
 		},

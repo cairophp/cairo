@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -535,6 +536,59 @@ func TestGRPCDeadlineReachesPHP(t *testing.T) {
 	}
 	if took := time.Since(start); took > 2*time.Second {
 		t.Fatalf("deadline took %s", took)
+	}
+}
+
+// Go-side middleware declared in server.php: request ids reach PHP and come
+// back on the response, CORS preflights never reach PHP, big responses are
+// gzipped, and gRPC calls get an x-request-id header.
+func TestMiddleware(t *testing.T) {
+	resp, err := http.Get("http://" + httpAddr + "/request-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if id := resp.Header.Get("X-Request-Id"); len(id) != 32 || string(b) != id {
+		t.Fatalf("request id header %q, PHP saw %q", id, b)
+	}
+
+	req, _ := http.NewRequest("OPTIONS", "http://"+httpAddr+"/hello/x", nil)
+	req.Header.Set("Origin", "https://app.example")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 204 || resp.Header.Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("preflight: %d %v", resp.StatusCode, resp.Header)
+	}
+
+	tr := &http.Transport{DisableCompression: true}
+	req, _ = http.NewRequest("GET", "http://"+httpAddr+"/big", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	resp, err = tr.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.Header.Get("Content-Encoding") != "gzip" || len(raw) >= 5200 {
+		t.Fatalf("big response: encoding %q, %d bytes on the wire", resp.Header.Get("Content-Encoding"), len(raw))
+	}
+
+	g := newGreeter(t)
+	var header metadata.MD
+	md := g.svc.Methods().ByName("SayHello")
+	in := dynamicpb.NewMessage(md.Input())
+	in.Set(md.Input().Fields().ByName("name"), protoreflect.ValueOfString("x"))
+	out := dynamicpb.NewMessage(md.Output())
+	if err := g.conn.Invoke(context.Background(), "/helloworld.Greeter/SayHello", in, out, grpc.Header(&header)); err != nil {
+		t.Fatal(err)
+	}
+	if ids := header.Get("x-request-id"); len(ids) != 1 || len(ids[0]) != 32 {
+		t.Fatalf("grpc x-request-id: %v", ids)
 	}
 }
 

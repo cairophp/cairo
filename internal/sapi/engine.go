@@ -436,7 +436,20 @@ func (e *Engine) runOp(f *fiber, o op) {
 			ev["result"] = []string{}
 		}
 	default:
-		ev["error"] = "unknown operation " + o.Op
+		h, ok := goOps[o.Op]
+		if !ok {
+			ev["error"] = "unknown operation " + o.Op
+			break
+		}
+		res, err := h(f.ctx, []byte(o.Payload))
+		switch {
+		case f.ctx.Err() != nil:
+			ev["error"] = ctxError(f.ctx)
+		case err != nil:
+			ev["error"] = err.Error()
+		default:
+			ev["result"] = res
+		}
 	}
 	e.post(f.thread, ev)
 }

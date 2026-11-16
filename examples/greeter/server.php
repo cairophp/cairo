@@ -123,6 +123,52 @@ $http->get('/mysql', function (Request $req): Response {
     return Response::json($row);
 });
 
+// PDO pgsql through Cairo's Go-backed driver (pgx, no libpq): pg_sleep(1)
+// suspends this fiber, not the thread.
+$pgsql = static fn (): PDO => new PDO((string) getenv('CAIRO_TEST_PGSQL'), (string) getenv('CAIRO_TEST_PGSQL_USER'), (string) getenv('CAIRO_TEST_PGSQL_PASSWORD'));
+
+$http->get('/pgsql', function (Request $req) use ($pgsql): Response {
+    $st = $pgsql()->prepare('SELECT 42 AS answer FROM pg_sleep(:s)');
+    $st->execute(['s' => (float) ($req->query('seconds') ?? 1)]);
+    return Response::json($st->fetch(PDO::FETCH_ASSOC));
+});
+
+// Everyday PDO on the same driver: placeholders, types, transactions, errors.
+$http->get('/pgsql/crud', function () use ($pgsql): Response {
+    $pdo = $pgsql();
+    $table = 'cairo_crud_' . bin2hex(random_bytes(4));
+    $pdo->exec("CREATE TEMP TABLE $table (id serial PRIMARY KEY, name text, n int, ok bool, data bytea, price numeric)");
+    $st = $pdo->prepare("INSERT INTO $table (name, n, ok, data, price) VALUES (:name, :n, :ok, :data, :price)");
+    $st->bindValue('name', "O'Brien");
+    $st->bindValue('n', 42, PDO::PARAM_INT);
+    $st->bindValue('ok', true, PDO::PARAM_BOOL);
+    $st->bindValue('data', "\x00bin", PDO::PARAM_LOB);
+    $st->bindValue('price', '9.99');
+    $st->execute();
+    $id = $pdo->lastInsertId();
+    $pdo->prepare("INSERT INTO $table (name, n) VALUES (?, ?)")->execute(['second', null]);
+
+    $pdo->beginTransaction();
+    $inTx = $pdo->inTransaction();
+    $pdo->exec("DELETE FROM $table");
+    $pdo->rollBack();
+
+    try {
+        $pdo->query('SELECT * FROM no_such_table');
+        $error = null;
+    } catch (PDOException $e) {
+        $error = $e->getCode();
+    }
+    $rows = $pdo->query("SELECT name, n, ok, encode(data, 'hex') AS data, price FROM $table ORDER BY id")->fetchAll(PDO::FETCH_ASSOC);
+    return Response::json([
+        'rows' => $rows,
+        'id' => $id,
+        'in_tx' => $inTx,
+        'error' => $error,
+        'quoted' => $pdo->quote("it's"),
+    ]);
+});
+
 // Connect only: with Hook::CONNECT a slow connect suspends this fiber.
 $http->get('/connect', function (Request $req): Response {
     $start = microtime(true);

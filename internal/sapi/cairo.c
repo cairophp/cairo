@@ -26,6 +26,7 @@
 #include <ext/standard/php_fopen_wrappers.h>
 
 #include "cairo.h"
+#include "pgsql.h"
 #include "_cgo_export.h"
 
 // -1 is the boot thread (declare phase); 0..n-1 are worker threads.
@@ -685,6 +686,7 @@ static PHP_MINIT_FUNCTION(cairo)
 		}
 	}
 	cairo_hook_sockets();
+	cairo_register_pdo_pgsql();
 	cairo_fiber_slot = zend_get_resource_handle("cairo");
 	if (cairo_fiber_slot >= 0) {
 		zend_observer_fiber_switch_register(cairo_fiber_switch);

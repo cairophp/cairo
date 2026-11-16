@@ -149,6 +149,7 @@ threads, fibers your own code creates) the original functions run.
 | `Hook::CONNECT` | connects on those streams, DNS included, and TLS handshakes | Go's dialer; falls back to PHP when a `bindto` option is set |
 | `Hook::DNS` | `gethostbyname()`, `gethostbynamel()` | Go's resolver |
 | `Hook::CURL` | `curl_exec()` | libcurl still does the transfer; only its socket waits move to Go, so `curl_getinfo()`, `curl_error()` and callbacks are unchanged |
+| `Hook::PGSQL` | PDO `pgsql:` queries | Cairo's own driver; see PostgreSQL below |
 
 ```php
 $app->hooks(Hook::ALL);    // the default; Hook::NONE turns them off
@@ -160,8 +161,29 @@ hold a thousand OS threads. With one PHP thread, 50 PDO queries running
 `SELECT SLEEP(1)` finish in about 1 second (20 take 20 seconds with
 `Hook::NONE`).
 
-pdo_pgsql talks to libpq's own sockets, which no PHP-level hook sees; a
-Go-backed PDO driver for Postgres is planned.
+### PostgreSQL
+
+Cairo has its own PDO driver for `pgsql:` DSNs, written in C on the PDO side
+and backed by Go's pgx (`pgconn`) on the other, so it needs no libpq. Inside a
+request fiber each query runs on the fiber's goroutine (`Hook::PGSQL`): the
+fiber suspends, and the request's deadline cancels the query. With one PHP
+thread, 50 requests running `pg_sleep(1)` finish in about 1 second (50
+seconds with the hook off).
+
+```php
+$pdo = new PDO('pgsql:host=127.0.0.1;port=5432;dbname=app', 'app', 'secret');
+$st = $pdo->prepare('SELECT * FROM users WHERE id = :id');
+$st->execute(['id' => 7]);
+```
+
+Prepared statements, `?` and `:name` placeholders, transactions,
+`lastInsertId()`, `quote()`, `getColumnMeta()` and the error modes work as
+with pdo_pgsql; `int2/int4/int8` and `bool` columns come back as PHP ints and
+bools, `bytea` as a string (pdo_pgsql gives a stream). Results are read in
+full, like libpq's `PQexec`. Use one `PDO` per fiber (for example through
+`Cairo\Pool`): a connection runs one query at a time. The driver registers
+only when PHP has no pdo_pgsql of its own; the `PGSQL_ATTR_*` attributes,
+`pgsqlCopy*` and LISTEN/NOTIFY methods are not provided.
 
 ### TLS
 
@@ -212,8 +234,7 @@ first when the fiber ends; for a request, that is after the response is sent.
 
 Rules that keep fibers safe: per-request data lives on `Request` and
 `Context`, not in superglobals (Cairo does not fill `$_GET`/`$_SERVER`), and
-blocking calls that are not hooked yet (pdo_pgsql,
-`curl_multi_select()`) stall every fiber on their thread. Use `Cairo\offload()` for CPU-heavy work.
+blocking calls that are not hooked yet (`curl_multi_select()`) stall every fiber on their thread. Use `Cairo\offload()` for CPU-heavy work.
 
 ### Isolated mode
 
@@ -274,7 +295,7 @@ test/                 end-to-end tests
 ## Not done yet
 
 - Streaming gRPC.
-- `curl_multi` hooks, a Go-backed HTTP client, a pgx PDO driver.
+- `curl_multi` hooks, a Go-backed HTTP client.
 - Hard interruption of PHP code at a deadline; multipart uploads in isolated mode.
 - Opcache and a wider set of PHP extensions in the default build.
 - A Cairo-owned SAPI adapted from FrankenPHP; this prototype uses PHP's embed SAPI.

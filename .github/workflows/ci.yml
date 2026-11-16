@@ -18,6 +18,16 @@ jobs:
         options: >-
           --health-cmd "healthcheck.sh --connect --innodb_initialized"
           --health-interval 5s --health-timeout 5s --health-retries 20
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: cairo
+          POSTGRES_PASSWORD: cairo
+          POSTGRES_DB: cairo
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U cairo"
+          --health-interval 5s --health-timeout 5s --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -43,4 +53,7 @@ jobs:
           CAIRO_TEST_MYSQL: "mysql:host=127.0.0.1;port=3306"
           CAIRO_TEST_MYSQL_USER: root
           CAIRO_TEST_MYSQL_PASSWORD: cairo
+          CAIRO_TEST_PGSQL: "pgsql:host=127.0.0.1;port=5432;dbname=cairo"
+          CAIRO_TEST_PGSQL_USER: cairo
+          CAIRO_TEST_PGSQL_PASSWORD: cairo
         run: make test

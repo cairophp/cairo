@@ -788,6 +788,74 @@ func TestErrorModeStaysWithItsFiber(t *testing.T) {
 	t.Logf("pdo: %s", <-done)
 }
 
+// pgsqlEnv skips a test unless CAIRO_TEST_PGSQL (a PDO DSN) is set; CI runs
+// these against a PostgreSQL service.
+func pgsqlEnv(t *testing.T) {
+	if os.Getenv("CAIRO_TEST_PGSQL") == "" {
+		t.Skip("CAIRO_TEST_PGSQL is not set")
+	}
+}
+
+// Cairo's PDO pgsql driver: the PHP build has no libpq or pdo_pgsql.
+func TestPDOPgsql(t *testing.T) {
+	pgsqlEnv(t)
+	var out struct {
+		Rows   []map[string]any `json:"rows"`
+		ID     string           `json:"id"`
+		InTx   bool             `json:"in_tx"`
+		Error  string           `json:"error"`
+		Quoted string           `json:"quoted"`
+	}
+	raw := get(t, "/pgsql/crud")
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		t.Fatalf("%s: %v", raw, err)
+	}
+	want := `[{"data":"0062696e","n":42,"name":"O'Brien","ok":true,"price":"9.99"},{"data":null,"n":null,"name":"second","ok":null,"price":null}]`
+	if got, _ := json.Marshal(out.Rows); string(got) != want {
+		t.Errorf("rows %s\nwant %s", got, want)
+	}
+	if out.ID != "1" || !out.InTx || out.Error != "42P01" || out.Quoted != "'it''s'" {
+		t.Errorf("got %+v", out)
+	}
+}
+
+// 50 requests each run SELECT pg_sleep(1) through PDO; on one PHP thread they
+// overlap.
+func TestHookedPDOPgsqlDoesNotBlockTheThread(t *testing.T) {
+	pgsqlEnv(t)
+	const n = 50
+	client := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: n, MaxConnsPerHost: n}}
+	start := time.Now()
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := client.Get("http://" + httpAddr + "/pgsql?seconds=1")
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != 200 || strings.TrimSpace(string(b)) != `{"answer":42}` {
+				errs <- fmt.Errorf("status %d body %q", resp.StatusCode, b)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	took := time.Since(start)
+	t.Logf("%d PDO pgsql queries running pg_sleep(1), on 1 PHP thread: %s", n, took.Round(time.Millisecond))
+	if took > 3*time.Second {
+		t.Fatalf("took %s; PDO pgsql blocked the thread", took)
+	}
+}
+
 func TestUploadInFiberMode(t *testing.T) {
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)

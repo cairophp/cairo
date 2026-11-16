@@ -16,6 +16,7 @@ package sapi
 #cgo LDFLAGS: -lphp -lcurl
 #include <stdlib.h>
 #include "cairo.h"
+#include "pgsql.h"
 */
 import "C"
 
@@ -405,6 +406,25 @@ func (e *Engine) runOp(f *fiber, o op) {
 		default:
 			ev["result"] = map[string]any{"err": err.Error()}
 		}
+	case "pg":
+		// A PDO pgsql call: runs here, on the fiber's goroutine, so the
+		// request's deadline cancels the query.
+		req, err := pgRequestFrom([]byte(o.Payload))
+		if err != nil {
+			ev["error"] = err.Error()
+			break
+		}
+		resp := pgDo(f.ctx, req)
+		if f.ctx.Err() != nil {
+			if id, ok := resp["result"].(int64); ok {
+				if r := goPgTake(C.longlong(id)); r != nil {
+					C.cairo_pg_result_free(r)
+				}
+			}
+			ev["error"] = ctxError(f.ctx)
+			break
+		}
+		ev["result"] = resp
 	case "lookup":
 		ips, err := lookupIPv4(f.ctx, o.Host)
 		switch {

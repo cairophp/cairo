@@ -668,7 +668,9 @@ namespace Cairo {
         public const CONNECT = 4;
         /** gethostbyname(), gethostbynamel(), through Go's resolver */
         public const DNS = 8;
-        public const ALL = self::SLEEP | self::SOCKETS | self::CONNECT | self::DNS | self::CURL;
+        /** PDO pgsql: Cairo's Go-backed driver runs each query on the fiber's goroutine */
+        public const PGSQL = 32;
+        public const ALL = self::SLEEP | self::SOCKETS | self::CONNECT | self::DNS | self::CURL | self::PGSQL;
     }
 
     /** An offloaded job threw; the message names the original exception class. */
@@ -1562,6 +1564,19 @@ namespace Cairo\Internal {
             }
             $ips = self::lookup($hostname);
             return $ips === [] ? false : $ips;
+        }
+
+        /**
+         * One request of Cairo's PDO pgsql driver (JSON in, JSON out), run on
+         * the fiber's goroutine. Null lets the driver wait for Go instead.
+         */
+        public static function pg(string $request): ?string
+        {
+            if (!self::on(\Cairo\Hook::PGSQL)) {
+                return null;
+            }
+            $result = Scheduler::instance()->op(['op' => 'pg', 'payload' => $request]);
+            return json_encode($result, JSON_THROW_ON_ERROR);
         }
 
         /** is_uploaded_file(): true for this thread's Cairo uploads. */

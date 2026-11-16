@@ -62,6 +62,10 @@ type Engine struct {
 	spec    *spec.Spec
 	rawSpec []byte
 
+	// slots caps requests in flight (App::maxInFlight() per request thread);
+	// nil when there is no cap.
+	slots chan struct{}
+
 	nextID atomic.Int64
 	calls  sync.Map // call id -> *call   (a request or an offload job awaiting PHP's answer)
 	fibers sync.Map // fiber id -> *fiber (the goroutine that serves a PHP fiber)
@@ -202,6 +206,9 @@ func Start(opts Options) (*Engine, error) {
 	if nw+no > maxThreads/2 {
 		return nil, fmt.Errorf("too many PHP threads: %d (at most %d)", nw+no, maxThreads/2)
 	}
+	if e.spec.MaxInFlight > 0 {
+		e.slots = make(chan struct{}, e.spec.MaxInFlight*nw)
+	}
 	e.workers = make([]atomic.Pointer[thread], nw)
 	e.offload = make([]atomic.Pointer[thread], no)
 	var all []*thread
@@ -313,6 +320,17 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 // returns ctx.Err() and a helper goroutine keeps answering the fiber (with
 // the context's error) until PHP finishes.
 func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error) {
+	release := func() {}
+	if e.slots != nil {
+		// Backpressure: wait here, in Go, for a free slot.
+		select {
+		case e.slots <- struct{}{}:
+			var once sync.Once
+			release = func() { once.Do(func() { <-e.slots }) }
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	t := acquire(e.workers)
 	c := &call{thread: t, resp: make(chan []byte, 1)}
@@ -331,6 +349,7 @@ func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error
 	if err != nil {
 		t.sendMu.RUnlock()
 		e.forget(id, c, f)
+		release()
 		return nil, err
 	}
 	select {
@@ -339,11 +358,13 @@ func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error
 	case <-ctx.Done():
 		t.sendMu.RUnlock()
 		e.forget(id, c, f)
+		release()
 		return nil, ctx.Err()
 	}
 	for {
 		select {
 		case r := <-c.resp:
+			release()
 			e.fibers.Delete(id)
 			cancel()
 			if r == nil {
@@ -367,6 +388,7 @@ func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error
 				for {
 					select {
 					case <-c.resp:
+						release() // the slot is free once PHP is done with the request
 						e.fibers.Delete(id)
 						return
 					case o := <-f.ops:

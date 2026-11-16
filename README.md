@@ -53,7 +53,11 @@ cairo serve server.php
 4. **CPU work.** `Cairo\offload('fn', ...$args)` runs a function on the offload
    pool, so a heavy computation never stalls the fibers on a request thread.
    Code cannot move between PHP threads, so pass a function name or
-   `[Class::class, 'staticMethod']`, with serializable arguments.
+   `[Class::class, 'staticMethod']`, with serializable arguments, or a
+   `Cairo\OffloadTask` object: it is serialized with its input, and its
+   `run()` runs on an offload thread (`offload(new Thumbnail($path, 200))`).
+   A job that throws raises `Cairo\OffloadException` naming the original
+   exception class.
 
 ### gRPC
 
@@ -512,6 +516,10 @@ $app->maxRequests(10_000)   // after this many requests
 
 Cairo starts the replacement first and sends new requests to it, then lets the
 old thread finish the requests it holds before it exits, so no request fails.
+
+`$app->maxInFlight(100)` caps the requests each request thread holds at once.
+Requests over the cap wait in Go until one finishes, or until their own
+deadline. A waiting request costs a goroutine, not PHP memory.
 `examples/supervise` shows both.
 
 ### Amp and Revolt
@@ -580,6 +588,29 @@ is not available.
 
 Requirements: Go 1.24+, a C toolchain, the -dev packages listed in `scripts/build-php.sh`, and PHP 8.1 or newer (fibers).
 
+### One static binary
+
+```sh
+make static         # docker build -f Dockerfile.static --output dist .
+./dist/cairo serve server.php
+```
+
+`dist/cairo` holds Cairo, PHP and every extension above, linked against musl
+with no shared libraries, so it runs on any Linux of the same CPU
+architecture, including `FROM scratch` images. Pass `--build-arg
+PHP_VERSION=8.4.14` for another PHP. Before PHP 8.5 it has no opcache, since
+older PHP can only build opcache as a shared extension. Code is still compiled
+only once per thread, when `server.php` and the classes it loads are first
+used. CI builds it and runs the end-to-end tests against it.
+`scripts/build-static.sh` does the work and also runs outside Docker on Alpine.
+
+## License notices
+
+Cairo's SAPI is adapted from PHP's embed SAPI (PHP License 3.01) and follows
+FrankenPHP (MIT) in places; `third_party/NOTICES` has both licenses. The static
+binary also links PHP, its extensions and their libraries, under their own
+licenses.
+
 ## Layout
 
 ```
@@ -597,4 +628,5 @@ examples/isolated/    isolated mode: superglobals, echo/header(), resets
 examples/supervise/   thread restart after a fatal error, maxRequests and maxMemory
 examples/revolt/      Amp and Revolt on Cairo's scheduler (Composer project)
 test/                 end-to-end tests
+third_party/NOTICES   licenses of code Cairo adapts (PHP embed SAPI, FrankenPHP)
 ```

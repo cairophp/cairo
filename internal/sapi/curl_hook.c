@@ -22,10 +22,26 @@
 #include <php.h>
 #include <curl/curl.h>
 
+// In the static binary (scripts/build-static.sh) libcurl is linked in, so the
+// executable cannot simply define curl's functions over the library's. There
+// the linker renames calls instead (-Wl,--wrap=curl_easy_perform and
+// -Wl,--wrap=curl_multi_wait): callers reach __wrap_curl_easy_perform here,
+// and __real_curl_easy_perform is libcurl's own.
+#ifdef CAIRO_STATIC_CURL
+#define CAIRO_HOOK(name) __wrap_##name
+CURLcode __real_curl_easy_perform(CURL *easy);
+CURLMcode __real_curl_multi_wait(CURLM *multi, struct curl_waitfd extra[], unsigned int extra_nfds, int timeout_ms, int *numfds);
+#else
+#define CAIRO_HOOK(name) name
+#endif
+
 typedef CURLcode (*easy_perform_fn)(CURL *);
 
 static CURLcode real_easy_perform(CURL *easy)
 {
+#ifdef CAIRO_STATIC_CURL
+	return __real_curl_easy_perform(easy);
+#endif
 	static easy_perform_fn real = NULL;
 	if (real == NULL) {
 		real = (easy_perform_fn)dlsym(RTLD_NEXT, "curl_easy_perform");
@@ -40,6 +56,9 @@ typedef CURLMcode (*multi_wait_fn)(CURLM *, struct curl_waitfd[], unsigned int, 
 
 static CURLMcode real_multi_wait(CURLM *multi, struct curl_waitfd extra[], unsigned int extra_nfds, int timeout_ms, int *numfds)
 {
+#ifdef CAIRO_STATIC_CURL
+	return __real_curl_multi_wait(multi, extra, extra_nfds, timeout_ms, numfds);
+#endif
 	static multi_wait_fn real = NULL;
 	if (real == NULL) {
 		real = (multi_wait_fn)dlsym(RTLD_NEXT, "curl_multi_wait");
@@ -94,7 +113,7 @@ static int wait_curl_sockets(CURLM *multi, long timeout_ms)
 	return out != 0 ? 1 : 0;
 }
 
-CURLcode curl_easy_perform(CURL *easy)
+CURLcode CAIRO_HOOK(curl_easy_perform)(CURL *easy)
 {
 	if (EG(active_fiber) == NULL) {
 		return real_easy_perform(easy);
@@ -154,7 +173,7 @@ CURLcode curl_easy_perform(CURL *easy)
 	return result;
 }
 
-CURLMcode curl_multi_wait(CURLM *multi, struct curl_waitfd extra[], unsigned int extra_nfds, int timeout_ms, int *numfds)
+CURLMcode CAIRO_HOOK(curl_multi_wait)(CURLM *multi, struct curl_waitfd extra[], unsigned int extra_nfds, int timeout_ms, int *numfds)
 {
 	// Extra descriptors are not something PHP passes; leave those to curl.
 	if (EG(active_fiber) == NULL || extra_nfds != 0) {

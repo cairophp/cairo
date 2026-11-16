@@ -4,6 +4,7 @@
 // memory_limit) is restarted, and the requests it held get 500 instead of
 // hanging. App::maxRequests() and App::maxMemory() replace a thread with a
 // fresh one before leaks pile up, without failing any request.
+// App::maxInFlight() caps requests per thread; the rest wait in Go.
 
 declare(strict_types=1);
 
@@ -25,7 +26,8 @@ Boot::$id = bin2hex(random_bytes(6));
 
 $app = new App();
 $app->maxRequests((int) (getenv('CAIRO_MAX_REQUESTS') ?: 0))
-    ->maxMemory(getenv('CAIRO_MAX_MEMORY') ?: 0);
+    ->maxMemory(getenv('CAIRO_MAX_MEMORY') ?: 0)
+    ->maxInFlight((int) (getenv('CAIRO_MAX_IN_FLIGHT') ?: 0));
 
 $http = $app->http(getenv('CAIRO_HTTP') ?: ':8080');
 

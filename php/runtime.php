@@ -23,6 +23,7 @@ namespace Cairo {
         private int $offloadThreads = 0;
         private int $maxRequests = 0;
         private int $maxMemory = 0;
+        private int $maxInFlight = 0;
         private int $hooks = Hook::ALL;
         private string $concurrency = 'fibers';
         /** @var list<object|callable> */
@@ -75,6 +76,21 @@ namespace Cairo {
         public function isolated(): bool
         {
             return $this->concurrency === 'isolated';
+        }
+
+        /**
+         * Backpressure: at most $n requests in flight per request thread (0,
+         * the default, means no cap). Further requests wait in Go, which costs
+         * a goroutine, not PHP memory, until one finishes or their context
+         * ends. Use it when each request holds a lot of memory.
+         */
+        public function maxInFlight(int $n): static
+        {
+            if ($n < 0) {
+                throw new \InvalidArgumentException('maxInFlight must be 0 or more');
+            }
+            $this->maxInFlight = $n;
+            return $this;
         }
 
         /**
@@ -200,7 +216,7 @@ namespace Cairo {
         /** @internal */
         public function spec(): array
         {
-            $spec = ['threads' => $this->threads, 'offload_threads' => $this->offloadThreads, 'http' => [], 'grpc' => []];
+            $spec = ['threads' => $this->threads, 'offload_threads' => $this->offloadThreads, 'max_in_flight' => $this->maxInFlight, 'http' => [], 'grpc' => []];
             foreach ($this->servers as $server) {
                 if ($server instanceof Http\Server) {
                     $spec['http'][] = $server->spec();
@@ -947,22 +963,43 @@ namespace Cairo {
     }
 
     /**
+     * A job for offload() that carries its own input: the object is
+     * serialized, sent to an offload thread and run() there. Its class must be
+     * loadable on every thread (declared or autoloaded from server.php).
+     *
+     *     final class Thumbnail implements OffloadTask {
+     *         public function __construct(private string $path, private int $width) {}
+     *         public function run(): string { ... }
+     *     }
+     *     $png = offload(new Thumbnail($path, 200));
+     */
+    interface OffloadTask
+    {
+        public function run(): mixed;
+    }
+
+    /**
      * Run CPU-heavy work on the offload thread pool, so this request thread
      * keeps serving other fibers. The calling fiber suspends until it is done.
      *
-     * Code cannot move between PHP threads, so $fn must be a function name or
-     * [ClassName::class, 'staticMethod'] that server.php makes available, and
-     * $args and the result must be serializable. Closures are not accepted.
+     * Code cannot move between PHP threads, so $fn must be an OffloadTask
+     * object, a function name or [ClassName::class, 'staticMethod'] that
+     * server.php makes available, and the task, $args and the result must be
+     * serializable. Closures are not accepted.
      *
-     * @param callable-string|array{0:class-string,1:string} $fn
+     * @param OffloadTask|callable-string|array{0:class-string,1:string} $fn
      */
-    function offload(string|array $fn, mixed ...$args): mixed
+    function offload(OffloadTask|string|array $fn, mixed ...$args): mixed
     {
-        if (\Fiber::getCurrent() === null || !Scheduler::running()) {
-            return $fn(...$args);   // already off the request threads
+        if ($fn instanceof OffloadTask && $args !== []) {
+            throw new \InvalidArgumentException('offload() takes no arguments with an OffloadTask; give them to the task');
         }
-        if (!is_callable($fn)) {
-            throw new \InvalidArgumentException('offload() needs a function name or [Class::class, "staticMethod"]');
+        if (\Fiber::getCurrent() === null || !Scheduler::running()) {
+            // already off the request threads
+            return $fn instanceof OffloadTask ? $fn->run() : $fn(...$args);
+        }
+        if (!$fn instanceof OffloadTask && !is_callable($fn)) {
+            throw new \InvalidArgumentException('offload() needs an OffloadTask, a function name or [Class::class, "staticMethod"]');
         }
         $payload = base64_encode(serialize([$fn, $args]));
         $result = Scheduler::instance()->op(['op' => 'offload', 'payload' => $payload]);
@@ -3161,7 +3198,7 @@ namespace Cairo\Internal {
                 }
                 try {
                     [$fn, $args] = unserialize(base64_decode($event['payload']));
-                    $out = ['ok' => true, 'value' => $fn(...$args)];
+                    $out = ['ok' => true, 'value' => $fn instanceof \Cairo\OffloadTask ? $fn->run() : $fn(...$args)];
                 } catch (\Throwable $e) {
                     $out = ['ok' => false, 'class' => $e::class, 'message' => $e->getMessage()];
                 }

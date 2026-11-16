@@ -37,6 +37,17 @@ namespace Cairo {
         }
 
         /**
+         * Development aid: log, with its stack, any request that keeps its
+         * PHP thread busy for more than $seconds without waiting on Cairo (a
+         * CPU loop, or a blocking call Cairo does not hook), since every other
+         * request on that thread waits meanwhile. 0 (the default) turns it off.
+         * Isolated mode, where blocking is expected, is not reported.
+         */
+        public function detectBlocking(float $seconds = 0.1): static
+        {
+        }
+
+        /**
          * Backpressure: at most $n requests in flight per request thread (0,
          * the default, means no cap). Further requests wait in Go, which costs
          * a goroutine, not PHP memory, until one finishes or their context
@@ -1437,5 +1448,145 @@ namespace Cairo\Net {
 
     final class TimeoutException extends NetException
     {
+    }
+}
+
+namespace Cairo\Sql {
+    /**
+     * A SQL query failed. $sqlState is the five-character SQLSTATE code
+     * (e.g. 23505 for a unique violation), when the database sent one.
+     */
+    class SqlException extends \RuntimeException
+    {
+        public function __construct(string $message, public readonly ?string $sqlState = null, public readonly ?string $detail = null)
+        {
+        }
+    }
+
+    /** A binary parameter (bytea). Values read back from bytea columns are plain strings. */
+    final class Bytes
+    {
+        public function __construct(public readonly string $bytes)
+        {
+        }
+    }
+
+    /** What Db and Tx share: running statements. */
+    abstract class Queryable
+    {
+        /** @return array<string, int> which pool or transaction runs the statement */
+        abstract protected function target(): array;
+
+        /**
+         * Run a query and return every row as column => value. Parameters
+         * are PostgreSQL's $1, $2, ... Only the calling fiber waits.
+         *
+         * @param list<mixed> $params
+         * @return list<array<string, mixed>>
+         */
+        public function query(string $sql, array $params = []): array
+        {
+        }
+
+        /**
+         * The first row, or null when there is none.
+         *
+         * @param list<mixed> $params
+         * @return array<string, mixed>|null
+         */
+        public function queryRow(string $sql, array $params = []): ?array
+        {
+        }
+
+        /**
+         * The first column of the first row, or null when there is no row.
+         *
+         * @param list<mixed> $params
+         */
+        public function queryValue(string $sql, array $params = []): mixed
+        {
+        }
+
+        /**
+         * Run a statement and return how many rows it changed.
+         *
+         * @param list<mixed> $params
+         */
+        public function exec(string $sql, array $params = []): int
+        {
+        }
+    }
+
+    /**
+     * A PostgreSQL connection pool in Go (database/sql with pgx), shared by
+     * every PHP thread: Db::open() with the same DSN and options returns the
+     * same pool on each thread, so max_open bounds the connections of the
+     * whole server.
+     *
+     *     $db = Db::open('postgres://app:secret@127.0.0.1/app', ['max_open' => 20]);
+     *     $users = $db->query('SELECT id, name FROM users WHERE team = $1', [$team]);
+     *
+     * Integers, floats, booleans, strings and nulls come back as such; bytea
+     * as a string, timestamps as RFC 3339 strings, numeric, json and the rest
+     * as PostgreSQL's text form.
+     */
+    final class Db extends Queryable
+    {
+        /**
+         * Options: max_open (connections, 0 for no limit; default 10),
+         * max_idle (default 2), max_lifetime and max_idle_time (seconds).
+         * Connecting is lazy: a bad DSN shows on the first query.
+         *
+         * @param array{max_open?: int, max_idle?: int, max_lifetime?: float, max_idle_time?: float} $options
+         */
+        public static function open(string $dsn, array $options = []): self
+        {
+        }
+
+        /**
+         * Run $fn in a transaction: committed when $fn returns, rolled back
+         * when it throws (the exception is rethrown). Returns what $fn returns.
+         * A transaction left open when its fiber ends is rolled back.
+         *
+         * @template T
+         * @param callable(Tx): T $fn
+         * @param array{isolation?: 'read committed'|'repeatable read'|'serializable', read_only?: bool} $options
+         * @return T
+         */
+        public function transaction(callable $fn, array $options = []): mixed
+        {
+        }
+
+        /** @return array{max_open: int, open: int, in_use: int, idle: int, wait_count: int, wait_time: float} */
+        public function stats(): array
+        {
+        }
+
+        protected function target(): array
+        {
+        }
+
+        /** @internal */
+        public static function call(string $op, array $payload): mixed
+        {
+        }
+    }
+
+    /** A transaction; see Db::transaction(). */
+    final class Tx extends Queryable
+    {
+        /** @internal */
+        public function __construct(private readonly int $tx)
+        {
+        }
+
+        protected function target(): array
+        {
+        }
+
+        /** @internal commit (true) or roll back */
+        public function end(bool $commit): void
+        {
+        }
     }
 }

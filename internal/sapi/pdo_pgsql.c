@@ -9,6 +9,7 @@
 //
 // The driver registers as "pgsql" when PHP has no pdo_pgsql of its own.
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -716,8 +717,8 @@ static void pg_fetch_err(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zval *info)
 
 // ---- PDO::pgsql* methods -----------------------------------------------------
 //
-// pdo_pgsql's driver-specific methods: COPY in and out, LISTEN/NOTIFY and the
-// backend PID. Large objects (pgsqlLOB*) are not provided.
+// pdo_pgsql's driver-specific methods: COPY in and out, LISTEN/NOTIFY, large
+// objects and the backend PID.
 
 static void pg_error_msg(pdo_dbh_t *dbh, const char *state, const char *msg)
 {
@@ -1026,6 +1027,287 @@ static ZEND_NAMED_FUNCTION(pg_get_pid)
 	RETURN_LONG(pid);
 }
 
+// ---- Large objects -------------------------------------------------------------
+//
+// pgsqlLOBCreate(), pgsqlLOBOpen() and pgsqlLOBUnlink(), as in pdo_pgsql.
+// Each operation is one statement on the server's lo_* functions (Go runs
+// it, so in a fiber only the fiber waits). As with pdo_pgsql, large objects
+// need a transaction: a descriptor lasts until the transaction ends.
+
+#define CAIRO_INV_WRITE 0x00020000
+#define CAIRO_INV_READ  0x00040000
+
+// Sends one "lo" request; 1 with *resp set on success. On failure the error
+// is recorded on dbh (raise it with PDO_HANDLE_DBH_ERR, or warn) and 0 is
+// returned; an exception may be pending.
+static int pg_lo_call(pdo_dbh_t *dbh, zval *req, zval *resp)
+{
+	int done = pg_call(req, resp);
+	zval_ptr_dtor(req);
+	if (!done) {
+		return 0;
+	}
+	if (!resp_ok(resp)) {
+		pg_error(dbh, NULL, resp);
+		zval_ptr_dtor(resp);
+		ZVAL_UNDEF(resp);
+		return 0;
+	}
+	return 1;
+}
+
+static void pg_lo_request(pdo_dbh_t *dbh, zval *req, const char *op)
+{
+	cairo_pg_dbh *H = dbh->driver_data;
+	pg_request(req, "lo", H->conn);
+	add_assoc_string(req, "lo", (char *)op);
+}
+
+static bool pg_parse_oid(zend_string *s, zend_long *oid)
+{
+	char *end;
+	errno = 0;
+	unsigned long long v = strtoull(ZSTR_VAL(s), &end, 10);
+	if (ZSTR_LEN(s) == 0 || *end != '\0' || errno != 0 || v == 0 || v > 0xFFFFFFFFULL) {
+		return false;
+	}
+	*oid = (zend_long)v;
+	return true;
+}
+
+typedef struct {
+	zval dbh;        // keeps the PDO object alive while the stream is open
+	zend_long fd;
+} cairo_pg_lob;
+
+static void pg_lob_warn(pdo_dbh_t *dbh)
+{
+	cairo_pg_dbh *H = dbh->driver_data;
+	if (EG(exception) == NULL) {
+		php_error_docref(NULL, E_WARNING, "Large object: %s", H != NULL && H->errmsg != NULL ? H->errmsg : "failed");
+	}
+}
+
+static ssize_t pg_lob_write(php_stream *stream, const char *buf, size_t count)
+{
+	cairo_pg_lob *L = stream->abstract;
+	pdo_dbh_t *dbh = Z_PDO_DBH_P(&L->dbh);
+	zval req, resp;
+	pg_lo_request(dbh, &req, "write");
+	add_assoc_long(&req, "fd", L->fd);
+	add_assoc_str(&req, "data", php_base64_encode((const unsigned char *)buf, count));
+	if (!pg_lo_call(dbh, &req, &resp)) {
+		pg_lob_warn(dbh);
+		return -1;
+	}
+	zend_long n = resp_long(&resp, "value");
+	zval_ptr_dtor(&resp);
+	return n < 0 ? -1 : (ssize_t)n;
+}
+
+static ssize_t pg_lob_read(php_stream *stream, char *buf, size_t count)
+{
+	cairo_pg_lob *L = stream->abstract;
+	pdo_dbh_t *dbh = Z_PDO_DBH_P(&L->dbh);
+	if (count > INT32_MAX) {
+		count = INT32_MAX;
+	}
+	zval req, resp;
+	pg_lo_request(dbh, &req, "read");
+	add_assoc_long(&req, "fd", L->fd);
+	add_assoc_long(&req, "n", (zend_long)count);
+	if (!pg_lo_call(dbh, &req, &resp)) {
+		pg_lob_warn(dbh);
+		return -1;
+	}
+	zval *data = zend_hash_str_find(Z_ARRVAL(resp), "data", 4);
+	zend_string *bytes = data != NULL && Z_TYPE_P(data) == IS_STRING
+		? php_base64_decode((unsigned char *)Z_STRVAL_P(data), Z_STRLEN_P(data)) : NULL;
+	zval_ptr_dtor(&resp);
+	size_t n = bytes != NULL ? MIN(ZSTR_LEN(bytes), count) : 0;
+	if (n > 0) {
+		memcpy(buf, ZSTR_VAL(bytes), n);
+	}
+	if (bytes != NULL) {
+		zend_string_release(bytes);
+	}
+	if (n < count) {
+		stream->eof = 1;   // loread returns less only at the end of the object
+	}
+	return (ssize_t)n;
+}
+
+static int pg_lob_close(php_stream *stream, int close_handle)
+{
+	cairo_pg_lob *L = stream->abstract;
+	pdo_dbh_t *dbh = Z_PDO_DBH_P(&L->dbh);
+	if (close_handle && dbh->driver_data != NULL && EG(exception) == NULL) {
+		zval req, resp;
+		pg_lo_request(dbh, &req, "close");
+		add_assoc_long(&req, "fd", L->fd);
+		if (pg_lo_call(dbh, &req, &resp)) {
+			zval_ptr_dtor(&resp);
+		}
+	}
+	zval_ptr_dtor(&L->dbh);
+	efree(L);
+	return 0;
+}
+
+static int pg_lob_flush(php_stream *stream)
+{
+	return 0;
+}
+
+static int pg_lob_seek(php_stream *stream, zend_off_t offset, int whence, zend_off_t *newoffset)
+{
+	cairo_pg_lob *L = stream->abstract;
+	pdo_dbh_t *dbh = Z_PDO_DBH_P(&L->dbh);
+	zval req, resp;
+	pg_lo_request(dbh, &req, "seek");
+	add_assoc_long(&req, "fd", L->fd);
+	add_assoc_long(&req, "offset", (zend_long)offset);
+	add_assoc_long(&req, "whence", whence);
+	if (!pg_lo_call(dbh, &req, &resp)) {
+		pg_lob_warn(dbh);
+		return -1;
+	}
+	zend_long pos = resp_long(&resp, "value");
+	zval_ptr_dtor(&resp);
+	*newoffset = (zend_off_t)pos;
+	return pos >= 0 ? 0 : -1;
+}
+
+static const php_stream_ops pg_lob_ops = {
+	pg_lob_write,
+	pg_lob_read,
+	pg_lob_close,
+	pg_lob_flush,
+	"pdo_pgsql lob stream",
+	pg_lob_seek,
+	NULL, // cast
+	NULL, // stat
+	NULL, // set_option
+};
+
+static ZEND_NAMED_FUNCTION(pg_lob_create)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+	pdo_dbh_t *dbh = Z_PDO_DBH_P(ZEND_THIS);
+	PDO_CONSTRUCT_CHECK;
+	PDO_DBH_CLEAR_ERR();
+	zval req, resp;
+	pg_lo_request(dbh, &req, "create");
+	if (!pg_lo_call(dbh, &req, &resp)) {
+		if (EG(exception) == NULL) {
+			PDO_HANDLE_DBH_ERR();
+		}
+		if (EG(exception) != NULL) {
+			RETURN_THROWS();
+		}
+		RETURN_FALSE;
+	}
+	zend_long oid = resp_long(&resp, "value");
+	zval_ptr_dtor(&resp);
+	RETURN_STR(zend_long_to_str(oid));
+}
+
+static ZEND_NAMED_FUNCTION(pg_lob_open)
+{
+	zend_string *oid_str, *mode = NULL;
+	ZEND_PARSE_PARAMETERS_START(1, 2)
+		Z_PARAM_STR(oid_str)
+		Z_PARAM_OPTIONAL
+		Z_PARAM_STR(mode)
+	ZEND_PARSE_PARAMETERS_END();
+	pdo_dbh_t *dbh = Z_PDO_DBH_P(ZEND_THIS);
+	PDO_CONSTRUCT_CHECK;
+	PDO_DBH_CLEAR_ERR();
+	zend_long oid;
+	if (!pg_parse_oid(oid_str, &oid)) {
+		pg_error_msg(dbh, "22P02", "Invalid OID value");
+		PDO_HANDLE_DBH_ERR();
+		if (EG(exception) != NULL) {
+			RETURN_THROWS();
+		}
+		RETURN_FALSE;
+	}
+	const char *m = mode != NULL ? ZSTR_VAL(mode) : "rb";
+	zend_long inv = strpbrk(m, "+w") != NULL ? (CAIRO_INV_READ | CAIRO_INV_WRITE) : CAIRO_INV_READ;
+	zval req, resp;
+	pg_lo_request(dbh, &req, "open");
+	add_assoc_long(&req, "oid", oid);
+	add_assoc_long(&req, "mode", inv);
+	if (!pg_lo_call(dbh, &req, &resp)) {
+		if (EG(exception) == NULL) {
+			PDO_HANDLE_DBH_ERR();
+		}
+		if (EG(exception) != NULL) {
+			RETURN_THROWS();
+		}
+		RETURN_FALSE;
+	}
+	zend_long fd = resp_long(&resp, "value");
+	zval_ptr_dtor(&resp);
+
+	cairo_pg_lob *L = ecalloc(1, sizeof(*L));
+	ZVAL_OBJ_COPY(&L->dbh, Z_OBJ_P(ZEND_THIS));
+	L->fd = fd;
+	php_stream *stream = php_stream_alloc(&pg_lob_ops, L, NULL, m);
+	if (stream == NULL) {
+		zval_ptr_dtor(&L->dbh);
+		efree(L);
+		RETURN_FALSE;
+	}
+	php_stream_to_zval(stream, return_value);
+}
+
+static ZEND_NAMED_FUNCTION(pg_lob_unlink)
+{
+	zend_string *oid_str;
+	ZEND_PARSE_PARAMETERS_START(1, 1)
+		Z_PARAM_STR(oid_str)
+	ZEND_PARSE_PARAMETERS_END();
+	pdo_dbh_t *dbh = Z_PDO_DBH_P(ZEND_THIS);
+	PDO_CONSTRUCT_CHECK;
+	PDO_DBH_CLEAR_ERR();
+	zend_long oid;
+	if (!pg_parse_oid(oid_str, &oid)) {
+		pg_error_msg(dbh, "22P02", "Invalid OID value");
+		PDO_HANDLE_DBH_ERR();
+		if (EG(exception) != NULL) {
+			RETURN_THROWS();
+		}
+		RETURN_FALSE;
+	}
+	zval req, resp;
+	pg_lo_request(dbh, &req, "unlink");
+	add_assoc_long(&req, "oid", oid);
+	if (!pg_lo_call(dbh, &req, &resp)) {
+		if (EG(exception) == NULL) {
+			PDO_HANDLE_DBH_ERR();
+		}
+		if (EG(exception) != NULL) {
+			RETURN_THROWS();
+		}
+		RETURN_FALSE;
+	}
+	zval_ptr_dtor(&resp);
+	RETURN_TRUE;
+}
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_MASK_EX(arginfo_pg_lob_create, 0, 0, MAY_BE_STRING|MAY_BE_FALSE)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_pg_lob_open, 0, 0, 1)
+	ZEND_ARG_TYPE_INFO(0, oid, IS_STRING, 0)
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, mode, IS_STRING, 0, "\"rb\"")
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_pg_lob_unlink, 0, 1, _IS_BOOL, 0)
+	ZEND_ARG_TYPE_INFO(0, oid, IS_STRING, 0)
+ZEND_END_ARG_INFO()
+
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_pg_copy_from_array, 0, 2, _IS_BOOL, 0)
 	ZEND_ARG_TYPE_INFO(0, tableName, IS_STRING, 0)
 	ZEND_ARG_TYPE_INFO(0, rows, IS_ARRAY, 0)
@@ -1064,6 +1346,9 @@ static const zend_function_entry pg_dbh_functions[] = {
 	ZEND_FENTRY(pgsqlCopyToFile, pg_copy_to_file, arginfo_pg_copy_file, ZEND_ACC_PUBLIC)
 	ZEND_FENTRY(pgsqlGetNotify, pg_get_notify, arginfo_pg_get_notify, ZEND_ACC_PUBLIC)
 	ZEND_FENTRY(pgsqlGetPid, pg_get_pid, arginfo_pg_get_pid, ZEND_ACC_PUBLIC)
+	ZEND_FENTRY(pgsqlLOBCreate, pg_lob_create, arginfo_pg_lob_create, ZEND_ACC_PUBLIC)
+	ZEND_FENTRY(pgsqlLOBOpen, pg_lob_open, arginfo_pg_lob_open, ZEND_ACC_PUBLIC)
+	ZEND_FENTRY(pgsqlLOBUnlink, pg_lob_unlink, arginfo_pg_lob_unlink, ZEND_ACC_PUBLIC)
 	ZEND_FE_END
 };
 

@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -64,7 +65,7 @@ var (
 )
 
 type pgRequest struct {
-	Kind     string    `json:"kind"` // connect, exec, query, close, status, notify, copy_in, copy_out
+	Kind     string    `json:"kind"` // connect, exec, query, close, status, notify, copy_in, copy_out, lo
 	DSN      string    `json:"dsn"`
 	User     string    `json:"user"`
 	Password string    `json:"password"`
@@ -75,6 +76,15 @@ type pgRequest struct {
 	Binary   []int     `json:"binary"`  // indexes of LOB parameters: raw bytea
 	Data     string    `json:"data"`    // copy_in: base64 COPY text
 	WaitMS   int64     `json:"wait_ms"` // notify: how long to wait for one
+
+	// lo: large objects, through the server's lo_* functions.
+	LO     string `json:"lo"` // create, open, read, write, seek, tell, close, unlink
+	OID    int64  `json:"oid"`
+	FD     int64  `json:"fd"`
+	Mode   int64  `json:"mode"`   // open: INV_READ | INV_WRITE
+	N      int64  `json:"n"`      // read: up to n bytes
+	Offset int64  `json:"offset"` // seek
+	Whence int64  `json:"whence"` // seek: 0 set, 1 current, 2 end
 }
 
 // pgDo runs one request. The response always has "ok"; failures carry
@@ -121,6 +131,8 @@ func pgDo(ctx context.Context, req pgRequest) map[string]any {
 			return pgError(err)
 		}
 		return map[string]any{"ok": true, "affected": tag.RowsAffected()}
+	case "lo":
+		return pgLargeObject(ctx, pc, req)
 	case "copy_out":
 		var buf bytes.Buffer
 		if _, err := pc.conn.CopyTo(ctx, &buf, req.SQL); err != nil {
@@ -230,6 +242,76 @@ func pgNotify(ctx context.Context, pc *pgConn, waitMS int64) map[string]any {
 		return map[string]any{"ok": true, "notification": nil}
 	}
 	return map[string]any{"ok": true, "notification": map[string]any{"channel": n.Channel, "pid": n.PID, "payload": n.Payload}}
+}
+
+// pgLargeObject runs one large-object operation as a single statement on
+// the server's lo_* functions. Descriptors from lo_open last until the end
+// of the transaction, so PDO needs one open, as with pdo_pgsql. The answer
+// carries "value" (an integer) or, for read, "data" (base64).
+func pgLargeObject(ctx context.Context, pc *pgConn, req pgRequest) map[string]any {
+	num := func(n int64) []byte { return []byte(strconv.FormatInt(n, 10)) }
+	var (
+		sql     string
+		params  [][]byte
+		formats []int16
+	)
+	switch req.LO {
+	case "create":
+		sql = "SELECT lo_creat(-1)"
+	case "open":
+		sql, params = "SELECT lo_open($1::oid, $2::int)", [][]byte{num(req.OID), num(req.Mode)}
+	case "read":
+		sql, params = "SELECT loread($1::int, $2::int)", [][]byte{num(req.FD), num(req.N)}
+	case "write":
+		data, err := base64.StdEncoding.DecodeString(req.Data)
+		if err != nil {
+			return pgFail("HY000", "bad large object data encoding")
+		}
+		if data == nil {
+			data = []byte{}
+		}
+		sql, params, formats = "SELECT lowrite($1::int, $2::bytea)", [][]byte{num(req.FD), data}, []int16{0, 1}
+	case "seek":
+		sql, params = "SELECT lo_lseek64($1::int, $2::bigint, $3::int)", [][]byte{num(req.FD), num(req.Offset), num(req.Whence)}
+	case "tell":
+		sql, params = "SELECT lo_tell64($1::int)", [][]byte{num(req.FD)}
+	case "close":
+		sql, params = "SELECT lo_close($1::int)", [][]byte{num(req.FD)}
+	case "unlink":
+		sql, params = "SELECT lo_unlink($1::oid)", [][]byte{num(req.OID)}
+	default:
+		return pgFail("HY000", "unknown large object operation "+req.LO)
+	}
+	var oids []uint32
+	if formats != nil {
+		oids = make([]uint32, len(params))
+		for i, f := range formats {
+			if f == 1 {
+				oids[i] = 17 // bytea
+			}
+		}
+	}
+	// read gets its bytes in binary; the rest are integers in text.
+	resultFormats := []int16{0}
+	if req.LO == "read" {
+		resultFormats[0] = 1
+	}
+	res := pc.conn.ExecParams(ctx, sql, params, oids, formats, resultFormats).Read()
+	if res.Err != nil {
+		return pgError(res.Err)
+	}
+	if len(res.Rows) != 1 || len(res.Rows[0]) != 1 || res.Rows[0][0] == nil {
+		return pgFail("HY000", "unexpected large object result")
+	}
+	v := res.Rows[0][0]
+	if req.LO == "read" {
+		return map[string]any{"ok": true, "data": base64.StdEncoding.EncodeToString(v)}
+	}
+	n, err := strconv.ParseInt(string(v), 10, 64)
+	if err != nil {
+		return pgFail("HY000", "unexpected large object result "+string(v))
+	}
+	return map[string]any{"ok": true, "value": n}
 }
 
 func pgFail(state, msg string) map[string]any {

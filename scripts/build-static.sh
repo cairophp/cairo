@@ -8,7 +8,7 @@
 # static getaddrinfo still loads NSS modules at run time, so prefer musl.
 #
 # Usage: scripts/build-static.sh [php-version] [output]
-#   PHP_SRC, CURL_SRC   unpacked sources to use instead of downloading
+#   PHP_SRC, CURL_SRC, LIBZIP_SRC   unpacked sources to use instead of downloading
 #   PHP_EXTENSIONS      configure flags for the extensions (default below)
 #   WORK                build directory (default: a temporary one)
 set -euo pipefail
@@ -16,6 +16,7 @@ set -euo pipefail
 PHP_VERSION="${1:-8.3.27}"
 OUT="${2:-dist/cairo}"
 CURL_VERSION="${CURL_VERSION:-8.11.1}"
+LIBZIP_VERSION="${LIBZIP_VERSION:-1.11.2}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 case "$OUT" in /*) ;; *) OUT="$ROOT/$OUT" ;; esac
 WORK="${WORK:-$(mktemp -d)}"
@@ -46,6 +47,20 @@ fi
   make -j"$JOBS"
   make install
 )
+
+# libzip for ext/zip, built the same way: Alpine ships it only as a shared
+# library. Deflate through zlib only (no bzip2, xz, zstd or encryption).
+if [ -z "${LIBZIP_SRC:-}" ]; then
+  curl -fsSL "https://github.com/nih-at/libzip/releases/download/v${LIBZIP_VERSION}/libzip-${LIBZIP_VERSION}.tar.xz" | tar -xJ -C "$WORK"
+  LIBZIP_SRC="$WORK/libzip-${LIBZIP_VERSION}"
+fi
+cmake -S "$LIBZIP_SRC" -B "$WORK/libzip-build" -DCMAKE_INSTALL_PREFIX="$DEPS" -DCMAKE_INSTALL_LIBDIR=lib \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_SHARED_LIBS=OFF \
+  -DENABLE_BZIP2=OFF -DENABLE_LZMA=OFF -DENABLE_ZSTD=OFF \
+  -DENABLE_OPENSSL=OFF -DENABLE_GNUTLS=OFF -DENABLE_MBEDTLS=OFF -DENABLE_COMMONCRYPTO=OFF -DENABLE_WINDOWS_CRYPTO=OFF \
+  -DBUILD_TOOLS=OFF -DBUILD_REGRESS=OFF -DBUILD_OSSFUZZ=OFF -DBUILD_EXAMPLES=OFF -DBUILD_DOC=OFF
+cmake --build "$WORK/libzip-build" -j"$JOBS"
+cmake --install "$WORK/libzip-build"
 
 if [ -z "${PHP_SRC:-}" ]; then
   curl -fsSL "https://github.com/php/php-src/archive/refs/tags/php-${PHP_VERSION}.tar.gz" | tar -xz -C "$WORK"
@@ -87,7 +102,7 @@ export CGO_CFLAGS="$($PHP_CONFIG --includes) -I$DEPS/include -DCAIRO_STATIC_CURL
 # forth between libraries that need each other. ext/intl is C++.
 # Cairo's curl hook takes over two libcurl functions by renaming calls to
 # them (see internal/sapi/curl_hook.c).
-export CGO_LDFLAGS="-Wl,--wrap=curl_easy_perform -Wl,--wrap=curl_multi_wait -L$PREFIX/lib -L$DEPS/lib -Wl,--start-group -lphp $($PHP_CONFIG --libs) $(pkg-config --libs libcurl) -Wl,--end-group -lstdc++ -lm"
+export CGO_LDFLAGS="-Wl,--wrap=curl_easy_perform -Wl,--wrap=curl_multi_wait -L$PREFIX/lib -L$DEPS/lib -Wl,--start-group -lphp $($PHP_CONFIG --libs) $(pkg-config --libs libcurl libzip) -Wl,--end-group -lstdc++ -lm"
 
 cd "$ROOT"
 go build -trimpath -tags netgo,osusergo \

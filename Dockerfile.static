@@ -2,10 +2,10 @@
 #   docker build -f Dockerfile.static --output dist .
 # writes dist/cairo. See scripts/build-static.sh.
 FROM golang:1.24-alpine3.21 AS build
-RUN apk add --no-cache bash build-base autoconf bison re2c pkgconf linux-headers curl tar xz perl \
+RUN apk add --no-cache bash build-base autoconf bison re2c pkgconf cmake linux-headers curl tar xz perl \
       openssl-dev openssl-libs-static zlib-dev zlib-static bzip2-dev bzip2-static xz-dev xz-static \
       libxml2-dev libxml2-static sqlite-dev sqlite-static oniguruma-dev icu-dev icu-static \
-      libsodium-dev libsodium-static libzip-dev gmp-dev libpng-dev libpng-static \
+      libsodium-dev libsodium-static gmp-dev libpng-dev libpng-static \
       libjpeg-turbo-dev libjpeg-turbo-static libwebp-dev libwebp-static \
       freetype-dev freetype-static brotli-dev brotli-static
 WORKDIR /src

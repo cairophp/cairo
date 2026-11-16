@@ -5,5 +5,6 @@ int cairo_boot(const char *runtime_file);
 void cairo_shutdown(void);
 int cairo_thread_run(int tid, const char *runtime_file);
 int cairo_thread_start(int tid, const char *runtime_file);
+void cairo_interrupt(int tid);
 
 #endif

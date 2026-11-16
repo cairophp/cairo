@@ -302,7 +302,17 @@ func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error
 		case o := <-f.ops:
 			e.runOp(f, o)
 		case <-ctx.Done():
+			// Past the deadline, interrupt the thread until PHP answers: PHP
+			// code that never waits on Go is stopped where it runs.
+			deadline := errors.Is(ctx.Err(), context.DeadlineExceeded)
 			go func() {
+				var tick <-chan time.Time
+				if deadline {
+					C.cairo_interrupt(C.int(t.id))
+					ticker := time.NewTicker(interruptEvery)
+					defer ticker.Stop()
+					tick = ticker.C
+				}
 				for {
 					select {
 					case <-c.resp:
@@ -310,6 +320,8 @@ func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error
 						return
 					case o := <-f.ops:
 						e.runOp(f, o)
+					case <-tick:
+						C.cairo_interrupt(C.int(t.id))
 					}
 				}
 			}()
@@ -317,6 +329,10 @@ func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error
 		}
 	}
 }
+
+// interruptEvery is how often a request past its deadline interrupts its
+// PHP thread until PHP answers.
+const interruptEvery = 50 * time.Millisecond
 
 func (e *Engine) forget(id int64, c *call, f *fiber) {
 	e.calls.Delete(id)

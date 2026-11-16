@@ -178,3 +178,23 @@ func TestOrderAndUnknown(t *testing.T) {
 		t.Fatal("per_second 0 accepted")
 	}
 }
+
+func TestTimeoutSetsADeadline(t *testing.T) {
+	var left time.Duration
+	h := build(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dl, ok := r.Context().Deadline()
+		if ok {
+			left = time.Until(dl)
+		}
+	}), mw("timeout", map[string]any{"seconds": 0.5}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	if left <= 0 || left > 500*time.Millisecond {
+		t.Fatalf("deadline in %s, want within 0.5s", left)
+	}
+	if _, err := HTTP(hello, []spec.Middleware{mw("timeout", map[string]any{"seconds": 0})}, slog.Default()); err == nil {
+		t.Fatal("timeout of 0 accepted")
+	}
+	if ics, err := GRPC([]spec.Middleware{mw("timeout", map[string]any{"seconds": 1})}, slog.Default()); err != nil || len(ics) != 1 {
+		t.Fatalf("grpc timeout: %v", err)
+	}
+}

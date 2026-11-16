@@ -9,6 +9,7 @@ package middleware
 
 import (
 	"compress/gzip"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -55,6 +56,11 @@ func HTTP(h http.Handler, decl []spec.Middleware, log *slog.Logger) (http.Handle
 			if err = decode(m, &o); err == nil {
 				h = maxBody(h, o.Bytes)
 			}
+		case "timeout":
+			var d time.Duration
+			if d, err = timeoutOf(m); err == nil {
+				h = timeoutHTTP(h, d)
+			}
 		case "gzip":
 			var o struct {
 				MinBytes int `json:"min_bytes"`
@@ -70,6 +76,29 @@ func HTTP(h http.Handler, decl []spec.Middleware, log *slog.Logger) (http.Handle
 		}
 	}
 	return h, nil
+}
+
+// timeoutOf reads the timeout middleware's "seconds".
+func timeoutOf(m spec.Middleware) (time.Duration, error) {
+	var o struct {
+		Seconds float64 `json:"seconds"`
+	}
+	if err := decode(m, &o); err != nil {
+		return 0, err
+	}
+	if o.Seconds <= 0 {
+		return 0, fmt.Errorf("seconds must be positive")
+	}
+	return time.Duration(o.Seconds * float64(time.Second)), nil
+}
+
+// timeoutHTTP gives each request a deadline; Dispatch answers 504 past it.
+func timeoutHTTP(h http.Handler, d time.Duration) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), d)
+		defer cancel()
+		h.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 func decode(m spec.Middleware, v any) error {

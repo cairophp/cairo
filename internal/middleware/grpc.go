@@ -36,6 +36,12 @@ func GRPC(decl []spec.Middleware, log *slog.Logger) ([]grpc.StreamServerIntercep
 				return nil, fmt.Errorf("middleware rate_limit: %w", err)
 			}
 			out = append(out, grpcRateLimit(l))
+		case "timeout":
+			d, err := timeoutOf(m)
+			if err != nil {
+				return nil, fmt.Errorf("middleware timeout: %w", err)
+			}
+			out = append(out, grpcTimeout(d))
 		default:
 			return nil, fmt.Errorf("middleware %q is not available for gRPC servers", m.Name)
 		}
@@ -99,5 +105,14 @@ func grpcRateLimit(l *limiter) grpc.StreamServerInterceptor {
 			return status.Errorf(codes.ResourceExhausted, "rate limit exceeded; retry in %s", wait.Round(time.Millisecond))
 		}
 		return handler(srv, ss)
+	}
+}
+
+// grpcTimeout gives each call a deadline, or keeps the client's when sooner.
+func grpcTimeout(d time.Duration) grpc.StreamServerInterceptor {
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		ctx, cancel := context.WithTimeout(ss.Context(), d)
+		defer cancel()
+		return handler(srv, ctxStream{ss, ctx})
 	}
 }

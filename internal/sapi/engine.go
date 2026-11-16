@@ -92,6 +92,11 @@ type thread struct {
 	inbox    chan event
 	inflight atomic.Int64
 
+	// The blocking detector (detect.go): when the thread last took an event
+	// (unix ns; 0 while it waits for one), and whether that stretch was reported.
+	busySince atomic.Int64
+	reported  atomic.Bool
+
 	// Supervision (see supervise.go).
 	sendMu   sync.RWMutex // held for reading while a request is queued; retire takes it to set retired
 	retired  bool         // no new requests may be queued here
@@ -232,6 +237,9 @@ func Start(opts Options) (*Engine, error) {
 		}
 	}
 	e.log.Info("php threads started", "request_threads", nw, "offload_threads", no)
+	if e.spec.DetectBlocking > 0 {
+		go e.detectBlocking(time.Duration(e.spec.DetectBlocking * float64(time.Second)))
+	}
 	return e, nil
 }
 
@@ -830,7 +838,10 @@ func goStopTLS(fd C.int, timeoutSec C.double, errOut **C.char) C.int {
 //export goNextEvent
 func goNextEvent(tid C.int) *C.char {
 	t := engine.table[int(tid)].Load()
+	t.busySince.Store(0)
 	ev := <-t.inbox
+	t.reported.Store(false)
+	t.busySince.Store(time.Now().UnixNano())
 	if ev.call != nil {
 		ev.call.started.Store(true)
 		t.served.Add(1)

@@ -19,6 +19,7 @@
 #include <ext/standard/base64.h>
 #include <ext/pdo/php_pdo.h>
 #include <ext/pdo/php_pdo_driver.h>
+#include <main/php_memory_streams.h>
 
 #include "pgsql.h"
 #include "_cgo_export.h"
@@ -344,9 +345,22 @@ static int pg_stmt_get_col(pdo_stmt_t *stmt, int colno, zval *result, enum pdo_p
 #endif
 			ZVAL_LONG(result, ZEND_STRTOL(v, NULL, 10));
 			break;
-		case PG_BYTEAOID:
-			ZVAL_STR(result, bytea_decode(v, r->lens[k]));
+		case PG_BYTEAOID: {
+			// Like pdo_pgsql: bytea comes back as a read-only stream
+			// (PDO::PARAM_STR in bindColumn() still gives a string).
+			zend_string *bytes = bytea_decode(v, r->lens[k]);
+			if (type != NULL && *type == PDO_PARAM_STR) {
+				ZVAL_STR(result, bytes);
+				break;
+			}
+			php_stream *stm = php_stream_memory_open(TEMP_STREAM_READONLY, bytes);
+			zend_string_release(bytes);
+			if (stm == NULL) {
+				return 0;
+			}
+			php_stream_to_zval(stm, result);
 			break;
+		}
 		default:
 			ZVAL_STRINGL(result, v, r->lens[k]);
 	}

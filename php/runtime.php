@@ -1548,6 +1548,22 @@ namespace Cairo\Internal {
             return isset($result['fd']) ? (int) $result['fd'] : (string) ($result['err'] ?? 'connect failed');
         }
 
+        /**
+         * stream_socket_enable_crypto() on socket $fd: Go handshakes as a TLS
+         * client for $host. Returns the descriptor to put in place of $fd, an
+         * error message, or null to let the thread wait for Go instead.
+         *
+         * @param array<string, mixed> $tls the "ssl" context options
+         */
+        public static function startTLS(int $fd, string $host, float $timeout, array $tls): int|string|null
+        {
+            if (!self::on(\Cairo\Hook::CONNECT)) {
+                return null;
+            }
+            $result = Scheduler::instance()->op(['op' => 'starttls', 'fd' => $fd, 'host' => $host, 'timeout' => $timeout, 'tls' => $tls]);
+            return isset($result['fd']) ? (int) $result['fd'] : (string) ($result['err'] ?? 'TLS handshake failed');
+        }
+
         public static function gethostbyname(mixed $hostname = null): ?string
         {
             if (!is_string($hostname) || !self::on(\Cairo\Hook::DNS)) {

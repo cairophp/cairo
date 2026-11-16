@@ -343,7 +343,8 @@ func sqlValue(v any) any {
 	case []byte:
 		return map[string]string{"$bytes": base64.StdEncoding.EncodeToString(x)}
 	case time.Time:
-		return x.Format(time.RFC3339Nano)
+		// In UTC, so the result does not depend on the server's time zone.
+		return x.UTC().Format(time.RFC3339Nano)
 	case float64:
 		if math.IsNaN(x) || math.IsInf(x, 0) {
 			return fmt.Sprint(x)

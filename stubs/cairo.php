@@ -1604,7 +1604,7 @@ namespace Cairo\Sql {
      *     $users = $db->query('SELECT id, name FROM users WHERE team = ?', [$team]);
      *
      * Integers, floats, booleans, strings and nulls come back as such; binary
-     * columns as strings, timestamps as RFC 3339 strings (MySQL DATE as
+     * columns as strings, timestamps as RFC 3339 in UTC (MySQL DATE as
      * Y-m-d), numeric/DECIMAL, json and the rest in the database's text form.
      */
     final class Db extends Queryable

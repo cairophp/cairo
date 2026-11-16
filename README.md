@@ -370,7 +370,7 @@ $db->transaction(function (Cairo\Sql\Tx $tx) use ($from, $to, $amount): void {
 
 Queries suspend only the calling fiber, and the request's deadline cancels
 them. Integers, floats, booleans, text and nulls come back as PHP values;
-bytea as a string, timestamps as RFC 3339 strings, and numeric, json and the
+bytea as a string, timestamps as RFC 3339 strings in UTC, and numeric, json and the
 rest in PostgreSQL's text form. Pass binary parameters as
 `new Cairo\Sql\Bytes($raw)`. Failures throw `Cairo\Sql\SqlException` with
 `$sqlState`. A transaction left open when its fiber ends is rolled back.

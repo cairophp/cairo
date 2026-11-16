@@ -2158,9 +2158,12 @@ namespace Cairo\Grpc {
      * The stream of a streaming method being served. recv() returns the
      * client's next message (a generated object when the service implements
      * a generated interface, else a protojson array), or null once the client
-     * has finished; send() sends one reply.
+     * has finished; send() sends one reply. Generated interfaces type it as
+     * ServerStream<Request, Reply>.
      *
-     * @implements \IteratorAggregate<int, mixed>
+     * @template TRequest of array<string, mixed>|object
+     * @template TReply of array<string, mixed>|object
+     * @implements \IteratorAggregate<int, TRequest>
      */
     final class ServerStream implements \IteratorAggregate
     {
@@ -2169,6 +2172,7 @@ namespace Cairo\Grpc {
         {
         }
 
+        /** @return TRequest|null */
         public function recv(): array|object|null
         {
             $r = Stream::call('grpc.server.recv', ['id' => $this->id]);
@@ -2178,12 +2182,13 @@ namespace Cairo\Grpc {
             return Stream::decode($r['message'], $this->class);
         }
 
-        /** @param array<string, mixed>|object $message */
+        /** @param TReply $message */
         public function send(array|object $message): void
         {
             Stream::call('grpc.server.send', ['id' => $this->id, 'message' => Stream::encode($message)]);
         }
 
+        /** @return \Generator<int, TRequest> */
         public function getIterator(): \Generator
         {
             while (($m = $this->recv()) !== null) {
@@ -2196,9 +2201,12 @@ namespace Cairo\Grpc {
      * A streaming call made with Client::stream() or serverStream(), or a
      * generated client's streaming method. send() and closeSend() for the
      * requests, recv() for the replies (null at the end; a failed call
-     * throws Cairo\Grpc\Exception). Iterating reads the replies.
+     * throws Cairo\Grpc\Exception). Iterating reads the replies. Generated
+     * clients type it as ClientStream<Request, Reply>.
      *
-     * @implements \IteratorAggregate<int, mixed>
+     * @template TRequest of array<string, mixed>|object
+     * @template TReply of array<string, mixed>|object
+     * @implements \IteratorAggregate<int, TReply>
      */
     final class ClientStream implements \IteratorAggregate
     {
@@ -2218,7 +2226,7 @@ namespace Cairo\Grpc {
             $this->close();
         }
 
-        /** @param array<string, mixed>|object $message */
+        /** @param TRequest $message */
         public function send(array|object $message): void
         {
             Stream::call('grpc.stream.send', ['id' => $this->id, 'message' => Stream::encode($message)]);
@@ -2230,6 +2238,7 @@ namespace Cairo\Grpc {
             Stream::call('grpc.stream.closeSend', ['id' => $this->id]);
         }
 
+        /** @return TReply|null */
         public function recv(): array|object|null
         {
             $r = Stream::call('grpc.stream.recv', ['id' => $this->id]);
@@ -2241,7 +2250,11 @@ namespace Cairo\Grpc {
             return Stream::decode($r['message'], $this->class);
         }
 
-        /** For client-streaming methods: end the requests and read the one reply. */
+        /**
+         * For client-streaming methods: end the requests and read the one reply.
+         *
+         * @return TReply
+         */
         public function closeAndRecv(): array|object
         {
             $this->closeSend();
@@ -2271,6 +2284,7 @@ namespace Cairo\Grpc {
             return $this->trailers;
         }
 
+        /** @return \Generator<int, TReply> */
         public function getIterator(): \Generator
         {
             while (($m = $this->recv()) !== null) {

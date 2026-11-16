@@ -56,6 +56,7 @@ final class GreeterClient
      * Server streaming: recv() or foreach for each \Helloworld\HelloReply.
      *
      * @param array{metadata?: array<string, string|list<string>>, timeout?: float} $options
+     * @return \Cairo\Grpc\ClientStream<\Helloworld\CountRequest, \Helloworld\HelloReply>
      */
     public function CountUp(\Helloworld\CountRequest $request, array $options = []): \Cairo\Grpc\ClientStream
     {
@@ -66,6 +67,7 @@ final class GreeterClient
      * Client streaming: send() \Helloworld\HelloRequest, then closeAndRecv() for the \Helloworld\HelloReply.
      *
      * @param array{metadata?: array<string, string|list<string>>, timeout?: float} $options
+     * @return \Cairo\Grpc\ClientStream<\Helloworld\HelloRequest, \Helloworld\HelloReply>
      */
     public function JoinNames(array $options = []): \Cairo\Grpc\ClientStream
     {
@@ -76,6 +78,7 @@ final class GreeterClient
      * Bidirectional: send() \Helloworld\HelloRequest, closeSend(), recv() or foreach for \Helloworld\HelloReply.
      *
      * @param array{metadata?: array<string, string|list<string>>, timeout?: float} $options
+     * @return \Cairo\Grpc\ClientStream<\Helloworld\HelloRequest, \Helloworld\HelloReply>
      */
     public function Chat(array $options = []): \Cairo\Grpc\ClientStream
     {

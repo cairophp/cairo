@@ -12,6 +12,7 @@
 
 #include <php.h>
 #include <php_main.h>
+#include <main/build-defs.h>
 #include <SAPI.h>
 #include <TSRM.h>
 #include <zend_exceptions.h>
@@ -1036,8 +1037,11 @@ PHP_FUNCTION(cairo_guard)
 
 // Module startup: install the hooks once, before any worker thread copies
 // the function table.
+static void cairo_opcache_disguise(void);
+
 static PHP_MINIT_FUNCTION(cairo)
 {
+	cairo_opcache_disguise();
 	for (int i = 0; i < HOOK_COUNT; i++) {
 		zend_function *fn = zend_hash_str_find_ptr(CG(function_table), hook_names[i], strlen(hook_names[i]));
 		if (fn != NULL && fn->type == ZEND_INTERNAL_FUNCTION) {
@@ -1065,11 +1069,63 @@ static zend_module_entry cairo_module_entry = {
 	STANDARD_MODULE_PROPERTIES
 };
 
+// ---- Opcache ------------------------------------------------------------------
+//
+// Cairo loads opcache (built as opcache.so next to PHP) unless CAIRO_OPCACHE=0
+// or php.ini already loads it. Opcache only starts under the SAPIs it knows,
+// and checks the name once, while Zend extensions start; so the SAPI goes by
+// "cli-server" for that moment (from the cairo module's MINIT, which runs just
+// before) and gets its own name back afterwards. PHP_SAPI and php_sapi_name()
+// keep reporting "embed".
+
+static const char *cairo_sapi_name;
+static char *cairo_ini_entries;
+
+static bool cairo_opcache_wanted(void)
+{
+	const char *env = getenv("CAIRO_OPCACHE");
+	if (env != NULL && (strcmp(env, "0") == 0 || strcasecmp(env, "off") == 0 || strcasecmp(env, "false") == 0)) {
+		return false;
+	}
+	return access(PHP_EXTENSION_DIR "/opcache.so", R_OK) == 0;
+}
+
+static void cairo_opcache_disguise(void)
+{
+	if (cairo_sapi_name == NULL && cairo_ini_entries != NULL) {
+		cairo_sapi_name = sapi_module.name;
+		sapi_module.name = "cli-server";
+	}
+}
+
+static void cairo_opcache_restore(void)
+{
+	if (cairo_sapi_name != NULL) {
+		sapi_module.name = (char *)cairo_sapi_name;
+		cairo_sapi_name = NULL;
+	}
+}
+
 // Replaces the embed SAPI's startup hook so the cairo module (and its
 // functions) is registered during module startup, like any PHP extension.
 static int cairo_sapi_startup(sapi_module_struct *sapi)
 {
-	return php_module_startup(sapi, &cairo_module_entry);
+	if (cairo_opcache_wanted()) {
+		// The embed SAPI's fixed settings, plus opcache. INI entries are parsed
+		// like php.ini lines, so zend_extension= loads it; a php.ini that loads
+		// it too only gets a warning.
+		const char *base = sapi->ini_entries != NULL ? sapi->ini_entries : "";
+		const char *add = "zend_extension=" PHP_EXTENSION_DIR "/opcache.so\n";
+		cairo_ini_entries = malloc(strlen(base) + strlen(add) + 1);
+		if (cairo_ini_entries != NULL) {
+			strcpy(cairo_ini_entries, base);
+			strcat(cairo_ini_entries, add);
+			sapi->ini_entries = cairo_ini_entries;
+		}
+	}
+	int rc = php_module_startup(sapi, &cairo_module_entry);
+	cairo_opcache_restore();
+	return rc;
 }
 
 static int run_file(const char *file)

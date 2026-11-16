@@ -179,7 +179,7 @@ $st->execute(['id' => 7]);
 Prepared statements, `?` and `:name` placeholders, transactions,
 `lastInsertId()`, `quote()`, `getColumnMeta()` and the error modes work as
 with pdo_pgsql; `int2/int4/int8` and `bool` columns come back as PHP ints and
-bools, `bytea` as a string (pdo_pgsql gives a stream). Results are read in
+bools, and `bytea` as a read-only stream, as with pdo_pgsql. Results are read in
 full, like libpq's `PQexec`. Use one `PDO` per fiber (for example through
 `Cairo\Pool`): a connection runs one query at a time. The driver registers
 only when PHP has no pdo_pgsql of its own; the `PGSQL_ATTR_*` attributes,
@@ -192,9 +192,11 @@ an `https://` wrapper when PHP has none. Go's `crypto/tls` does the handshake
 and encryption, and PHP gets a plain socket to Go, so `file_get_contents('https://…')`,
 `stream_socket_client('tls://…')` and anything built on them work without
 ext/openssl and suspend only the fiber. The `ssl` context options
-`verify_peer`, `verify_peer_name`, `peer_name`, `allow_self_signed` and
-`cafile` are honoured; client certificates and `stream_socket_enable_crypto()`
-(STARTTLS on an open connection) are not supported. When PHP is built with
+`verify_peer`, `verify_peer_name`, `peer_name`, `SNI_server_name`,
+`allow_self_signed`, `cafile`, `capath`, and client certificates through
+`local_cert`, `local_pk` and `passphrase` are honoured;
+`stream_socket_enable_crypto()` (STARTTLS on an open connection) is not
+supported. When PHP is built with
 ext/openssl, its transports still serve code outside Cairo's fibers.
 
 ### Connection pools

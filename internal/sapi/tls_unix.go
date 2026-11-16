@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -22,6 +24,11 @@ type tlsOptions struct {
 	AllowSelfSigned bool   `json:"allow_self_signed"`
 	PeerName        string `json:"peer_name"`
 	CAFile          string `json:"cafile"`
+	CAPath          string `json:"capath"`
+	LocalCert       string `json:"local_cert"` // PEM: certificate, and the key unless LocalPK is set
+	LocalPK         string `json:"local_pk"`
+	Passphrase      string `json:"passphrase"`
+	SNIServerName   string `json:"SNI_server_name"`
 }
 
 var tlsVersions = map[int]uint16{10: tls.VersionTLS10, 11: tls.VersionTLS11, 12: tls.VersionTLS12, 13: tls.VersionTLS13}
@@ -32,18 +39,52 @@ func (o tlsOptions) config(host string) (*tls.Config, error) {
 		name = host
 	}
 	cfg := &tls.Config{ServerName: name}
+	if o.SNIServerName != "" {
+		cfg.ServerName = o.SNIServerName
+	}
 	if v, ok := tlsVersions[o.Version]; ok {
 		cfg.MinVersion, cfg.MaxVersion = v, v
 	}
-	if o.CAFile != "" {
-		pem, err := os.ReadFile(o.CAFile)
-		if err != nil {
-			return nil, fmt.Errorf("cafile: %w", err)
-		}
+	if o.CAFile != "" || o.CAPath != "" {
 		cfg.RootCAs = x509.NewCertPool()
-		if !cfg.RootCAs.AppendCertsFromPEM(pem) {
-			return nil, fmt.Errorf("cafile %s has no PEM certificates", o.CAFile)
+		var files []string
+		if o.CAFile != "" {
+			files = append(files, o.CAFile)
 		}
+		if o.CAPath != "" {
+			entries, err := os.ReadDir(o.CAPath)
+			if err != nil {
+				return nil, fmt.Errorf("capath: %w", err)
+			}
+			for _, e := range entries {
+				if !e.IsDir() {
+					files = append(files, filepath.Join(o.CAPath, e.Name()))
+				}
+			}
+		}
+		found := false
+		for _, f := range files {
+			pem, err := os.ReadFile(f)
+			if err != nil {
+				if f == o.CAFile {
+					return nil, fmt.Errorf("cafile: %w", err)
+				}
+				continue
+			}
+			if cfg.RootCAs.AppendCertsFromPEM(pem) {
+				found = true
+			}
+		}
+		if !found {
+			return nil, errors.New("cafile/capath hold no PEM certificates")
+		}
+	}
+	if o.LocalCert != "" {
+		cert, err := loadClientCert(o.LocalCert, o.LocalPK, o.Passphrase)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Certificates = []tls.Certificate{cert}
 	}
 	if !o.VerifyPeer {
 		cfg.InsecureSkipVerify = true
@@ -77,6 +118,47 @@ func (o tlsOptions) config(host string) (*tls.Config, error) {
 		return err
 	}
 	return cfg, nil
+}
+
+// loadClientCert reads local_cert (and local_pk, or the key from the same
+// file). An encrypted legacy PEM key ("Proc-Type: 4,ENCRYPTED") is
+// decrypted with the passphrase.
+func loadClientCert(certFile, keyFile, passphrase string) (tls.Certificate, error) {
+	certPEM, err := os.ReadFile(certFile)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("local_cert: %w", err)
+	}
+	keyPEM := certPEM
+	if keyFile != "" {
+		if keyPEM, err = os.ReadFile(keyFile); err != nil {
+			return tls.Certificate{}, fmt.Errorf("local_pk: %w", err)
+		}
+	}
+	if passphrase != "" {
+		var out []byte
+		for rest := keyPEM; ; {
+			var b *pem.Block
+			b, rest = pem.Decode(rest)
+			if b == nil {
+				break
+			}
+			//lint:ignore SA1019 PHP's passphrase option is for these legacy encrypted keys
+			if x509.IsEncryptedPEMBlock(b) { //nolint:staticcheck
+				der, err := x509.DecryptPEMBlock(b, []byte(passphrase)) //nolint:staticcheck
+				if err != nil {
+					return tls.Certificate{}, fmt.Errorf("local_pk passphrase: %w", err)
+				}
+				b = &pem.Block{Type: b.Type, Bytes: der}
+			}
+			out = append(out, pem.EncodeToMemory(b)...)
+		}
+		keyPEM = out
+	}
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("local_cert: %w", err)
+	}
+	return cert, nil
 }
 
 // dialTLS connects and handshakes with Go's crypto/tls, then hands PHP one

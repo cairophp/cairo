@@ -1532,12 +1532,17 @@ namespace Cairo\Internal {
          * Returns the connected socket's descriptor, an error message, or
          * null to let PHP connect itself.
          */
-        public static function connect(string $network, string $address, float $timeout): int|string|null
+        /** @param array<string, mixed> $tls the "ssl" context options, for $network "tls" */
+        public static function connect(string $network, string $address, float $timeout, array $tls = []): int|string|null
         {
             if (!self::on(\Cairo\Hook::CONNECT)) {
                 return null;
             }
-            $result = Scheduler::instance()->op(['op' => 'dial', 'network' => $network, 'address' => $address, 'timeout' => $timeout]);
+            $op = ['op' => 'dial', 'network' => $network, 'address' => $address, 'timeout' => $timeout];
+            if ($network === 'tls') {
+                $op['tls'] = $tls;
+            }
+            $result = Scheduler::instance()->op($op);
             return isset($result['fd']) ? (int) $result['fd'] : (string) ($result['err'] ?? 'connect failed');
         }
 

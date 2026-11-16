@@ -9,11 +9,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
@@ -683,6 +685,128 @@ func waitFor(addr string, timeout time.Duration) error {
 	return fmt.Errorf("cairo did not start listening on %s", addr)
 }
 
+// TLS through Go: 50 requests each fetch a 1s https:// endpoint with
+// file_get_contents(); the PHP build has no OpenSSL. They overlap on one PHP
+// thread. Certificates are verified against the context's cafile.
+func TestTLSThroughGo(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d, _ := time.ParseDuration(r.URL.Query().Get("d"))
+		time.Sleep(d)
+		fmt.Fprint(w, "secure-ok")
+	}))
+	defer srv.Close()
+	cafile := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(cafile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	httpsGet := func(target, extra string) (body *string, errText string) {
+		var out struct {
+			Body  *string `json:"body"`
+			Error string  `json:"error"`
+		}
+		raw := get(t, "/https?url="+url.QueryEscape(target)+extra)
+		if err := json.Unmarshal([]byte(raw), &out); err != nil {
+			t.Fatalf("%s: %v", raw, err)
+		}
+		return out.Body, out.Error
+	}
+
+	if body, errText := httpsGet(srv.URL+"/?d=0s", "&cafile="+url.QueryEscape(cafile)); body == nil || *body != "secure-ok" {
+		t.Fatalf("https with cafile: body %v, error %q", body, errText)
+	}
+	if body, errText := httpsGet(srv.URL+"/?d=0s", ""); body != nil || !strings.Contains(errText, "certificate") {
+		t.Fatalf("an untrusted certificate was accepted: body %v, error %q", body, errText)
+	}
+	if body, errText := httpsGet(srv.URL+"/?d=0s", "&verify=0"); body == nil || *body != "secure-ok" {
+		t.Fatalf("verify_peer=false: body %v, error %q", body, errText)
+	}
+
+	var stream struct{ Response, Error string }
+	raw := get(t, "/tls-stream?addr="+strings.TrimPrefix(srv.URL, "https://")+"&cafile="+url.QueryEscape(cafile))
+	if err := json.Unmarshal([]byte(raw), &stream); err != nil || stream.Response != "secure-ok" {
+		t.Fatalf("tls:// stream: %s (%v)", raw, err)
+	}
+
+	const n = 50
+	client := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: n, MaxConnsPerHost: n}}
+	start := time.Now()
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := client.Get("http://" + httpAddr + "/https?cafile=" + url.QueryEscape(cafile) + "&url=" + url.QueryEscape(srv.URL+"/?d=1s"))
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			if !strings.Contains(string(b), `"body":"secure-ok"`) {
+				errs <- fmt.Errorf("status %d body %q", resp.StatusCode, b)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	took := time.Since(start)
+	t.Logf("%d https:// fetches of a 1s endpoint, on 1 PHP thread: %s", n, took.Round(time.Millisecond))
+	if took > 3*time.Second {
+		t.Fatalf("took %s; TLS blocked the thread", took)
+	}
+}
+
+// PDO's constructor turns warnings into PDOException while it connects. When
+// the connect suspends its fiber, other fibers on the thread must keep PHP's
+// normal error handling.
+func TestErrorModeStaysWithItsFiber(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() { // accept, stay silent for a second, then hang up: PDO waits, then fails
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			time.AfterFunc(time.Second, func() { c.Close() })
+		}
+	}()
+	port := ln.Addr().(*net.TCPAddr).Port
+	done := make(chan string, 1)
+	go func() { done <- get(t, fmt.Sprintf("/pdo-hang?port=%d", port)) }()
+	time.Sleep(300 * time.Millisecond)
+	if got := get(t, "/warning"); got != "warning" {
+		t.Fatalf("a request running beside a connecting PDO got %q", got)
+	}
+	t.Logf("pdo: %s", <-done)
+}
+
+func TestUploadInFiberMode(t *testing.T) {
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	_ = mw.WriteField("caption", "Nile")
+	w, _ := mw.CreateFormFile("photo", "nile.jpg")
+	_, _ = w.Write([]byte("JPEGDATA"))
+	_ = mw.Close()
+	resp, err := http.Post("http://"+httpAddr+"/upload", mw.FormDataContentType(), &body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	want := `{"caption":"Nile","name":"nile.jpg","size":8,"contents":"JPEGDATA"}`
+	if strings.TrimSpace(string(b)) != want {
+		t.Fatalf("got %s, want %s", b, want)
+	}
+}
+
 // curl_multi: 30 requests each run 3 parallel transfers to a 1s endpoint with
 // curl_multi_exec()/curl_multi_select(). On one PHP thread they all overlap.
 func TestHookedCurlMultiDoesNotBlockTheThread(t *testing.T) {
@@ -729,24 +853,5 @@ func TestHookedCurlMultiDoesNotBlockTheThread(t *testing.T) {
 	t.Logf("%d requests x 3 curl_multi transfers to a 1s endpoint, on 1 PHP thread: %s", n, took.Round(time.Millisecond))
 	if took > 3*time.Second {
 		t.Fatalf("took %s; curl_multi_select blocked the thread", took)
-	}
-}
-
-func TestUploadInFiberMode(t *testing.T) {
-	var body bytes.Buffer
-	mw := multipart.NewWriter(&body)
-	_ = mw.WriteField("caption", "Nile")
-	w, _ := mw.CreateFormFile("photo", "nile.jpg")
-	_, _ = w.Write([]byte("JPEGDATA"))
-	_ = mw.Close()
-	resp, err := http.Post("http://"+httpAddr+"/upload", mw.FormDataContentType(), &body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
-	want := `{"caption":"Nile","name":"nile.jpg","size":8,"contents":"JPEGDATA"}`
-	if strings.TrimSpace(string(b)) != want {
-		t.Fatalf("got %s, want %s", b, want)
 	}
 }

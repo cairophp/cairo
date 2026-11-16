@@ -10,8 +10,11 @@ import (
 
 // Spec is everything server.php declared.
 type Spec struct {
-	Threads        int          `json:"threads"`
-	OffloadThreads int          `json:"offload_threads"`
+	Threads        int `json:"threads"`
+	OffloadThreads int `json:"offload_threads"`
+	// DetectBlocking is App::detectBlocking(): log a request that keeps its
+	// PHP thread busy longer than this many seconds (0: off).
+	DetectBlocking float64      `json:"detect_blocking"`
 	HTTP           []HTTPServer `json:"http"`
 	GRPC           []GRPCServer `json:"grpc"`
 }
@@ -74,7 +77,7 @@ func (s *Spec) Validate() error {
 	if len(s.HTTP) == 0 && len(s.GRPC) == 0 {
 		return fmt.Errorf("server.php declared no servers: call $app->http(...) or $app->grpc(...)")
 	}
-	if s.Threads < 0 || s.OffloadThreads < 0 {
+	if s.Threads < 0 || s.OffloadThreads < 0 || s.DetectBlocking < 0 {
 		return fmt.Errorf("threads must be 'auto' or a positive number")
 	}
 	listens := map[string]bool{}

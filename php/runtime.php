@@ -23,6 +23,7 @@ namespace Cairo {
         private int $offloadThreads = 0;
         private int $maxRequests = 0;
         private int $maxMemory = 0;
+        private float $detectBlocking = 0.0;
         private int $hooks = Hook::ALL;
         private string $concurrency = 'fibers';
         /** @var list<object|callable> */
@@ -75,6 +76,22 @@ namespace Cairo {
         public function isolated(): bool
         {
             return $this->concurrency === 'isolated';
+        }
+
+        /**
+         * Development aid: log, with its stack, any request that keeps its
+         * PHP thread busy for more than $seconds without waiting on Cairo (a
+         * CPU loop, or a blocking call Cairo does not hook), since every other
+         * request on that thread waits meanwhile. 0 (the default) turns it off.
+         * Isolated mode, where blocking is expected, is not reported.
+         */
+        public function detectBlocking(float $seconds = 0.1): static
+        {
+            if ($seconds < 0) {
+                throw new \InvalidArgumentException('detectBlocking must be 0 or more');
+            }
+            $this->detectBlocking = $seconds;
+            return $this;
         }
 
         /**
@@ -200,7 +217,7 @@ namespace Cairo {
         /** @internal */
         public function spec(): array
         {
-            $spec = ['threads' => $this->threads, 'offload_threads' => $this->offloadThreads, 'http' => [], 'grpc' => []];
+            $spec = ['threads' => $this->threads, 'offload_threads' => $this->offloadThreads, 'detect_blocking' => $this->detectBlocking, 'http' => [], 'grpc' => []];
             foreach ($this->servers as $server) {
                 if ($server instanceof Http\Server) {
                     $spec['http'][] = $server->spec();
@@ -2626,6 +2643,32 @@ namespace Cairo\Internal {
         }
         $context = \Cairo\Context::current();
         return !$context->answered() && $context->err() instanceof \Cairo\Context\DeadlineExceeded;
+    }
+
+    /**
+     * Called inside the running fiber when Go's blocking detector found the
+     * thread busy for $ms milliseconds (see cairo_report_blocking in cairo.c).
+     */
+    function reportBlocking(int $ms): void
+    {
+        if (!Scheduler::running() || Scheduler::instance()->app()->isolated()) {
+            return;
+        }
+        // Frame i holds the line that called frame i's function, so the
+        // function that line is in is frame i+1's. Frame 0's line is where
+        // the request's code was when the interrupt ran.
+        $trace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
+        $lines = [];
+        foreach ($trace as $i => $frame) {
+            if (!isset($frame['file']) || $frame['file'] === __FILE__) {
+                continue;   // internal calls, and Cairo's runtime
+            }
+            $in = $trace[$i + 1] ?? null;
+            $fn = $in === null ? '{main}' : (isset($in['class']) ? $in['class'] . $in['type'] . $in['function'] : $in['function']) . '()';
+            $lines[] = sprintf('  %s:%d in %s', $frame['file'], $frame['line'] ?? 0, $fn);
+        }
+        $request = \Cairo\Context::current()->requestId;
+        error_log("cairo: blocking: request $request kept its PHP thread busy for {$ms}ms; other requests on the thread waited. At:\n" . implode("\n", $lines));
     }
 
     function main(): void

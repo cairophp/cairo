@@ -62,6 +62,10 @@ type Engine struct {
 	spec    *spec.Spec
 	rawSpec []byte
 
+	// slots caps requests in flight (App::maxInFlight() per request thread);
+	// nil when there is no cap.
+	slots chan struct{}
+
 	nextID atomic.Int64
 	calls  sync.Map // call id -> *call   (a request or an offload job awaiting PHP's answer)
 	fibers sync.Map // fiber id -> *fiber (the goroutine that serves a PHP fiber)
@@ -202,6 +206,9 @@ func Start(opts Options) (*Engine, error) {
 	if nw+no > maxThreads/2 {
 		return nil, fmt.Errorf("too many PHP threads: %d (at most %d)", nw+no, maxThreads/2)
 	}
+	if e.spec.MaxInFlight > 0 {
+		e.slots = make(chan struct{}, e.spec.MaxInFlight*nw)
+	}
 	e.workers = make([]atomic.Pointer[thread], nw)
 	e.offload = make([]atomic.Pointer[thread], no)
 	var all []*thread
@@ -313,6 +320,17 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 // returns ctx.Err() and a helper goroutine keeps answering the fiber (with
 // the context's error) until PHP finishes.
 func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error) {
+	release := func() {}
+	if e.slots != nil {
+		// Backpressure: wait here, in Go, for a free slot.
+		select {
+		case e.slots <- struct{}{}:
+			var once sync.Once
+			release = func() { once.Do(func() { <-e.slots }) }
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	t := acquire(e.workers)
 	c := &call{thread: t, resp: make(chan []byte, 1)}
@@ -331,6 +349,7 @@ func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error
 	if err != nil {
 		t.sendMu.RUnlock()
 		e.forget(id, c, f)
+		release()
 		return nil, err
 	}
 	select {
@@ -339,11 +358,13 @@ func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error
 	case <-ctx.Done():
 		t.sendMu.RUnlock()
 		e.forget(id, c, f)
+		release()
 		return nil, ctx.Err()
 	}
 	for {
 		select {
 		case r := <-c.resp:
+			release()
 			e.fibers.Delete(id)
 			cancel()
 			if r == nil {
@@ -367,6 +388,7 @@ func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error
 				for {
 					select {
 					case <-c.resp:
+						release() // the slot is free once PHP is done with the request
 						e.fibers.Delete(id)
 						return
 					case o := <-f.ops:
@@ -403,6 +425,14 @@ func (e *Engine) runOp(f *fiber, o op) {
 		case <-timer.C:
 		case <-f.ctx.Done():
 			timer.Stop()
+			ev["error"] = ctxError(f.ctx)
+		}
+	case "park":
+		// A fiber blocked on Cairo\Channel or select(): wait until PHP wakes
+		// it (cairo_wake), the timeout passes or the context ends.
+		ev["result"] = e.park(f.ctx, o.ID, o.Timeout)
+		if ev["result"] == "done" {
+			delete(ev, "result")
 			ev["error"] = ctxError(f.ctx)
 		}
 	case "offload":
@@ -821,12 +851,40 @@ func goRespond(id C.longlong, data *C.char, n C.int) {
 //
 //export goFiberOpen
 func goFiberOpen(tid C.int, parent C.longlong) C.longlong {
-	e := engine
+	return engine.openFiber(int(tid), int64(parent), -1)
+}
+
+// goContextOpen is goFiberOpen for a derived context (Context::withTimeout(),
+// withCancel()): code PHP runs under it sends its operations here, so they
+// end with this context. timeout < 0 means none.
+//
+//export goContextOpen
+func goContextOpen(tid C.int, parent C.longlong, timeout C.double) C.longlong {
+	return engine.openFiber(int(tid), int64(parent), float64(timeout))
+}
+
+// goContextCancel cancels a derived context. Its goroutine stays until
+// goFiberClose, so operations still sent to it fail fast.
+//
+//export goContextCancel
+func goContextCancel(id C.longlong) {
+	if v, ok := engine.fibers.Load(int64(id)); ok {
+		v.(*fiber).cancel()
+	}
+}
+
+func (e *Engine) openFiber(tid int, parent int64, timeout float64) C.longlong {
 	pctx := context.Background()
-	if v, ok := e.fibers.Load(int64(parent)); ok {
+	if v, ok := e.fibers.Load(parent); ok {
 		pctx = v.(*fiber).ctx
 	}
-	ctx, cancel := context.WithCancel(pctx)
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if timeout >= 0 {
+		ctx, cancel = context.WithTimeout(pctx, time.Duration(timeout*float64(time.Second)))
+	} else {
+		ctx, cancel = context.WithCancel(pctx)
+	}
 	f := &fiber{
 		id: e.nextID.Add(1), ctx: ctx, cancel: cancel, thread: e.table[int(tid)].Load(),
 		ops: make(chan op, 1), closed: make(chan struct{}),

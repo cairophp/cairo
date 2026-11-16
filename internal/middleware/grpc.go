@@ -19,7 +19,7 @@ import (
 // declared outermost. Cairo serves every call through a stream handler, so
 // stream interceptors cover unary calls too.
 func GRPC(decl []spec.Middleware, log *slog.Logger) ([]grpc.StreamServerInterceptor, error) {
-	var out []grpc.StreamServerInterceptor
+	out := []grpc.StreamServerInterceptor{recoverGRPC(log)}
 	for _, m := range decl {
 		switch m.Name {
 		case "request_id":
@@ -78,7 +78,7 @@ func grpcRequestID(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, h
 		ctx = metadata.NewIncomingContext(ctx, md)
 	}
 	_ = ss.SetHeader(metadata.Pairs(grpcRequestIDKey, id))
-	return handler(srv, ctxStream{ss, ctx})
+	return handler(srv, ctxStream{ss, WithValue(ctx, "request_id", id)})
 }
 
 func grpcAccessLog(log *slog.Logger) grpc.StreamServerInterceptor {

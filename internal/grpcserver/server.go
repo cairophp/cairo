@@ -164,6 +164,9 @@ func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 		"service": m.serviceID,
 		"method":  m.name,
 	}
+	if v := middleware.Values(stream.Context()); len(v) > 0 {
+		ev["values"] = v
+	}
 	// A client-streaming method's messages are read by PHP through its
 	// stream; every other method starts with one request message.
 	if !m.desc.IsStreamingClient() {

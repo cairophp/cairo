@@ -135,6 +135,25 @@ PHP_FUNCTION(cairo_wake)
 	goFiberWake((long long)op);
 }
 
+// cairo_stream_fd(resource $stream): int is the descriptor under a socket or
+// pipe stream, or -1 when it has none. Cairo\Revolt\Driver waits on it.
+PHP_FUNCTION(cairo_stream_fd)
+{
+	zval *zstream;
+	php_stream *stream;
+	php_socket_t fd = -1;
+	ZEND_PARSE_PARAMETERS_START(1, 1)
+		Z_PARAM_RESOURCE(zstream)
+	ZEND_PARSE_PARAMETERS_END();
+	php_stream_from_zval(stream, zstream);
+	int as = PHP_STREAM_AS_FD_FOR_SELECT | PHP_STREAM_CAST_INTERNAL;
+	if (php_stream_can_cast(stream, as) == SUCCESS
+		&& php_stream_cast(stream, as, (void **)&fd, 0) == SUCCESS && fd >= 0) {
+		RETURN_LONG((zend_long)fd);
+	}
+	RETURN_LONG(-1);
+}
+
 // cairo_fiber_open(int $parentFiber): int. Gives a new fiber its own
 // goroutine, with a child of the parent fiber's context.
 PHP_FUNCTION(cairo_fiber_open)
@@ -224,6 +243,10 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_wake, 0, 0, 1)
 	ZEND_ARG_INFO(0, op)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_stream_fd, 0, 0, 1)
+	ZEND_ARG_INFO(0, stream)
+ZEND_END_ARG_INFO()
+
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_context_open, 0, 0, 2)
 	ZEND_ARG_INFO(0, parent)
 	ZEND_ARG_INFO(0, timeout)
@@ -239,6 +262,7 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_next_event, arginfo_cairo_none)
 	PHP_FE(cairo_respond, arginfo_cairo_respond)
 	PHP_FE(cairo_wake, arginfo_cairo_wake)
+	PHP_FE(cairo_stream_fd, arginfo_cairo_stream_fd)
 	PHP_FE(cairo_retire, arginfo_cairo_retire)
 	PHP_FE(cairo_fiber_open, arginfo_cairo_fiber_open)
 	PHP_FE(cairo_fiber_close, arginfo_cairo_fiber_close)

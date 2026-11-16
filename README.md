@@ -547,6 +547,34 @@ nothing in PHP until it fires. Isolated mode, which runs one request per thread,
 does not report. `examples/blocking` has a loop, a long `password_hash()` and
 two calls that yield.
 
+### Amp and Revolt
+
+Libraries built on [Revolt](https://revolt.run) (Amp v3, and ReactPHP through
+its fiber adapters) run on Cairo's scheduler instead of a second event loop:
+
+```php
+require __DIR__ . '/vendor/autoload.php';
+
+Cairo\Revolt\Driver::install();   // once, in server.php
+```
+
+`Amp\delay()`, `Amp\async()`, futures, cancellations and Amp's sockets and
+HTTP client then wait in Go like any other Cairo call, so one PHP thread
+serves many such requests at once. In the example, 20 `amphp/http-client`
+requests to a 1s endpoint take about 1s on one thread. Each Revolt callback
+runs in an `async()` task: `defer()` and `queue()` as soon as the current
+fiber yields, timers on Go timers, and `onReadable()`/`onWritable()` when Go's
+poller sees the socket ready. A `Suspension` parks its fiber in Go.
+
+Some things differ from Revolt's own drivers:
+
+- A callback belongs to the request that scheduled it, and ends with it.
+- `queue()` and `defer()` run in the order they were scheduled.
+- `onSignal()` throws `UnsupportedFeatureException`, because Go handles signals.
+- An exception from a callback with no error handler is logged, not thrown out of `run()`.
+
+See `examples/revolt`.
+
 ## Building
 
 Cairo links against a thread-safe (ZTS) libphp, built with `--enable-embed`
@@ -619,10 +647,13 @@ internal/httpserver/  net/http server built from the declaration
 internal/middleware/  Go middleware declared from PHP (HTTP and gRPC)
 internal/grpcserver/  grpc-go server, proto compilation, health, reflection
 php/runtime.php       the PHP side: Cairo\ classes and the fiber scheduler (embedded in the binary)
+php/revolt.php        Cairo\Revolt\Driver, loaded when revolt/event-loop is installed
 examples/greeter/     HTTP + gRPC example
 examples/isolated/    isolated mode: superglobals, echo/header(), resets
 examples/supervise/   thread restart after a fatal error, maxRequests and maxMemory
 examples/blocking/    detectBlocking: logs requests that hold their PHP thread
+
+examples/revolt/      Amp and Revolt on Cairo's scheduler (Composer project)
 test/                 end-to-end tests
 third_party/NOTICES   licenses of code Cairo adapts (PHP embed SAPI, FrankenPHP)
 ```

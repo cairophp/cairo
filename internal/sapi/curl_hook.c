@@ -8,6 +8,10 @@
 // on them (Cairo\Internal\Hooks::waitSet). Everything else in curl_exec()
 // stays PHP's own, so curl_getinfo(), curl_error() and the write and header
 // callbacks behave as usual. Outside a fiber, the real libcurl function runs.
+//
+// curl_multi_select() (Guzzle's CurlMultiHandler, parallel curl code) ends in
+// curl_multi_wait(), which Cairo defines the same way: inside a request fiber
+// the wait for the multi handle's sockets suspends only that fiber.
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -30,6 +34,20 @@ static CURLcode real_easy_perform(CURL *easy)
 		}
 	}
 	return real(easy);
+}
+
+typedef CURLMcode (*multi_wait_fn)(CURLM *, struct curl_waitfd[], unsigned int, int, int *);
+
+static CURLMcode real_multi_wait(CURLM *multi, struct curl_waitfd extra[], unsigned int extra_nfds, int timeout_ms, int *numfds)
+{
+	static multi_wait_fn real = NULL;
+	if (real == NULL) {
+		real = (multi_wait_fn)dlsym(RTLD_NEXT, "curl_multi_wait");
+		if (real == NULL) {
+			return CURLM_INTERNAL_ERROR;
+		}
+	}
+	return real(multi, extra, extra_nfds, timeout_ms, numfds);
 }
 
 // Waits until one of curl's sockets is ready or the timeout passes.
@@ -118,7 +136,7 @@ CURLcode curl_easy_perform(CURL *easy)
 		if (waited == 0) {
 			hooked = 0;   // declined: wait the blocking way from now on
 			int numfds = 0;
-			curl_multi_wait(multi, NULL, 0, timeout_ms < 0 ? 1000 : (int)timeout_ms, &numfds);
+			real_multi_wait(multi, NULL, 0, timeout_ms < 0 ? 1000 : (int)timeout_ms, &numfds);
 		}
 	}
 
@@ -134,4 +152,37 @@ CURLcode curl_easy_perform(CURL *easy)
 	curl_multi_remove_handle(multi, easy);
 	curl_multi_cleanup(multi);
 	return result;
+}
+
+CURLMcode curl_multi_wait(CURLM *multi, struct curl_waitfd extra[], unsigned int extra_nfds, int timeout_ms, int *numfds)
+{
+	// Extra descriptors are not something PHP passes; leave those to curl.
+	if (EG(active_fiber) == NULL || extra_nfds != 0) {
+		return real_multi_wait(multi, extra, extra_nfds, timeout_ms, numfds);
+	}
+	// Like curl, never wait past curl's own next timeout.
+	long curl_timeout = -1;
+	curl_multi_timeout(multi, &curl_timeout);
+	long wait_ms = timeout_ms;
+	if (curl_timeout >= 0 && (wait_ms < 0 || curl_timeout < wait_ms)) {
+		wait_ms = curl_timeout;
+	}
+	if (wait_ms == 0) {
+		return real_multi_wait(multi, NULL, 0, 0, numfds);
+	}
+	int waited = wait_curl_sockets(multi, wait_ms);
+	if (waited == 0) {
+		return real_multi_wait(multi, extra, extra_nfds, timeout_ms, numfds);
+	}
+	if (waited < 0) {
+		// An exception (deadline, cancellation) is pending; it surfaces as
+		// soon as curl_multi_select() returns to PHP.
+		if (numfds != NULL) {
+			*numfds = 0;
+		}
+		return CURLM_OK;
+	}
+	// The fiber woke up because a socket is ready or the time passed: a
+	// non-blocking poll tells the caller how many descriptors are ready.
+	return real_multi_wait(multi, NULL, 0, 0, numfds);
 }

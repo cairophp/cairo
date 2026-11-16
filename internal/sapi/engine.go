@@ -829,12 +829,40 @@ func goRespond(id C.longlong, data *C.char, n C.int) {
 //
 //export goFiberOpen
 func goFiberOpen(tid C.int, parent C.longlong) C.longlong {
-	e := engine
+	return engine.openFiber(int(tid), int64(parent), -1)
+}
+
+// goContextOpen is goFiberOpen for a derived context (Context::withTimeout(),
+// withCancel()): code PHP runs under it sends its operations here, so they
+// end with this context. timeout < 0 means none.
+//
+//export goContextOpen
+func goContextOpen(tid C.int, parent C.longlong, timeout C.double) C.longlong {
+	return engine.openFiber(int(tid), int64(parent), float64(timeout))
+}
+
+// goContextCancel cancels a derived context. Its goroutine stays until
+// goFiberClose, so operations still sent to it fail fast.
+//
+//export goContextCancel
+func goContextCancel(id C.longlong) {
+	if v, ok := engine.fibers.Load(int64(id)); ok {
+		v.(*fiber).cancel()
+	}
+}
+
+func (e *Engine) openFiber(tid int, parent int64, timeout float64) C.longlong {
 	pctx := context.Background()
-	if v, ok := e.fibers.Load(int64(parent)); ok {
+	if v, ok := e.fibers.Load(parent); ok {
 		pctx = v.(*fiber).ctx
 	}
-	ctx, cancel := context.WithCancel(pctx)
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if timeout >= 0 {
+		ctx, cancel = context.WithTimeout(pctx, time.Duration(timeout*float64(time.Second)))
+	} else {
+		ctx, cancel = context.WithCancel(pctx)
+	}
 	f := &fiber{
 		id: e.nextID.Add(1), ctx: ctx, cancel: cancel, thread: e.table[int(tid)].Load(),
 		ops: make(chan op, 1), closed: make(chan struct{}),

@@ -129,7 +129,7 @@ func requestID(h http.Handler) http.Handler {
 			r.Header.Set(requestIDHeader, id)
 		}
 		w.Header().Set(requestIDHeader, id)
-		h.ServeHTTP(w, r)
+		h.ServeHTTP(w, r.WithContext(WithValue(r.Context(), "request_id", id)))
 	})
 }
 

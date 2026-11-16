@@ -128,6 +128,9 @@ func routeHandler(r spec.Route, php Dispatcher, log *slog.Logger) http.Handler {
 			"proto":   req.Proto,
 			"tls":     req.TLS != nil,
 		}
+		if v := middleware.Values(req.Context()); len(v) > 0 {
+			ev["values"] = v
+		}
 		if form != nil {
 			ev["form"] = form.fields
 			ev["files"] = form.files

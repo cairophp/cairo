@@ -78,7 +78,7 @@ func grpcRequestID(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, h
 		ctx = metadata.NewIncomingContext(ctx, md)
 	}
 	_ = ss.SetHeader(metadata.Pairs(grpcRequestIDKey, id))
-	return handler(srv, ctxStream{ss, ctx})
+	return handler(srv, ctxStream{ss, WithValue(ctx, "request_id", id)})
 }
 
 func grpcAccessLog(log *slog.Logger) grpc.StreamServerInterceptor {

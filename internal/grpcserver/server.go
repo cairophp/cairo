@@ -203,6 +203,11 @@ func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 	return stream.SendMsg(out)
 }
 
+// CompileProtos compiles .proto files (and their imports) into a registry.
+func CompileProtos(paths []string) (*protoregistry.Files, error) {
+	return compileProtos(paths)
+}
+
 func compileProtos(paths []string) (*protoregistry.Files, error) {
 	files := new(protoregistry.Files)
 	for _, p := range paths {

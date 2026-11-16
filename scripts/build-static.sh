@@ -10,7 +10,10 @@
 # Usage: scripts/build-static.sh [php-version] [output]
 #   PHP_SRC, CURL_SRC, LIBZIP_SRC, ICU_SRC   unpacked sources to use instead of downloading
 #   PHP_EXTENSIONS      configure flags for the extensions (default below)
-#   WORK                build directory (default: a temporary one)
+#   WORK                build directory (default: a temporary one). Reusing
+#                       one skips the libraries and PHP already built there.
+#   STAGE=php           stop after PHP is built and its sources are removed
+#                       (Dockerfile.static caches that as its own layer)
 set -euo pipefail
 
 PHP_VERSION="${1:-8.3.27}"
@@ -31,9 +34,15 @@ mkdir -p "$DEPS" "$(dirname "$OUT")"
 export PKG_CONFIG="pkg-config --static"
 export PKG_CONFIG_PATH="$DEPS/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 
+# Each library and PHP itself is built once per WORK: a marker file records
+# what is installed, so a later run only builds Cairo.
+built() { [ -e "$WORK/.built-$1" ]; }
+mark() { touch "$WORK/.built-$1"; }
+
 # libcurl, built small: TLS through OpenSSL and zlib, nothing else (no LDAP,
 # Kerberos, SSH or IDN), so the link does not drag in libraries most distros
 # ship only as shared objects. Cairo's curl hook and ext/curl both use it.
+if ! built curl; then
 if [ -z "${CURL_SRC:-}" ]; then
   curl -fsSL "https://curl.se/download/curl-${CURL_VERSION}.tar.xz" | tar -xJ -C "$WORK"
   CURL_SRC="$WORK/curl-${CURL_VERSION}"
@@ -48,9 +57,12 @@ fi
   make -j"$JOBS"
   make install
 )
+mark curl
+fi
 
 # libzip for ext/zip, built the same way: Alpine ships it only as a shared
 # library. Deflate through zlib only (no bzip2, xz, zstd or encryption).
+if ! built libzip; then
 if [ -z "${LIBZIP_SRC:-}" ]; then
   curl -fsSL "https://github.com/nih-at/libzip/releases/download/v${LIBZIP_VERSION}/libzip-${LIBZIP_VERSION}.tar.xz" | tar -xJ -C "$WORK"
   LIBZIP_SRC="$WORK/libzip-${LIBZIP_VERSION}"
@@ -62,10 +74,13 @@ cmake -S "$LIBZIP_SRC" -B "$WORK/libzip-build" -DCMAKE_INSTALL_PREFIX="$DEPS" -D
   -DBUILD_TOOLS=OFF -DBUILD_REGRESS=OFF -DBUILD_OSSFUZZ=OFF -DBUILD_EXAMPLES=OFF -DBUILD_DOC=OFF
 cmake --build "$WORK/libzip-build" -j"$JOBS"
 cmake --install "$WORK/libzip-build"
+mark libzip
+fi
 
 # ICU for ext/intl, with its locale data inside libicudata.a. Distros ship
 # the data as a separate .dat file, which a static binary would not find
 # (NumberFormatter and friends then fail with "Constructor failed").
+if ! built icu; then
 if [ -z "${ICU_SRC:-}" ]; then
   curl -fsSL "https://github.com/unicode-org/icu/releases/download/release-${ICU_VERSION//./-}/icu4c-${ICU_VERSION//./_}-src.tgz" | tar -xz -C "$WORK"
   ICU_SRC="$WORK/icu/source"
@@ -78,7 +93,10 @@ fi
   make -j"$JOBS"
   make install
 )
+mark icu
+fi
 
+if ! built "php-$PHP_VERSION"; then
 if [ -z "${PHP_SRC:-}" ]; then
   curl -fsSL "https://github.com/php/php-src/archive/refs/tags/php-${PHP_VERSION}.tar.gz" | tar -xz -C "$WORK"
   PHP_SRC="$WORK/php-src-php-${PHP_VERSION}"
@@ -111,6 +129,15 @@ DEFAULT_EXTENSIONS="
   make -j"$JOBS"
   make install
 )
+mark "php-$PHP_VERSION"
+fi
+
+if [ "${STAGE:-}" = php ]; then
+  # Keep only what the Go build links: the installed libraries and PHP.
+  find "$WORK" -mindepth 1 -maxdepth 1 ! -name deps ! -name php ! -name '.built-*' -exec rm -rf {} +
+  echo "libraries and PHP $PHP_VERSION built in $WORK"
+  exit 0
+fi
 
 PHP_CONFIG="$PREFIX/bin/php-config"
 export CGO_ENABLED=1

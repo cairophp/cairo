@@ -651,6 +651,10 @@ older PHP can only build opcache as a shared extension. Code is still compiled
 only once per thread, when `server.php` and the classes it loads are first
 used. CI builds it and runs the end-to-end tests against it.
 `scripts/build-static.sh` does the work and also runs outside Docker on Alpine.
+The first build takes about 15 minutes, nearly all of it ICU and PHP. Docker
+keeps those in their own layer, so later builds only compile Cairo, until
+`PHP_VERSION` or the script changes. Outside Docker, set `WORK` to a fixed
+directory for the same effect.
 
 ## License notices
 

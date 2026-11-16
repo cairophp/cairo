@@ -148,7 +148,7 @@ threads, fibers your own code creates) the original functions run.
 | `Hook::SOCKETS` | reads and writes on `tcp://` and `unix://` streams: mysqlnd (PDO MySQL, mysqli), Predis, phpredis, `fsockopen()`, `stream_socket_client()` | waits go through one Go epoll loop |
 | `Hook::CONNECT` | connects on those streams, DNS included, and TLS handshakes | Go's dialer; falls back to PHP when a `bindto` option is set |
 | `Hook::DNS` | `gethostbyname()`, `gethostbynamel()` | Go's resolver |
-| `Hook::CURL` | `curl_exec()` | libcurl still does the transfer; only its socket waits move to Go, so `curl_getinfo()`, `curl_error()` and callbacks are unchanged |
+| `Hook::CURL` | `curl_exec()`, `curl_multi_select()` (Guzzle's multi handler) | libcurl still does the transfer; only its socket waits move to Go, so `curl_getinfo()`, `curl_error()` and callbacks are unchanged |
 | `Hook::PGSQL` | PDO `pgsql:` queries | Cairo's own driver; see PostgreSQL below |
 
 ```php
@@ -234,7 +234,7 @@ first when the fiber ends; for a request, that is after the response is sent.
 
 Rules that keep fibers safe: per-request data lives on `Request` and
 `Context`, not in superglobals (Cairo does not fill `$_GET`/`$_SERVER`), and
-blocking calls that are not hooked yet (`curl_multi_select()`) stall every fiber on their thread. Use `Cairo\offload()` for CPU-heavy work.
+blocking calls that are not hooked yet stall every fiber on their thread. Use `Cairo\offload()` for CPU-heavy work.
 
 ### Isolated mode
 
@@ -301,7 +301,7 @@ test/                 end-to-end tests
 ## Not done yet
 
 - Streaming gRPC.
-- `curl_multi` hooks, a Go-backed HTTP client.
+- A Go-backed HTTP client.
 - Hard interruption of PHP code at a deadline.
 - Opcache and a wider set of PHP extensions in the default build.
 - A Cairo-owned SAPI adapted from FrankenPHP; this prototype uses PHP's embed SAPI.

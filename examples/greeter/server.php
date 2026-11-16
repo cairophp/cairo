@@ -274,6 +274,32 @@ $http->get('/warning', function (): Response {
     return Response::text($ok ? 'warning' : 'unexpected');
 });
 
+// Several transfers at once with curl_multi, the way Guzzle runs them: the
+// curl_multi_select() wait suspends only this fiber.
+$http->get('/curl-multi', function (Request $req): Response {
+    $mh = curl_multi_init();
+    $handles = [];
+    foreach (explode(',', (string) $req->query('urls')) as $url) {
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_multi_add_handle($mh, $ch);
+        $handles[] = $ch;
+    }
+    do {
+        $status = curl_multi_exec($mh, $active);
+        if ($active && curl_multi_select($mh, 1.0) === -1) {
+            usleep(1000);
+        }
+    } while ($active && $status === CURLM_OK);
+    $bodies = [];
+    foreach ($handles as $ch) {
+        $bodies[] = curl_multi_getcontent($ch);
+        curl_multi_remove_handle($mh, $ch);
+    }
+    curl_multi_close($mh);
+    return Response::json(['bodies' => $bodies]);
+});
+
 // DNS through Go's resolver.
 $http->get('/dns/{host}', fn (Request $req): Response => Response::json([
     'one' => gethostbyname($req->param('host')),

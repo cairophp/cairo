@@ -8,3 +8,9 @@ import _ "embed"
 //
 //go:embed runtime.php
 var Runtime []byte
+
+// Revolt is php/revolt.php: Cairo\Revolt\Driver, loaded on first use when
+// revolt/event-loop is installed.
+//
+//go:embed revolt.php
+var Revolt []byte

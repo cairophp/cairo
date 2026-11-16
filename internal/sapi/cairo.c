@@ -1,6 +1,6 @@
 // Cairo's bridge between Go and an embedded, thread-safe (ZTS) PHP.
 //
-// Milestone 1 builds on PHP's own embed SAPI: one boot thread runs the
+// Cairo is its own PHP SAPI ("cairo", below): one boot thread runs the
 // declare phase, then each PHP worker thread gets its own interpreter context
 // (ts_resource) and runs the Cairo runtime script, which loops on
 // cairo_next_event() and runs every request in its own Fiber.
@@ -27,7 +27,8 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <unistd.h>
-#include <sapi/embed/php_embed.h>
+#include <php_variables.h>
+#include <signal.h>
 #include <ext/standard/php_fopen_wrappers.h>
 
 #include "cairo.h"
@@ -1069,6 +1070,81 @@ static zend_module_entry cairo_module_entry = {
 	STANDARD_MODULE_PROPERTIES
 };
 
+// --- The cairo SAPI ---------------------------------------------------------
+//
+// Cairo is its own SAPI (PHP_SAPI is "cairo"), adapted from PHP's embed SAPI
+// and FrankenPHP: the boot thread starts PHP and runs the declare phase, and
+// each worker thread runs one long PHP request (cairo_thread_run). Requests
+// never reach PHP through the SAPI; Go hands them to the runtime script.
+
+// Defaults a php.ini may override (lowest precedence).
+static void cairo_ini_defaults(HashTable *configuration_hash)
+{
+	static const char *defaults[][2] = {
+		{"html_errors", "0"},
+		{"implicit_flush", "1"},
+		{"output_buffering", "0"},
+		{"register_argc_argv", "1"},
+		{"display_errors", "0"},   // errors go to the log (below), once
+		{"log_errors", "1"},
+	};
+	for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
+		zval v;
+		ZVAL_NEW_STR(&v, zend_string_init(defaults[i][1], strlen(defaults[i][1]), 1));
+		zend_hash_str_update(configuration_hash, defaults[i][0], strlen(defaults[i][0]), &v);
+	}
+}
+
+// Settings no php.ini may change: each worker thread is one PHP request that
+// lasts as long as the server, so PHP's own time limits would end it. Request
+// deadlines are Cairo's (Middleware::timeout()).
+static const char cairo_forced_ini[] =
+	"max_execution_time=0\n"
+	"max_input_time=-1\n";
+
+static size_t cairo_ub_write(const char *str, size_t len)
+{
+	// Output outside an output buffer (isolated mode buffers each request)
+	// goes to stdout, as with the CLI.
+	size_t done = 0;
+	while (done < len) {
+		ssize_t n = write(STDOUT_FILENO, str + done, len - done);
+		if (n <= 0) {
+			if (n < 0 && errno == EINTR) {
+				continue;
+			}
+			break;
+		}
+		done += (size_t)n;
+	}
+	return len;
+}
+
+static void cairo_flush(void *server_context)
+{
+}
+
+static void cairo_send_header(sapi_header_struct *sapi_header, void *server_context)
+{
+}
+
+static char *cairo_read_cookies(void)
+{
+	return NULL;
+}
+
+static void cairo_register_variables(zval *track_vars_array)
+{
+	php_import_environment_variables(track_vars_array);
+}
+
+// PHP's log lines (errors, warnings, error_log()) go to Cairo's logger,
+// unless the error_log setting names a file.
+static void cairo_log_message(const char *message, int syslog_type)
+{
+	goPHPLog(cairo_tid, (char *)message, syslog_type);
+}
+
 // ---- Opcache ------------------------------------------------------------------
 //
 // Cairo loads opcache (built as opcache.so next to PHP) unless CAIRO_OPCACHE=0
@@ -1076,7 +1152,7 @@ static zend_module_entry cairo_module_entry = {
 // and checks the name once, while Zend extensions start; so the SAPI goes by
 // "cli-server" for that moment (from the cairo module's MINIT, which runs just
 // before) and gets its own name back afterwards. PHP_SAPI and php_sapi_name()
-// keep reporting "embed".
+// keep reporting "cairo".
 
 static const char *cairo_sapi_name;
 static char *cairo_ini_entries;
@@ -1106,12 +1182,12 @@ static void cairo_opcache_restore(void)
 	}
 }
 
-// Replaces the embed SAPI's startup hook so the cairo module (and its
-// functions) is registered during module startup, like any PHP extension.
+// Module startup registers the cairo module (and its functions), like any
+// PHP extension, with opcache added to the INI entries when wanted.
 static int cairo_sapi_startup(sapi_module_struct *sapi)
 {
 	if (cairo_opcache_wanted()) {
-		// The embed SAPI's fixed settings, plus opcache. INI entries are parsed
+		// Cairo's fixed settings, plus opcache. INI entries are parsed
 		// like php.ini lines, so zend_extension= loads it; a php.ini that loads
 		// it too only gets a warning.
 		const char *base = sapi->ini_entries != NULL ? sapi->ini_entries : "";
@@ -1128,6 +1204,38 @@ static int cairo_sapi_startup(sapi_module_struct *sapi)
 	return rc;
 }
 
+static sapi_module_struct cairo_sapi_module = {
+	"cairo",                      /* name */
+	"Cairo",                      /* pretty name */
+
+	cairo_sapi_startup,           /* startup */
+	php_module_shutdown_wrapper,  /* shutdown */
+
+	NULL,                         /* activate */
+	NULL,                         /* deactivate */
+
+	cairo_ub_write,               /* unbuffered write */
+	cairo_flush,                  /* flush */
+	NULL,                         /* get uid */
+	NULL,                         /* getenv */
+
+	php_error,                    /* error handler */
+
+	NULL,                         /* header handler */
+	NULL,                         /* send headers handler */
+	cairo_send_header,            /* send header handler */
+
+	NULL,                         /* read POST data */
+	cairo_read_cookies,           /* read Cookies */
+
+	cairo_register_variables,     /* register server variables */
+	cairo_log_message,            /* log message */
+	NULL,                         /* get request time */
+	NULL,                         /* child terminate */
+
+	STANDARD_SAPI_MODULE_PROPERTIES
+};
+
 static int run_file(const char *file)
 {
 	zend_file_handle fh;
@@ -1140,20 +1248,54 @@ static int run_file(const char *file)
 	return EG(exit_status);
 }
 
-int cairo_boot(const char *runtime_file)
+// cairo_boot starts PHP (module startup, then a request on this thread for
+// the declare phase) and runs the runtime script. php_ini is a php.ini path
+// (file or directory), or NULL to search the usual places.
+int cairo_boot(const char *runtime_file, const char *php_ini)
 {
 	static char *argv[] = {"cairo", NULL};
-	php_embed_module.startup = cairo_sapi_startup;
-	if (php_embed_init(1, argv) == FAILURE) {
+	// Sockets whose peer went away must not kill the process.
+	signal(SIGPIPE, SIG_IGN);
+#ifdef ZTS
+	php_tsrm_startup();
+#endif
+	zend_signal_startup();
+	sapi_startup(&cairo_sapi_module);   // clears ini_entries; set them after
+
+	cairo_sapi_module.ini_defaults = cairo_ini_defaults;
+	cairo_sapi_module.ini_entries = cairo_forced_ini;
+	cairo_sapi_module.php_ini_ignore_cwd = 1;
+	if (php_ini != NULL && php_ini[0] != '\0') {
+		cairo_sapi_module.php_ini_path_override = strdup(php_ini);
+	}
+	cairo_sapi_module.executable_location = argv[0];
+
+	if (cairo_sapi_module.startup(&cairo_sapi_module) == FAILURE) {
 		return -1;
 	}
+	SG(options) |= SAPI_OPTION_NO_CHDIR;
+	SG(request_info).argc = 1;
+	SG(request_info).argv = argv;
+	if (php_request_startup() == FAILURE) {
+		php_module_shutdown();
+		return -1;
+	}
+	SG(headers_sent) = 1;
+	SG(request_info).no_headers = 1;
+	php_register_variable("PHP_SELF", "-", NULL);
+
 	cairo_tid = -1;
 	return run_file(runtime_file);
 }
 
 void cairo_shutdown(void)
 {
-	php_embed_shutdown();
+	php_request_shutdown(NULL);
+	php_module_shutdown();
+	sapi_shutdown();
+#ifdef ZTS
+	tsrm_shutdown();
+#endif
 }
 
 int cairo_thread_run(int tid, const char *runtime_file)

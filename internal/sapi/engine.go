@@ -49,6 +49,7 @@ type Engine struct {
 	serverFile  string
 	runtimeFile string
 	log         *slog.Logger
+	phpIni      string
 
 	threads []*thread // all PHP threads; index = thread id
 	workers []*thread // run requests as fibers
@@ -126,7 +127,9 @@ type Options struct {
 	// Threads and OffloadThreads override server.php when > 0.
 	Threads        int
 	OffloadThreads int
-	Logger         *slog.Logger
+	// PHPIni is a php.ini file or directory; empty searches PHP's usual places.
+	PHPIni string
+	Logger *slog.Logger
 }
 
 // Start boots PHP, runs server.php once to collect its declaration (the
@@ -155,6 +158,7 @@ func Start(opts Options) (*Engine, error) {
 	e := &Engine{
 		serverFile:  serverFile,
 		runtimeFile: runtimeFile,
+		phpIni:      opts.PHPIni,
 		log:         logger,
 		bootDone:    make(chan error, 1),
 		shutdownCh:  make(chan struct{}),
@@ -214,7 +218,12 @@ func (e *Engine) bootThread() {
 	cfile := C.CString(e.runtimeFile)
 	defer C.free(unsafe.Pointer(cfile))
 
-	status := C.cairo_boot(cfile)
+	var cini *C.char
+	if e.phpIni != "" {
+		cini = C.CString(e.phpIni)
+		defer C.free(unsafe.Pointer(cini))
+	}
+	status := C.cairo_boot(cfile, cini)
 	switch {
 	case status != 0:
 		e.bootDone <- fmt.Errorf("server.php failed during the declare phase (exit status %d)", int(status))
@@ -578,6 +587,27 @@ func goThreadDone(tid C.int, status C.int) {
 	case e.threadErrs <- err:
 	default:
 	}
+}
+
+// goPHPLog receives PHP's log lines (errors, warnings, error_log()) from the
+// cairo SAPI; syslogType is the syslog priority PHP gives them.
+//
+//export goPHPLog
+func goPHPLog(tid C.int, msg *C.char, syslogType C.int) {
+	e := engine
+	if e == nil {
+		return
+	}
+	level := slog.LevelInfo
+	switch {
+	case syslogType <= 3: // LOG_ERR and above
+		level = slog.LevelError
+	case syslogType == 4: // LOG_WARNING
+		level = slog.LevelWarn
+	case syslogType == 7: // LOG_DEBUG
+		level = slog.LevelDebug
+	}
+	e.log.Log(context.Background(), level, C.GoString(msg), "source", "php", "thread", int(tid))
 }
 
 //export goCairoInfo

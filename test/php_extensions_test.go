@@ -6,7 +6,7 @@ import (
 )
 
 // TestPHPBuildHasOpcacheAndExtensions checks the default build (scripts/build-php.sh):
-// opcache runs under the embed SAPI and the wider extension set is loaded.
+// opcache runs under the cairo SAPI and the wider extension set is loaded.
 func TestPHPBuildHasOpcacheAndExtensions(t *testing.T) {
 	raw := get(t, "/php/extensions")
 	var out struct {
@@ -23,8 +23,8 @@ func TestPHPBuildHasOpcacheAndExtensions(t *testing.T) {
 	if !out.Extensions["mbstring"] {
 		t.Skip("PHP was built before the wider extension set; run make php again")
 	}
-	if out.SAPI != "embed" {
-		t.Fatalf("PHP_SAPI = %q, want embed", out.SAPI)
+	if out.SAPI != "cairo" {
+		t.Fatalf("PHP_SAPI = %q, want cairo", out.SAPI)
 	}
 	for name, ok := range out.Extensions {
 		if !ok {

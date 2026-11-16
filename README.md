@@ -425,7 +425,8 @@ modes; in fiber mode use `$req->form()` and `$req->file('photo')`, which gives a
 
 ## Building
 
-Cairo links against a thread-safe (ZTS) PHP built with the embed SAPI.
+Cairo links against a thread-safe (ZTS) libphp, built with `--enable-embed`
+for the library, and runs PHP as its own SAPI: `PHP_SAPI` is `cairo`.
 
 ```sh
 make php            # builds PHP 8.3 (ZTS, embed) into /opt/php-zts
@@ -444,10 +445,19 @@ session, simplexml, tokenizer, xml and the rest). `scripts/build-php.sh` lists
 the system packages they need.
 
 Opcache is loaded as a Zend extension at startup, so scripts are compiled once
-per process and shared by all PHP threads. It does not accept the embed SAPI by
+per process and shared by all PHP threads. It does not accept the cairo SAPI by
 name, so Cairo presents itself under another name only while opcache starts;
-`PHP_SAPI` is still `embed`. Its usual ini settings apply, and `CAIRO_OPCACHE=0`
+`PHP_SAPI` is still `cairo`. Its usual ini settings apply, and `CAIRO_OPCACHE=0`
 leaves it out.
+
+PHP settings come from a php.ini: `cairo serve --php-ini FILE` (or
+`CAIRO_PHP_INI`, or `PHPRC`), otherwise PHP's own search, never the current
+directory. Without one, errors are logged and not displayed. PHP's log lines
+(errors, warnings, `error_log()`) go to Cairo's logger with `source=php`,
+unless `error_log` names a file. `max_execution_time` and `max_input_time`
+stay off whatever the ini says, because each PHP thread runs one long request;
+request deadlines come from `Middleware::timeout()` and gRPC deadlines. `dl()`
+is not available.
 
 Requirements: Go 1.24+, a C toolchain, the -dev packages listed in `scripts/build-php.sh`, and PHP 8.1 or newer (fibers).
 
@@ -466,7 +476,3 @@ examples/greeter/     HTTP + gRPC example
 examples/isolated/    isolated mode: superglobals, echo/header(), resets
 test/                 end-to-end tests
 ```
-
-## Not done yet
-
-- A Cairo-owned SAPI adapted from FrankenPHP; this prototype uses PHP's embed SAPI.

@@ -1,0 +1,19 @@
+# One static cairo binary, linked against musl, for any x86-64 or arm64 Linux:
+#   docker build -f Dockerfile.static --output dist .
+# writes dist/cairo. See scripts/build-static.sh.
+FROM golang:1.24-alpine3.21 AS build
+RUN apk add --no-cache bash build-base autoconf bison re2c pkgconf cmake linux-headers curl tar xz perl \
+      openssl-dev openssl-libs-static zlib-dev zlib-static bzip2-dev bzip2-static xz-dev xz-static \
+      libxml2-dev libxml2-static sqlite-dev sqlite-static oniguruma-dev \
+      libsodium-dev libsodium-static gmp-dev libpng-dev libpng-static \
+      libjpeg-turbo-dev libjpeg-turbo-static libwebp-dev libwebp-static \
+      freetype-dev freetype-static brotli-dev brotli-static
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG PHP_VERSION=8.3.27
+RUN scripts/build-static.sh "$PHP_VERSION" /out/cairo
+
+FROM scratch
+COPY --from=build /out/cairo /cairo

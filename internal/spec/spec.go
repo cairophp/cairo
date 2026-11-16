@@ -14,9 +14,12 @@ type Spec struct {
 	OffloadThreads int `json:"offload_threads"`
 	// DetectBlocking is App::detectBlocking(): log a request that keeps its
 	// PHP thread busy longer than this many seconds (0: off).
-	DetectBlocking float64      `json:"detect_blocking"`
-	HTTP           []HTTPServer `json:"http"`
-	GRPC           []GRPCServer `json:"grpc"`
+	DetectBlocking float64 `json:"detect_blocking"`
+	// MaxInFlight caps the requests each PHP request thread holds at once
+	// (0: no cap). Requests over it wait in Go until one finishes.
+	MaxInFlight int          `json:"max_in_flight"`
+	HTTP        []HTTPServer `json:"http"`
+	GRPC        []GRPCServer `json:"grpc"`
 }
 
 // HTTPServer is one `$app->http(':8080')` declaration.
@@ -77,7 +80,7 @@ func (s *Spec) Validate() error {
 	if len(s.HTTP) == 0 && len(s.GRPC) == 0 {
 		return fmt.Errorf("server.php declared no servers: call $app->http(...) or $app->grpc(...)")
 	}
-	if s.Threads < 0 || s.OffloadThreads < 0 || s.DetectBlocking < 0 {
+	if s.Threads < 0 || s.OffloadThreads < 0 || s.DetectBlocking < 0 || s.MaxInFlight < 0 {
 		return fmt.Errorf("threads must be 'auto' or a positive number")
 	}
 	listens := map[string]bool{}

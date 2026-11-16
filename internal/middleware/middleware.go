@@ -75,7 +75,7 @@ func HTTP(h http.Handler, decl []spec.Middleware, log *slog.Logger) (http.Handle
 			return nil, fmt.Errorf("middleware %s: %w", m.Name, err)
 		}
 	}
-	return h, nil
+	return recoverHTTP(h, log), nil
 }
 
 // timeoutOf reads the timeout middleware's "seconds".
@@ -129,7 +129,7 @@ func requestID(h http.Handler) http.Handler {
 			r.Header.Set(requestIDHeader, id)
 		}
 		w.Header().Set(requestIDHeader, id)
-		h.ServeHTTP(w, r)
+		h.ServeHTTP(w, r.WithContext(WithValue(r.Context(), "request_id", id)))
 	})
 }
 

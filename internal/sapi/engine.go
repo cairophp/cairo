@@ -425,6 +425,21 @@ func (e *Engine) runOp(f *fiber, o op) {
 		default:
 			ev["result"] = map[string]any{"err": err.Error()}
 		}
+	case "stoptls":
+		// stream_socket_enable_crypto($s, false): the TLS shutdown runs here.
+		timeout := time.Duration(0)
+		if o.Timeout > 0 {
+			timeout = time.Duration(o.Timeout * float64(time.Second))
+		}
+		fd, err := stopTLS(f.ctx, o.Fd, timeout)
+		switch {
+		case err == nil:
+			ev["result"] = map[string]any{"fd": fd}
+		case f.ctx.Err() != nil:
+			ev["error"] = ctxError(f.ctx)
+		default:
+			ev["result"] = map[string]any{"err": err.Error()}
+		}
 	case "pg":
 		// A PDO pgsql call: runs here, on the fiber's goroutine, so the
 		// request's deadline cancels the query.
@@ -643,6 +658,24 @@ func goStartTLS(fd C.int, data *C.char, n C.int, errOut **C.char) C.int {
 		timeout = time.Duration(req.Timeout * float64(time.Second))
 	}
 	nfd, err := startTLS(context.Background(), int(fd), req.Host, timeout, req.TLS)
+	if err != nil {
+		*errOut = C.CString(err.Error())
+		return -1
+	}
+	return C.int(nfd)
+}
+
+// goStopTLS turns TLS off on socket fd for code outside a Cairo fiber: the
+// PHP thread waits here. Returns the plain connection's descriptor, or -1
+// with *errOut set (the caller frees it).
+//
+//export goStopTLS
+func goStopTLS(fd C.int, timeoutSec C.double, errOut **C.char) C.int {
+	timeout := time.Duration(0)
+	if timeoutSec > 0 {
+		timeout = time.Duration(float64(timeoutSec) * float64(time.Second))
+	}
+	nfd, err := stopTLS(context.Background(), int(fd), timeout)
 	if err != nil {
 		*errOut = C.CString(err.Error())
 		return -1

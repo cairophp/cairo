@@ -272,7 +272,10 @@ ext/openssl and suspend only the fiber. The `ssl` context options
 `stream_socket_enable_crypto()` upgrades an open `tcp://` connection
 (STARTTLS, as SMTP and IMAP clients do): Go handshakes on the fiber's
 goroutine and the stream carries on over TLS. Only the client side is
-offered, and TLS cannot be turned off again. When PHP is built with
+offered. `stream_socket_enable_crypto($s, false)` turns TLS off again, as FTP
+clients do after `CCC`: Go sends what PHP wrote, then a close_notify, waits
+for the peer's (up to the stream's timeout), and the stream carries on in
+clear text; it can turn TLS on again later. When PHP is built with
 ext/openssl, its transports still serve code outside Cairo's fibers.
 
 ### HTTP client

@@ -43,6 +43,9 @@ func New(decl spec.HTTPServer, php Dispatcher, log *slog.Logger) (*Server, error
 	mux := http.NewServeMux()
 	for _, r := range decl.Routes {
 		pattern := r.Method + " " + r.Path
+		if r.Method == "*" {
+			pattern = r.Path // $http->fallback(): any method
+		}
 		mux.Handle(pattern, routeHandler(r, php, log))
 	}
 	for _, s := range decl.Static {

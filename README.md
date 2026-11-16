@@ -146,7 +146,7 @@ threads, fibers your own code creates) the original functions run.
 |---|---|---|
 | `Hook::SLEEP` | `sleep()`, `usleep()`, `time_nanosleep()` | |
 | `Hook::SOCKETS` | reads and writes on `tcp://` and `unix://` streams: mysqlnd (PDO MySQL, mysqli), Predis, phpredis, `fsockopen()`, `stream_socket_client()` | waits go through one Go epoll loop |
-| `Hook::CONNECT` | connects on those streams, DNS included | Go's dialer; falls back to PHP when a `bindto` option is set |
+| `Hook::CONNECT` | connects on those streams, DNS included, and TLS handshakes | Go's dialer; falls back to PHP when a `bindto` option is set |
 | `Hook::DNS` | `gethostbyname()`, `gethostbynamel()` | Go's resolver |
 | `Hook::CURL` | `curl_exec()` | libcurl still does the transfer; only its socket waits move to Go, so `curl_getinfo()`, `curl_error()` and callbacks are unchanged |
 
@@ -161,8 +161,19 @@ hold a thousand OS threads. With one PHP thread, 50 PDO queries running
 `Hook::NONE`).
 
 pdo_pgsql talks to libpq's own sockets, which no PHP-level hook sees; a
-Go-backed PDO driver for Postgres is planned. TLS streams (`ssl://`, `tls://`)
-are not hooked yet, and `curl_multi_*` keeps blocking in `curl_multi_select()`.
+Go-backed PDO driver for Postgres is planned.
+
+### TLS
+
+Cairo provides the `ssl://`, `tls://` and `tlsv1.x://` transports itself, and
+an `https://` wrapper when PHP has none. Go's `crypto/tls` does the handshake
+and encryption, and PHP gets a plain socket to Go, so `file_get_contents('https://…')`,
+`stream_socket_client('tls://…')` and anything built on them work without
+ext/openssl and suspend only the fiber. The `ssl` context options
+`verify_peer`, `verify_peer_name`, `peer_name`, `allow_self_signed` and
+`cafile` are honoured; client certificates and `stream_socket_enable_crypto()`
+(STARTTLS on an open connection) are not supported. When PHP is built with
+ext/openssl, its transports still serve code outside Cairo's fibers.
 
 ### Connection pools
 
@@ -201,7 +212,7 @@ first when the fiber ends; for a request, that is after the response is sent.
 
 Rules that keep fibers safe: per-request data lives on `Request` and
 `Context`, not in superglobals (Cairo does not fill `$_GET`/`$_SERVER`), and
-blocking calls that are not hooked yet (pdo_pgsql, TLS streams,
+blocking calls that are not hooked yet (pdo_pgsql,
 `curl_multi_select()`) stall every fiber on their thread. Use `Cairo\offload()` for CPU-heavy work.
 
 ### Isolated mode
@@ -263,7 +274,7 @@ test/                 end-to-end tests
 ## Not done yet
 
 - Streaming gRPC.
-- TLS stream hooks, `curl_multi` hooks, a Go-backed HTTP client, a pgx PDO driver.
+- `curl_multi` hooks, a Go-backed HTTP client, a pgx PDO driver.
 - Hard interruption of PHP code at a deadline; multipart uploads in isolated mode.
 - Opcache and a wider set of PHP extensions in the default build.
 - A Cairo-owned SAPI adapted from FrankenPHP; this prototype uses PHP's embed SAPI.

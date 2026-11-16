@@ -99,18 +99,19 @@ type fiber struct {
 
 // op is an operation a fiber asked Go to perform while it is suspended.
 type op struct {
-	ID      int64   `json:"-"`
-	Op      string  `json:"op"`
-	Seconds float64 `json:"seconds"`
-	Payload string  `json:"payload"`
-	Fd      int     `json:"fd"`
-	Write   bool    `json:"write"`
-	Timeout float64 `json:"timeout"` // seconds; < 0 means none
-	Network string  `json:"network"`
-	Address string  `json:"address"`
-	Host    string  `json:"host"`
-	Read    []int   `json:"read"`
-	WriteFD []int   `json:"write_fds"`
+	ID      int64       `json:"-"`
+	Op      string      `json:"op"`
+	Seconds float64     `json:"seconds"`
+	Payload string      `json:"payload"`
+	Fd      int         `json:"fd"`
+	Write   bool        `json:"write"`
+	Timeout float64     `json:"timeout"` // seconds; < 0 means none
+	Network string      `json:"network"`
+	Address string      `json:"address"`
+	Host    string      `json:"host"`
+	Read    []int       `json:"read"`
+	WriteFD []int       `json:"write_fds"`
+	TLS     *tlsOptions `json:"tls"`
 }
 
 var (
@@ -389,7 +390,13 @@ func (e *Engine) runOp(f *fiber, o op) {
 		if o.Timeout > 0 {
 			timeout = time.Duration(o.Timeout * float64(time.Second))
 		}
-		fd, err := dialFD(f.ctx, o.Network, o.Address, timeout)
+		var fd int
+		var err error
+		if o.Network == "tls" && o.TLS != nil {
+			fd, err = dialTLS(f.ctx, o.Address, timeout, *o.TLS)
+		} else {
+			fd, err = dialFD(f.ctx, o.Network, o.Address, timeout)
+		}
 		switch {
 		case err == nil:
 			ev["result"] = map[string]any{"fd": fd}
@@ -535,6 +542,33 @@ func goCairoSpec(tid C.int, data *C.char, n C.int) *C.char {
 		return C.CString(fmt.Sprintf("php thread %d built a different server declaration than the boot thread; server.php must declare the same servers and routes every time it runs", int(tid)))
 	}
 	return nil
+}
+
+// goDialTLS connects a TLS stream for code outside a Cairo fiber (or with
+// hooks off): the PHP thread waits here. Returns the descriptor, or -1 with
+// *errOut set (the caller frees it).
+//
+//export goDialTLS
+func goDialTLS(data *C.char, n C.int, errOut **C.char) C.int {
+	var req struct {
+		Address string     `json:"address"`
+		Timeout float64    `json:"timeout"`
+		TLS     tlsOptions `json:"tls"`
+	}
+	if err := json.Unmarshal(C.GoBytes(unsafe.Pointer(data), n), &req); err != nil {
+		*errOut = C.CString(err.Error())
+		return -1
+	}
+	timeout := time.Duration(0)
+	if req.Timeout > 0 {
+		timeout = time.Duration(req.Timeout * float64(time.Second))
+	}
+	fd, err := dialTLS(context.Background(), req.Address, timeout, req.TLS)
+	if err != nil {
+		*errOut = C.CString(err.Error())
+		return -1
+	}
+	return C.int(fd)
 }
 
 //export goNextEvent

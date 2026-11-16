@@ -174,6 +174,49 @@ $http->get('/curl', function (Request $req): Response {
     return Response::json($out);
 });
 
+// TLS through Go: https:// and tls:// work without ext/openssl, and the
+// handshake, reads and writes suspend only this fiber.
+$http->get('/https', function (Request $req): Response {
+    $ssl = ['verify_peer' => $req->query('verify') !== '0'];
+    if ($req->query('cafile') !== null) {
+        $ssl['cafile'] = $req->query('cafile');
+    }
+    $body = @file_get_contents((string) $req->query('url'), false, stream_context_create(['ssl' => $ssl]));
+    return Response::json(['body' => $body === false ? null : $body, 'error' => $body === false ? error_get_last()['message'] ?? '' : null]);
+});
+
+$http->get('/tls-stream', function (Request $req): Response {
+    $ctx = stream_context_create(['ssl' => ['cafile' => (string) $req->query('cafile')]]);
+    $fp = stream_socket_client('tls://' . $req->query('addr'), $errno, $error, 5, STREAM_CLIENT_CONNECT, $ctx);
+    if ($fp === false) {
+        return Response::json(['error' => $error]);
+    }
+    fwrite($fp, "GET /?d=0s HTTP/1.0\r\nHost: localhost\r\n\r\n");
+    $raw = stream_get_contents($fp);
+    fclose($fp);
+    return Response::json(['response' => substr($raw, strpos($raw, "\r\n\r\n") + 4)]);
+});
+
+// A PDO constructor whose connect hangs: the fiber suspends inside it while
+// PDO has warnings turned into exceptions. Other requests must not inherit that.
+$http->get('/pdo-hang', function (Request $req): Response {
+    try {
+        new PDO('mysql:host=127.0.0.1;port=' . $req->query('port'), 'u', 'p', [PDO::ATTR_TIMEOUT => 1]);
+    } catch (PDOException $e) {
+        return Response::text('failed: ' . $e->getMessage());
+    }
+    return Response::text('connected?');
+});
+
+$http->get('/warning', function (): Response {
+    try {
+        $ok = @file_get_contents('/nonexistent/cairo') === false;
+    } catch (Throwable $e) {
+        return Response::text('threw ' . $e::class);
+    }
+    return Response::text($ok ? 'warning' : 'unexpected');
+});
+
 // DNS through Go's resolver.
 $http->get('/dns/{host}', fn (Request $req): Response => Response::json([
     'one' => gethostbyname($req->param('host')),

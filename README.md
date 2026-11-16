@@ -182,8 +182,26 @@ with pdo_pgsql; `int2/int4/int8` and `bool` columns come back as PHP ints and
 bools, `bytea` as a string (pdo_pgsql gives a stream). Results are read in
 full, like libpq's `PQexec`. Use one `PDO` per fiber (for example through
 `Cairo\Pool`): a connection runs one query at a time. The driver registers
-only when PHP has no pdo_pgsql of its own; the `PGSQL_ATTR_*` attributes,
-`pgsqlCopy*` and LISTEN/NOTIFY methods are not provided.
+only when PHP has no pdo_pgsql of its own; the `PGSQL_ATTR_*` attributes
+and the large object methods (`pgsqlLOB*`) are not provided.
+
+LISTEN/NOTIFY and COPY work through the same methods as pdo_pgsql:
+
+```php
+$pdo->exec('LISTEN jobs');
+// Waits up to 5 s; in a request fiber only this fiber waits.
+$note = $pdo->pgsqlGetNotify(PDO::FETCH_ASSOC, 5000); // ['message' => 'jobs', 'pid' => ..., 'payload' => ...] or false
+$pid = $pdo->pgsqlGetPid();
+
+$pdo->pgsqlCopyFromArray('items', ["1\tfirst", "2\tsecond"]);
+$pdo->pgsqlCopyFromFile('items', '/tmp/items.tsv', "\t", '\\N', 'id, name');
+$rows = $pdo->pgsqlCopyToArray('items');      // one line per row, with "\n"
+$pdo->pgsqlCopyToFile('items', '/tmp/out.tsv');
+```
+
+Notifications that arrive while the connection runs other queries are kept
+until `pgsqlGetNotify()` takes them. COPY data is held in memory in one
+piece, both ways.
 
 ### TLS
 

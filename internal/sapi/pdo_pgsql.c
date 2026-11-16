@@ -17,8 +17,10 @@
 #include <zend_smart_str.h>
 #include <ext/json/php_json.h>
 #include <ext/standard/base64.h>
+#include <ext/standard/file.h>
 #include <ext/pdo/php_pdo.h>
 #include <ext/pdo/php_pdo_driver.h>
+#include <ext/pdo/php_pdo_error.h>
 
 #include "pgsql.h"
 #include "_cgo_export.h"
@@ -698,6 +700,364 @@ static void pg_fetch_err(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zval *info)
 	}
 }
 
+// ---- PDO::pgsql* methods -----------------------------------------------------
+//
+// pdo_pgsql's driver-specific methods: COPY in and out, LISTEN/NOTIFY and the
+// backend PID. Large objects (pgsqlLOB*) are not provided.
+
+static void pg_error_msg(pdo_dbh_t *dbh, const char *state, const char *msg)
+{
+	zval resp;
+	array_init(&resp);
+	add_assoc_string(&resp, "sqlstate", (char *)state);
+	add_assoc_string(&resp, "error", (char *)msg);
+	pg_error(dbh, NULL, &resp);
+	zval_ptr_dtor(&resp);
+}
+
+// Runs a request that only reports success; 1 on success, 0 on failure (the
+// error is recorded on dbh and raised per the error mode, or an exception is
+// already pending). *resp is set on success and the caller frees it.
+static int pg_method_call(pdo_dbh_t *dbh, zval *req, zval *resp)
+{
+	int done = pg_call(req, resp);
+	zval_ptr_dtor(req);
+	if (!done) {
+		return 0;
+	}
+	if (!resp_ok(resp)) {
+		pg_error(dbh, NULL, resp);
+		zval_ptr_dtor(resp);
+		ZVAL_UNDEF(resp);
+		PDO_HANDLE_DBH_ERR();
+		return 0;
+	}
+	return 1;
+}
+
+static char *pg_copy_sql(zend_string *table, zend_string *fields, bool in, zend_string *sep, zend_string *null_as)
+{
+	char *sql;
+	spprintf(&sql, 0, "COPY %s%s%s%s %s WITH DELIMITER E'%c' NULL AS E'%s'",
+		ZSTR_VAL(table),
+		fields != NULL ? " (" : "", fields != NULL ? ZSTR_VAL(fields) : "", fields != NULL ? ")" : "",
+		in ? "FROM STDIN" : "TO STDOUT",
+		sep != NULL && ZSTR_LEN(sep) > 0 ? ZSTR_VAL(sep)[0] : '\t',
+		null_as != NULL && ZSTR_LEN(null_as) > 0 ? ZSTR_VAL(null_as) : "\\\\N");
+	return sql;
+}
+
+// Sends COPY data (rows already terminated by newlines) into a table.
+static bool pg_copy_in(pdo_dbh_t *dbh, char *sql, zend_string *data)
+{
+	cairo_pg_dbh *H = dbh->driver_data;
+	zval req, resp;
+	pg_request(&req, "copy_in", H->conn);
+	add_assoc_string(&req, "sql", sql);
+	add_assoc_str(&req, "data", php_base64_encode((unsigned char *)ZSTR_VAL(data), ZSTR_LEN(data)));
+	efree(sql);
+	if (!pg_method_call(dbh, &req, &resp)) {
+		return false;
+	}
+	zval_ptr_dtor(&resp);
+	return true;
+}
+
+// Reads a table as COPY text; NULL on failure.
+static zend_string *pg_copy_out(pdo_dbh_t *dbh, char *sql)
+{
+	cairo_pg_dbh *H = dbh->driver_data;
+	zval req, resp;
+	pg_request(&req, "copy_out", H->conn);
+	add_assoc_string(&req, "sql", sql);
+	efree(sql);
+	if (!pg_method_call(dbh, &req, &resp)) {
+		return NULL;
+	}
+	zval *data = zend_hash_str_find(Z_ARRVAL(resp), "data", 4);
+	zend_string *out = NULL;
+	if (data != NULL && Z_TYPE_P(data) == IS_STRING) {
+		out = php_base64_decode((unsigned char *)Z_STRVAL_P(data), Z_STRLEN_P(data));
+	}
+	zval_ptr_dtor(&resp);
+	if (out == NULL) {
+		out = ZSTR_EMPTY_ALLOC();
+	}
+	return out;
+}
+
+static ZEND_NAMED_FUNCTION(pg_copy_from_array)
+{
+	zend_string *table, *sep = NULL, *null_as = NULL, *fields = NULL;
+	zval *rows, *row;
+	ZEND_PARSE_PARAMETERS_START(2, 5)
+		Z_PARAM_STR(table)
+		Z_PARAM_ARRAY(rows)
+		Z_PARAM_OPTIONAL
+		Z_PARAM_STR(sep)
+		Z_PARAM_STR(null_as)
+		Z_PARAM_STR_OR_NULL(fields)
+	ZEND_PARSE_PARAMETERS_END();
+	if (zend_hash_num_elements(Z_ARRVAL_P(rows)) == 0) {
+		zend_argument_value_error(2, "cannot be empty");
+		RETURN_THROWS();
+	}
+	pdo_dbh_t *dbh = Z_PDO_DBH_P(ZEND_THIS);
+	PDO_CONSTRUCT_CHECK;
+	PDO_DBH_CLEAR_ERR();
+
+	smart_str buf = {0};
+	ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(rows), row) {
+		zend_string *line = zval_try_get_string(row);
+		if (line == NULL) {
+			smart_str_free(&buf);
+			RETURN_THROWS();
+		}
+		smart_str_append(&buf, line);
+		if (ZSTR_LEN(line) == 0 || ZSTR_VAL(line)[ZSTR_LEN(line) - 1] != '\n') {
+			smart_str_appendc(&buf, '\n');
+		}
+		zend_string_release(line);
+	} ZEND_HASH_FOREACH_END();
+	smart_str_0(&buf);
+	bool ok = pg_copy_in(dbh, pg_copy_sql(table, fields, true, sep, null_as), buf.s);
+	smart_str_free(&buf);
+	if (EG(exception) != NULL) {
+		RETURN_THROWS();
+	}
+	RETURN_BOOL(ok);
+}
+
+static ZEND_NAMED_FUNCTION(pg_copy_from_file)
+{
+	zend_string *table, *filename, *sep = NULL, *null_as = NULL, *fields = NULL;
+	ZEND_PARSE_PARAMETERS_START(2, 5)
+		Z_PARAM_STR(table)
+		Z_PARAM_PATH_STR(filename)
+		Z_PARAM_OPTIONAL
+		Z_PARAM_STR(sep)
+		Z_PARAM_STR(null_as)
+		Z_PARAM_STR_OR_NULL(fields)
+	ZEND_PARSE_PARAMETERS_END();
+	pdo_dbh_t *dbh = Z_PDO_DBH_P(ZEND_THIS);
+	PDO_CONSTRUCT_CHECK;
+	PDO_DBH_CLEAR_ERR();
+
+	php_stream *stream = php_stream_open_wrapper_ex(ZSTR_VAL(filename), "rb", 0, NULL, FG(default_context));
+	if (stream == NULL) {
+		pg_error_msg(dbh, "HY000", "Unable to open the file");
+		PDO_HANDLE_DBH_ERR();
+		RETURN_FALSE;
+	}
+	zend_string *data = php_stream_copy_to_mem(stream, PHP_STREAM_COPY_ALL, 0);
+	php_stream_close(stream);
+	if (data == NULL) {
+		data = ZSTR_EMPTY_ALLOC();
+	}
+	bool ok = pg_copy_in(dbh, pg_copy_sql(table, fields, true, sep, null_as), data);
+	zend_string_release(data);
+	if (EG(exception) != NULL) {
+		RETURN_THROWS();
+	}
+	RETURN_BOOL(ok);
+}
+
+static ZEND_NAMED_FUNCTION(pg_copy_to_array)
+{
+	zend_string *table, *sep = NULL, *null_as = NULL, *fields = NULL;
+	ZEND_PARSE_PARAMETERS_START(1, 4)
+		Z_PARAM_STR(table)
+		Z_PARAM_OPTIONAL
+		Z_PARAM_STR(sep)
+		Z_PARAM_STR(null_as)
+		Z_PARAM_STR_OR_NULL(fields)
+	ZEND_PARSE_PARAMETERS_END();
+	pdo_dbh_t *dbh = Z_PDO_DBH_P(ZEND_THIS);
+	PDO_CONSTRUCT_CHECK;
+	PDO_DBH_CLEAR_ERR();
+
+	zend_string *data = pg_copy_out(dbh, pg_copy_sql(table, fields, false, sep, null_as));
+	if (data == NULL) {
+		if (EG(exception) != NULL) {
+			RETURN_THROWS();
+		}
+		RETURN_FALSE;
+	}
+	array_init(return_value);
+	const char *p = ZSTR_VAL(data), *end = p + ZSTR_LEN(data);
+	while (p < end) {
+		const char *nl = memchr(p, '\n', end - p);
+		const char *stop = nl != NULL ? nl + 1 : end;
+		add_next_index_stringl(return_value, p, stop - p);
+		p = stop;
+	}
+	zend_string_release(data);
+}
+
+static ZEND_NAMED_FUNCTION(pg_copy_to_file)
+{
+	zend_string *table, *filename, *sep = NULL, *null_as = NULL, *fields = NULL;
+	ZEND_PARSE_PARAMETERS_START(2, 5)
+		Z_PARAM_STR(table)
+		Z_PARAM_PATH_STR(filename)
+		Z_PARAM_OPTIONAL
+		Z_PARAM_STR(sep)
+		Z_PARAM_STR(null_as)
+		Z_PARAM_STR_OR_NULL(fields)
+	ZEND_PARSE_PARAMETERS_END();
+	pdo_dbh_t *dbh = Z_PDO_DBH_P(ZEND_THIS);
+	PDO_CONSTRUCT_CHECK;
+	PDO_DBH_CLEAR_ERR();
+
+	php_stream *stream = php_stream_open_wrapper_ex(ZSTR_VAL(filename), "wb", 0, NULL, FG(default_context));
+	if (stream == NULL) {
+		pg_error_msg(dbh, "HY000", "Unable to open the file for writing");
+		PDO_HANDLE_DBH_ERR();
+		RETURN_FALSE;
+	}
+	zend_string *data = pg_copy_out(dbh, pg_copy_sql(table, fields, false, sep, null_as));
+	if (data == NULL) {
+		php_stream_close(stream);
+		if (EG(exception) != NULL) {
+			RETURN_THROWS();
+		}
+		RETURN_FALSE;
+	}
+	bool ok = php_stream_write(stream, ZSTR_VAL(data), ZSTR_LEN(data)) == (ssize_t)ZSTR_LEN(data);
+	php_stream_close(stream);
+	zend_string_release(data);
+	if (!ok) {
+		pg_error_msg(dbh, "HY000", "Unable to write to the file");
+		PDO_HANDLE_DBH_ERR();
+	}
+	RETURN_BOOL(ok);
+}
+
+static ZEND_NAMED_FUNCTION(pg_get_notify)
+{
+	zend_long mode = PDO_FETCH_USE_DEFAULT, wait_ms = 0;
+	ZEND_PARSE_PARAMETERS_START(0, 2)
+		Z_PARAM_OPTIONAL
+		Z_PARAM_LONG(mode)
+		Z_PARAM_LONG(wait_ms)
+	ZEND_PARSE_PARAMETERS_END();
+	pdo_dbh_t *dbh = Z_PDO_DBH_P(ZEND_THIS);
+	PDO_CONSTRUCT_CHECK;
+	if (mode == PDO_FETCH_USE_DEFAULT) {
+		mode = dbh->default_fetch_type;
+	}
+	if (mode != PDO_FETCH_BOTH && mode != PDO_FETCH_ASSOC && mode != PDO_FETCH_NUM) {
+		zend_argument_value_error(1, "must be one of PDO::FETCH_BOTH, PDO::FETCH_ASSOC, or PDO::FETCH_NUM");
+		RETURN_THROWS();
+	}
+	if (wait_ms < 0) {
+		zend_argument_value_error(2, "must be greater than or equal to 0");
+		RETURN_THROWS();
+	}
+	PDO_DBH_CLEAR_ERR();
+
+	cairo_pg_dbh *H = dbh->driver_data;
+	zval req, resp;
+	pg_request(&req, "notify", H->conn);
+	add_assoc_long(&req, "wait_ms", wait_ms);
+	if (!pg_method_call(dbh, &req, &resp)) {
+		if (EG(exception) != NULL) {
+			RETURN_THROWS();
+		}
+		RETURN_FALSE;
+	}
+	zval *n = zend_hash_str_find(Z_ARRVAL(resp), "notification", 12);
+	if (n == NULL || Z_TYPE_P(n) != IS_ARRAY) {
+		zval_ptr_dtor(&resp);
+		RETURN_FALSE;
+	}
+	zval *channel = zend_hash_str_find(Z_ARRVAL_P(n), "channel", 7);
+	zend_long pid = resp_long(n, "pid");
+	zval *payload = zend_hash_str_find(Z_ARRVAL_P(n), "payload", 7);
+	array_init(return_value);
+	zend_string *ch = channel != NULL ? zval_get_string(channel) : ZSTR_EMPTY_ALLOC();
+	if (mode != PDO_FETCH_ASSOC) {
+		add_index_str(return_value, 0, zend_string_copy(ch));
+	}
+	if (mode != PDO_FETCH_NUM) {
+		add_assoc_str(return_value, "message", zend_string_copy(ch));
+	}
+	zend_string_release(ch);
+	if (mode != PDO_FETCH_ASSOC) {
+		add_index_long(return_value, 1, pid);
+	}
+	if (mode != PDO_FETCH_NUM) {
+		add_assoc_long(return_value, "pid", pid);
+	}
+	if (payload != NULL && Z_TYPE_P(payload) == IS_STRING && Z_STRLEN_P(payload) > 0) {
+		if (mode != PDO_FETCH_ASSOC) {
+			add_index_stringl(return_value, 2, Z_STRVAL_P(payload), Z_STRLEN_P(payload));
+		}
+		if (mode != PDO_FETCH_NUM) {
+			add_assoc_stringl(return_value, "payload", Z_STRVAL_P(payload), Z_STRLEN_P(payload));
+		}
+	}
+	zval_ptr_dtor(&resp);
+}
+
+static ZEND_NAMED_FUNCTION(pg_get_pid)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+	pdo_dbh_t *dbh = Z_PDO_DBH_P(ZEND_THIS);
+	PDO_CONSTRUCT_CHECK;
+	zval resp;
+	ZVAL_UNDEF(&resp);
+	zend_long pid = pg_status(dbh, &resp) ? resp_long(&resp, "pid") : 0;
+	zval_ptr_dtor(&resp);
+	RETURN_LONG(pid);
+}
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_pg_copy_from_array, 0, 2, _IS_BOOL, 0)
+	ZEND_ARG_TYPE_INFO(0, tableName, IS_STRING, 0)
+	ZEND_ARG_TYPE_INFO(0, rows, IS_ARRAY, 0)
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, separator, IS_STRING, 0, "\"\\t\"")
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, nullAs, IS_STRING, 0, "\"\\\\\\\\N\"")
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, fields, IS_STRING, 1, "null")
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_pg_copy_file, 0, 2, _IS_BOOL, 0)
+	ZEND_ARG_TYPE_INFO(0, tableName, IS_STRING, 0)
+	ZEND_ARG_TYPE_INFO(0, filename, IS_STRING, 0)
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, separator, IS_STRING, 0, "\"\\t\"")
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, nullAs, IS_STRING, 0, "\"\\\\\\\\N\"")
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, fields, IS_STRING, 1, "null")
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_MASK_EX(arginfo_pg_copy_to_array, 0, 1, MAY_BE_ARRAY|MAY_BE_FALSE)
+	ZEND_ARG_TYPE_INFO(0, tableName, IS_STRING, 0)
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, separator, IS_STRING, 0, "\"\\t\"")
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, nullAs, IS_STRING, 0, "\"\\\\\\\\N\"")
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, fields, IS_STRING, 1, "null")
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_MASK_EX(arginfo_pg_get_notify, 0, 0, MAY_BE_ARRAY|MAY_BE_FALSE)
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, fetchMode, IS_LONG, 0, "PDO::FETCH_DEFAULT")
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, timeoutMilliseconds, IS_LONG, 0, "0")
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_pg_get_pid, 0, 0, IS_LONG, 0)
+ZEND_END_ARG_INFO()
+
+static const zend_function_entry pg_dbh_functions[] = {
+	ZEND_FENTRY(pgsqlCopyFromArray, pg_copy_from_array, arginfo_pg_copy_from_array, ZEND_ACC_PUBLIC)
+	ZEND_FENTRY(pgsqlCopyFromFile, pg_copy_from_file, arginfo_pg_copy_file, ZEND_ACC_PUBLIC)
+	ZEND_FENTRY(pgsqlCopyToArray, pg_copy_to_array, arginfo_pg_copy_to_array, ZEND_ACC_PUBLIC)
+	ZEND_FENTRY(pgsqlCopyToFile, pg_copy_to_file, arginfo_pg_copy_file, ZEND_ACC_PUBLIC)
+	ZEND_FENTRY(pgsqlGetNotify, pg_get_notify, arginfo_pg_get_notify, ZEND_ACC_PUBLIC)
+	ZEND_FENTRY(pgsqlGetPid, pg_get_pid, arginfo_pg_get_pid, ZEND_ACC_PUBLIC)
+	ZEND_FE_END
+};
+
+static const zend_function_entry *pg_get_driver_methods(pdo_dbh_t *dbh, int kind)
+{
+	return kind == PDO_DBH_DRIVER_METHOD_KIND_DBH ? pg_dbh_functions : NULL;
+}
+
 static const struct pdo_dbh_methods pg_methods = {
 	pg_close,
 	pg_prepare,
@@ -711,7 +1071,7 @@ static const struct pdo_dbh_methods pg_methods = {
 	pg_fetch_err,
 	pg_get_attribute,
 	NULL, // check_liveness
-	NULL, // get_driver_methods
+	pg_get_driver_methods,
 	NULL, // persistent_shutdown
 	pg_in_transaction,
 	NULL, // get_gc

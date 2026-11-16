@@ -340,6 +340,11 @@ $http->get('/cpu', function (Request $req): Response {
     return Response::json(['iterations' => offload('burn', $seconds)]);
 });
 
+// More routes, one file per feature: each returns fn (Cairo\Http\Server $http, Cairo\App $app).
+foreach (glob(__DIR__ . '/routes/*.php') ?: [] as $file) {
+    (require $file)($http, $app);
+}
+
 $grpc = $app->grpc(getenv('CAIRO_GRPC') ?: ':9000')
     ->proto(__DIR__ . '/proto/helloworld.proto')
     ->maxDuration(30)

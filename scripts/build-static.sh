@@ -8,7 +8,7 @@
 # static getaddrinfo still loads NSS modules at run time, so prefer musl.
 #
 # Usage: scripts/build-static.sh [php-version] [output]
-#   PHP_SRC, CURL_SRC, LIBZIP_SRC   unpacked sources to use instead of downloading
+#   PHP_SRC, CURL_SRC, LIBZIP_SRC, ICU_SRC   unpacked sources to use instead of downloading
 #   PHP_EXTENSIONS      configure flags for the extensions (default below)
 #   WORK                build directory (default: a temporary one)
 set -euo pipefail
@@ -17,6 +17,7 @@ PHP_VERSION="${1:-8.3.27}"
 OUT="${2:-dist/cairo}"
 CURL_VERSION="${CURL_VERSION:-8.11.1}"
 LIBZIP_VERSION="${LIBZIP_VERSION:-1.11.2}"
+ICU_VERSION="${ICU_VERSION:-74.2}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 case "$OUT" in /*) ;; *) OUT="$ROOT/$OUT" ;; esac
 WORK="${WORK:-$(mktemp -d)}"
@@ -61,6 +62,22 @@ cmake -S "$LIBZIP_SRC" -B "$WORK/libzip-build" -DCMAKE_INSTALL_PREFIX="$DEPS" -D
   -DBUILD_TOOLS=OFF -DBUILD_REGRESS=OFF -DBUILD_OSSFUZZ=OFF -DBUILD_EXAMPLES=OFF -DBUILD_DOC=OFF
 cmake --build "$WORK/libzip-build" -j"$JOBS"
 cmake --install "$WORK/libzip-build"
+
+# ICU for ext/intl, with its locale data inside libicudata.a. Distros ship
+# the data as a separate .dat file, which a static binary would not find
+# (NumberFormatter and friends then fail with "Constructor failed").
+if [ -z "${ICU_SRC:-}" ]; then
+  curl -fsSL "https://github.com/unicode-org/icu/releases/download/release-${ICU_VERSION//./-}/icu4c-${ICU_VERSION//./_}-src.tgz" | tar -xz -C "$WORK"
+  ICU_SRC="$WORK/icu/source"
+fi
+(
+  cd "$ICU_SRC"
+  CFLAGS="-O2 -fPIC" CXXFLAGS="-O2 -fPIC" ./configure --prefix="$DEPS" \
+    --enable-static --disable-shared --with-data-packaging=static \
+    --disable-tests --disable-samples --disable-extras
+  make -j"$JOBS"
+  make install
+)
 
 if [ -z "${PHP_SRC:-}" ]; then
   curl -fsSL "https://github.com/php/php-src/archive/refs/tags/php-${PHP_VERSION}.tar.gz" | tar -xz -C "$WORK"

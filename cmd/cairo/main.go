@@ -12,9 +12,11 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/mohamed-samir907/cairo/internal/codegen"
 	"github.com/mohamed-samir907/cairo/internal/grpcserver"
 	"github.com/mohamed-samir907/cairo/internal/httpserver"
 	"github.com/mohamed-samir907/cairo/internal/sapi"
@@ -32,6 +34,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   cairo serve <server.php> [--threads N] [--offload-threads N] [--grace 30s]
+  cairo gen [--out DIR] [-I DIR]... <file.proto>...
   cairo version`)
 }
 
@@ -46,10 +49,51 @@ func run(args []string) error {
 		return nil
 	case "serve":
 		return serve(args[1:])
+	case "gen":
+		return gen(args[1:])
 	default:
 		usage()
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+type multiFlag []string
+
+func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
+func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
+
+// gen writes PHP message classes and service interfaces for .proto files.
+func gen(args []string) error {
+	fs := flag.NewFlagSet("gen", flag.ContinueOnError)
+	out := fs.String("out", "gen", "output directory")
+	var includes multiFlag
+	fs.Var(&includes, "I", "import path for .proto imports (repeatable)")
+	// Accept flags before and after the files.
+	var protos, rest []string
+	for _, a := range args {
+		if strings.HasSuffix(a, ".proto") && !strings.HasPrefix(a, "-") {
+			protos = append(protos, a)
+		} else {
+			rest = append(rest, a)
+		}
+	}
+	if err := fs.Parse(rest); err != nil {
+		return err
+	}
+	protos = append(protos, fs.Args()...)
+	if len(protos) == 0 {
+		usage()
+		return errors.New("gen: no .proto files")
+	}
+	files, err := codegen.Generate(protos, codegen.Options{ImportPaths: includes})
+	if err != nil {
+		return err
+	}
+	if err := codegen.Write(*out, files); err != nil {
+		return err
+	}
+	fmt.Printf("cairo gen: wrote %d files to %s (require %s/autoload.php)\n", len(files), *out, *out)
+	return nil
 }
 
 type server interface {

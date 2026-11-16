@@ -57,25 +57,43 @@ cairo serve server.php
 
 ### gRPC
 
-Go decodes each call with the method's descriptor and gives PHP the message
-as an array (protojson). The handler returns an array, which Go encodes:
+`cairo gen` turns `.proto` files into PHP: a class per message (typed
+properties, a named-argument constructor, `fromArray()` / `toArray()`), a class
+of constants per enum, and an interface per service. It needs no `protoc` and
+no `google/protobuf` runtime.
+
+```sh
+cairo gen --out gen proto/helloworld.proto     # -I DIR for imports
+```
 
 ```php
-final class Greeter
+require __DIR__ . '/gen/autoload.php';
+
+final class Greeter implements Helloworld\GreeterInterface
 {
-    public function SayHello(array $req, Cairo\Context $ctx): array
+    public function SayHello(HelloRequest $request, Cairo\Context $ctx): HelloReply
     {
-        if (($req['name'] ?? '') === '') {
+        if ($request->name === '') {
             throw new Cairo\Grpc\Exception(Cairo\Grpc\Code::INVALID_ARGUMENT, 'name is required');
         }
-        return ['message' => "Hello {$req['name']}"];
+        return new HelloReply(message: "Hello {$request->name}");
     }
 }
 ```
 
+Go decodes each call with the method's descriptor and passes it to PHP as
+protojson; when a handler's first parameter is a generated class, Cairo builds
+it with `fromArray()`, and a returned object goes back through `toArray()`.
+Handlers that take and return plain arrays keep working.
+
+Mapping: properties use the protojson (lowerCamelCase) field names; 64-bit
+integers are PHP `int`; `bytes` are raw strings; enums are `int` with
+constants; `optional` and `oneof` fields are nullable; nested types are
+`Outer_Inner`; `google.protobuf.*` well-known types stay in their protojson
+form (a string for `Timestamp`). Streaming methods are not generated yet.
+
 Health checking (`grpc.health.v1`) and server reflection are built in, so
-`grpcurl -plaintext localhost:9000 list` works. Generated PHP message classes
-come in milestone 2.
+`grpcurl -plaintext localhost:9000 list` works.
 
 ### Context and deadlines
 
@@ -183,7 +201,8 @@ Requirements: Go 1.24+, a C toolchain, libcurl headers (`libcurl4-openssl-dev`),
 ## Layout
 
 ```
-cmd/cairo/            the binary
+cmd/cairo/            the binary (serve, gen)
+internal/codegen/     cairo gen: PHP classes from .proto files
 internal/sapi/        embedded PHP: C bridge, PHP threads, fiber goroutines, offload pool
 internal/spec/        the server declaration sent by server.php
 internal/httpserver/  net/http server built from the declaration
@@ -195,7 +214,7 @@ test/                 end-to-end tests
 
 ## Not done yet
 
-- Streaming gRPC, generated PHP message classes, a `cairo protoc` command.
+- Streaming gRPC.
 - TLS stream hooks, `curl_multi` hooks, a Go-backed HTTP client, a pgx PDO driver.
 - Hard interruption of PHP code at a deadline, `isolated` mode for non-fiber-safe apps.
 - Opcache and a wider set of PHP extensions in the default build.

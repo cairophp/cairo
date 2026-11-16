@@ -53,7 +53,11 @@ cairo serve server.php
 4. **CPU work.** `Cairo\offload('fn', ...$args)` runs a function on the offload
    pool, so a heavy computation never stalls the fibers on a request thread.
    Code cannot move between PHP threads, so pass a function name or
-   `[Class::class, 'staticMethod']`, with serializable arguments.
+   `[Class::class, 'staticMethod']`, with serializable arguments, or a
+   `Cairo\OffloadTask` object: it is serialized with its input, and its
+   `run()` runs on an offload thread (`offload(new Thumbnail($path, 200))`).
+   A job that throws raises `Cairo\OffloadException` naming the original
+   exception class.
 
 ### gRPC
 

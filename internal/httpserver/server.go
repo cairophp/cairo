@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -103,6 +104,16 @@ func routeHandler(r spec.Route, php Dispatcher, log *slog.Logger) http.Handler {
 		for _, n := range names {
 			params[n] = req.PathValue(n)
 		}
+		var form *multipartForm
+		if strings.HasPrefix(strings.ToLower(req.Header.Get("Content-Type")), "multipart/form-data") {
+			form, err = parseMultipart(body, req.Header.Get("Content-Type"), os.TempDir())
+			if err != nil {
+				http.Error(w, "malformed multipart body", http.StatusBadRequest)
+				return
+			}
+			defer form.cleanup()
+			body = nil // like PHP, php://input is empty for multipart/form-data
+		}
 		ev := map[string]any{
 			"type":    "http",
 			"route":   r.ID,
@@ -116,6 +127,10 @@ func routeHandler(r spec.Route, php Dispatcher, log *slog.Logger) http.Handler {
 			"host":    req.Host,
 			"proto":   req.Proto,
 			"tls":     req.TLS != nil,
+		}
+		if form != nil {
+			ev["form"] = form.fields
+			ev["files"] = form.files
 		}
 		raw, err := php.Dispatch(req.Context(), ev)
 		if err != nil {

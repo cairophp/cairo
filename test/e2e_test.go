@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -678,4 +679,53 @@ func waitFor(addr string, timeout time.Duration) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return fmt.Errorf("cairo did not start listening on %s", addr)
+}
+
+// curl_multi: 30 requests each run 3 parallel transfers to a 1s endpoint with
+// curl_multi_exec()/curl_multi_select(). On one PHP thread they all overlap.
+func TestHookedCurlMultiDoesNotBlockTheThread(t *testing.T) {
+	slow := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(time.Second)
+		fmt.Fprint(w, r.URL.Query().Get("n"))
+	})}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go slow.Serve(ln)
+	defer slow.Close()
+	base := "http://" + ln.Addr().String() + "/?n="
+	urls := base + "a," + base + "b," + base + "c"
+
+	const n = 30
+	client := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: n, MaxConnsPerHost: n}}
+	start := time.Now()
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := client.Get("http://" + httpAddr + "/curl-multi?urls=" + url.QueryEscape(urls))
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			if strings.TrimSpace(string(b)) != `{"bodies":["a","b","c"]}` {
+				errs <- fmt.Errorf("status %d body %q", resp.StatusCode, b)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	took := time.Since(start)
+	t.Logf("%d requests x 3 curl_multi transfers to a 1s endpoint, on 1 PHP thread: %s", n, took.Round(time.Millisecond))
+	if took > 3*time.Second {
+		t.Fatalf("took %s; curl_multi_select blocked the thread", took)
+	}
 }

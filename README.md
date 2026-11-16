@@ -148,7 +148,7 @@ threads, fibers your own code creates) the original functions run.
 | `Hook::SOCKETS` | reads and writes on `tcp://` and `unix://` streams: mysqlnd (PDO MySQL, mysqli), Predis, phpredis, `fsockopen()`, `stream_socket_client()` | waits go through one Go epoll loop |
 | `Hook::CONNECT` | connects on those streams, DNS included | Go's dialer; falls back to PHP when a `bindto` option is set |
 | `Hook::DNS` | `gethostbyname()`, `gethostbynamel()` | Go's resolver |
-| `Hook::CURL` | `curl_exec()` | libcurl still does the transfer; only its socket waits move to Go, so `curl_getinfo()`, `curl_error()` and callbacks are unchanged |
+| `Hook::CURL` | `curl_exec()`, `curl_multi_select()` (Guzzle's multi handler) | libcurl still does the transfer; only its socket waits move to Go, so `curl_getinfo()`, `curl_error()` and callbacks are unchanged |
 
 ```php
 $app->hooks(Hook::ALL);    // the default; Hook::NONE turns them off
@@ -162,7 +162,7 @@ hold a thousand OS threads. With one PHP thread, 50 PDO queries running
 
 pdo_pgsql talks to libpq's own sockets, which no PHP-level hook sees; a
 Go-backed PDO driver for Postgres is planned. TLS streams (`ssl://`, `tls://`)
-are not hooked yet, and `curl_multi_*` keeps blocking in `curl_multi_select()`.
+are not hooked yet.
 
 ### Connection pools
 
@@ -201,8 +201,7 @@ first when the fiber ends; for a request, that is after the response is sent.
 
 Rules that keep fibers safe: per-request data lives on `Request` and
 `Context`, not in superglobals (Cairo does not fill `$_GET`/`$_SERVER`), and
-blocking calls that are not hooked yet (pdo_pgsql, TLS streams,
-`curl_multi_select()`) stall every fiber on their thread. Use `Cairo\offload()` for CPU-heavy work.
+blocking calls that are not hooked yet (pdo_pgsql, TLS streams) stall every fiber on their thread. Use `Cairo\offload()` for CPU-heavy work.
 
 ### Isolated mode
 
@@ -263,7 +262,7 @@ test/                 end-to-end tests
 ## Not done yet
 
 - Streaming gRPC.
-- TLS stream hooks, `curl_multi` hooks, a Go-backed HTTP client, a pgx PDO driver.
+- TLS stream hooks, a Go-backed HTTP client, a pgx PDO driver.
 - Hard interruption of PHP code at a deadline; multipart uploads in isolated mode.
 - Opcache and a wider set of PHP extensions in the default build.
 - A Cairo-owned SAPI adapted from FrankenPHP; this prototype uses PHP's embed SAPI.

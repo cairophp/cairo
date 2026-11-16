@@ -164,13 +164,15 @@ $http->use(Middleware::requestId())                         // X-Request-Id, pas
      ->use(Middleware::cors(origins: ['https://app.example'], credentials: true))
      ->use(Middleware::rateLimit(perSecond: 50, burst: 100)) // 429 + Retry-After, per client IP
      ->use(Middleware::maxBody(1 << 20))                    // 413 above 1 MB
+     ->use(Middleware::timeout(30))                         // a deadline for every request
      ->use(Middleware::gzip());                             // responses of 1 KB or more
 
 $grpc->use(Middleware::requestId())->use(Middleware::rateLimit(perSecond: 100));  // RESOURCE_EXHAUSTED
 ```
 
 They run in the order declared; gRPC servers take `requestId()`,
-`accessLog()` and `rateLimit()`.
+`accessLog()`, `rateLimit()` and `timeout()` (the earlier of it and the
+client's deadline wins).
 
 ### Context and deadlines
 
@@ -179,6 +181,17 @@ deadline: `remaining()`, `deadline()`, `err()`, `throwIfDone()`. A Cairo I/O
 call that is still waiting when the deadline passes throws
 `Cairo\Context\DeadlineExceeded`, which becomes `DEADLINE_EXCEEDED` for gRPC
 and `504` for HTTP.
+
+Code that never waits (a CPU loop, a runaway recursion) is stopped too. When
+the deadline passes, Go interrupts the request's PHP thread, and at the next
+loop iteration or function call the request's fiber gets
+`Context\DeadlineExceeded`, so it can clean up. If the code catches it and
+carries on, 50 ms later the fiber is unwound the way `exit()` does it: catch
+and `finally` blocks are skipped and destructors run. Only that request
+stops; other fibers on the thread carry on. The same applies to its
+`async()` tasks. Cairo's own runtime code is never interrupted. A single
+long call into C (one huge `preg_match()` or `sort()`) runs to its end
+before the check.
 
 ### Concurrency API
 
@@ -463,7 +476,3 @@ examples/greeter/     HTTP + gRPC example
 examples/isolated/    isolated mode: superglobals, echo/header(), resets
 test/                 end-to-end tests
 ```
-
-## Not done yet
-
-- Hard interruption of PHP code at a deadline.

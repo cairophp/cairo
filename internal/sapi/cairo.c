@@ -6,6 +6,7 @@
 // cairo_next_event() and runs every request in its own Fiber.
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -164,6 +165,12 @@ PHP_FUNCTION(cairo_go_call)
 	free(res);
 }
 
+PHP_FUNCTION(cairo_guard);
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_guard, 0, 0, 1)
+	ZEND_ARG_INFO(0, fn)
+ZEND_END_ARG_INFO()
+
 static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_info, arginfo_cairo_none)
 	PHP_FE(cairo_spec, arginfo_cairo_spec)
@@ -173,6 +180,7 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_fiber_close, arginfo_cairo_fiber_close)
 	PHP_FE(cairo_fiber_op, arginfo_cairo_fiber_op)
 	PHP_FE(cairo_go_call, arginfo_cairo_go_call)
+	PHP_FE(cairo_guard, arginfo_cairo_guard)
 	PHP_FE_END
 };
 
@@ -834,6 +842,9 @@ static void cairo_hook_sockets(void)
 typedef struct {
 	zend_error_handling_t error_handling;
 	zend_class_entry *exception_class;
+	int guards;    // cairo_guard() calls running in this fiber
+	bool stopped;  // Context\DeadlineExceeded was thrown here at the deadline
+	bool unwound;  // then an unwind (exit) that cairo_guard() turns back into it
 } cairo_fiber_state;
 
 static int cairo_fiber_slot = -1;
@@ -846,7 +857,7 @@ static void cairo_fiber_switch(zend_fiber_context *from, zend_fiber_context *to)
 		from->reserved[cairo_fiber_slot] = NULL;
 	} else {
 		if (st == NULL) {
-			st = malloc(sizeof(*st));
+			st = calloc(1, sizeof(*st));
 			from->reserved[cairo_fiber_slot] = st;
 		}
 		if (st != NULL) {
@@ -862,6 +873,166 @@ static void cairo_fiber_switch(zend_fiber_context *from, zend_fiber_context *to)
 		// A new fiber starts with PHP's normal error handling.
 		EG(error_handling) = EH_NORMAL;
 		EG(exception_class) = NULL;
+	}
+}
+
+// --- Hard stop at the deadline ---------------------------------------------
+//
+// Code that never suspends its fiber (a CPU loop) cannot see the deadline
+// through Go. When a request's deadline passes, Go calls cairo_interrupt()
+// for its thread every few milliseconds until PHP answers. It raises the
+// thread's VM interrupt flag, and at the next safe point (a loop back-edge or
+// a call) the engine runs cairo_on_interrupt in whatever fiber is running.
+// Cairo\Internal\interrupt() says whether that fiber's request is past its
+// deadline, not yet answered, and running user code (not Cairo's runtime).
+// If so, the first time Context\DeadlineExceeded is thrown, so the code can
+// clean up. If the code catches it and carries on, the next time the fiber is
+// unwound the way exit() does it (catch and finally blocks are skipped,
+// destructors run), and cairo_guard(), around the handler and each async()
+// task, turns the unwind back into Context\DeadlineExceeded for the runtime.
+
+#define CAIRO_MAX_THREADS 4096
+
+typedef struct {
+#if PHP_VERSION_ID >= 80200
+	_Atomic(zend_atomic_bool *) vm_interrupt;
+#else
+	_Atomic(volatile zend_bool *) vm_interrupt;
+#endif
+	atomic_bool poked;
+} cairo_thread_slot;
+
+static cairo_thread_slot cairo_slots[CAIRO_MAX_THREADS];
+static void (*cairo_prev_interrupt)(zend_execute_data *execute_data);
+
+static void cairo_interrupt_register(void)
+{
+	if (cairo_tid >= 0 && cairo_tid < CAIRO_MAX_THREADS) {
+		atomic_store(&cairo_slots[cairo_tid].poked, false);
+		atomic_store(&cairo_slots[cairo_tid].vm_interrupt, &EG(vm_interrupt));
+	}
+}
+
+static void cairo_interrupt_unregister(void)
+{
+	if (cairo_tid >= 0 && cairo_tid < CAIRO_MAX_THREADS) {
+		atomic_store(&cairo_slots[cairo_tid].vm_interrupt, NULL);
+	}
+}
+
+// Called from any goroutine.
+void cairo_interrupt(int tid)
+{
+	if (tid < 0 || tid >= CAIRO_MAX_THREADS) {
+		return;
+	}
+	cairo_thread_slot *slot = &cairo_slots[tid];
+	atomic_store(&slot->poked, true);
+#if PHP_VERSION_ID >= 80200
+	zend_atomic_bool *flag = atomic_load(&slot->vm_interrupt);
+	if (flag != NULL) {
+		zend_atomic_bool_store(flag, true);
+	}
+#else
+	volatile zend_bool *flag = atomic_load(&slot->vm_interrupt);
+	if (flag != NULL) {
+		*flag = 1;
+	}
+#endif
+}
+
+// The running fiber's Cairo state, created when missing.
+static cairo_fiber_state *cairo_current_fiber_state(void)
+{
+	if (cairo_fiber_slot < 0 || EG(active_fiber) == NULL) {
+		return NULL;
+	}
+	zend_fiber_context *ctx = &EG(active_fiber)->context;
+	cairo_fiber_state *st = ctx->reserved[cairo_fiber_slot];
+	if (st == NULL) {
+		st = calloc(1, sizeof(*st));
+		if (st != NULL) {
+			st->error_handling = EG(error_handling);
+			st->exception_class = EG(exception_class);
+		}
+		ctx->reserved[cairo_fiber_slot] = st;
+	}
+	return st;
+}
+
+static void cairo_throw_deadline(void)
+{
+	zend_string *name = zend_string_init("Cairo\\Context\\DeadlineExceeded", sizeof("Cairo\\Context\\DeadlineExceeded") - 1, 0);
+	zend_class_entry *ce = zend_lookup_class(name);
+	zend_string_release(name);
+	zend_throw_exception(ce != NULL ? ce : zend_ce_exception, "context deadline exceeded", 0);
+}
+
+// Whether the running fiber should stop: Cairo\Internal\interrupt($file).
+static bool cairo_should_stop(void)
+{
+	zend_string *file = zend_get_executed_filename_ex();
+	zval fn, ret, arg;
+	ZVAL_STRING(&fn, "Cairo\\Internal\\interrupt");
+	if (file != NULL) {
+		ZVAL_STR_COPY(&arg, file);
+	} else {
+		ZVAL_NULL(&arg);
+	}
+	ZVAL_UNDEF(&ret);
+	bool stop = call_user_function(NULL, NULL, &fn, &ret, 1, &arg) == SUCCESS
+		&& EG(exception) == NULL && Z_TYPE(ret) == IS_TRUE;
+	zval_ptr_dtor(&fn);
+	zval_ptr_dtor(&arg);
+	zval_ptr_dtor(&ret);
+	return stop;
+}
+
+static void cairo_on_interrupt(zend_execute_data *execute_data)
+{
+	if (cairo_tid >= 0 && cairo_tid < CAIRO_MAX_THREADS
+		&& EG(active_fiber) != NULL && EG(exception) == NULL
+		&& atomic_exchange(&cairo_slots[cairo_tid].poked, false)) {
+		cairo_fiber_state *st = cairo_current_fiber_state();
+		if (st != NULL && cairo_should_stop()) {
+			if (st->stopped && st->guards > 0) {
+				st->unwound = true;
+				zend_throw_unwind_exit();
+			} else {
+				st->stopped = true;
+				cairo_throw_deadline();
+			}
+		}
+	}
+	if (cairo_prev_interrupt != NULL) {
+		cairo_prev_interrupt(execute_data);
+	}
+}
+
+// cairo_guard(callable $fn): mixed calls $fn; an unwind started at the
+// deadline ends here and becomes Context\DeadlineExceeded.
+PHP_FUNCTION(cairo_guard)
+{
+	zend_fcall_info fci;
+	zend_fcall_info_cache fcc;
+	ZEND_PARSE_PARAMETERS_START(1, 1)
+		Z_PARAM_FUNC(fci, fcc)
+	ZEND_PARSE_PARAMETERS_END();
+	cairo_fiber_state *st = cairo_current_fiber_state();
+	if (st != NULL) {
+		st->guards++;
+	}
+	fci.retval = return_value;
+	zend_call_function(&fci, &fcc);
+	if (st != NULL) {
+		st->guards--;
+		if (st->guards == 0 && st->unwound && EG(exception) != NULL && zend_is_unwind_exit(EG(exception))) {
+			st->unwound = false;
+			zend_clear_exception();
+			zval_ptr_dtor(return_value);
+			ZVAL_NULL(return_value);
+			cairo_throw_deadline();
+		}
 	}
 }
 
@@ -885,6 +1056,8 @@ static PHP_MINIT_FUNCTION(cairo)
 	if (cairo_fiber_slot >= 0) {
 		zend_observer_fiber_switch_register(cairo_fiber_switch);
 	}
+	cairo_prev_interrupt = zend_interrupt_function;
+	zend_interrupt_function = cairo_on_interrupt;
 	return SUCCESS;
 }
 
@@ -1133,7 +1306,9 @@ int cairo_thread_run(int tid, const char *runtime_file)
 		ts_free_thread();
 		return -1;
 	}
+	cairo_interrupt_register();
 	int status = run_file(runtime_file);
+	cairo_interrupt_unregister();
 	php_request_shutdown(NULL);
 	ts_free_thread();
 	return status;

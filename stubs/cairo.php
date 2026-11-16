@@ -149,6 +149,11 @@ namespace Cairo {
         {
         }
 
+        /** @internal the request's own context, which every other one derives from */
+        public function root(): self
+        {
+        }
+
         /** @internal the context of a child fiber served by goroutine $fiberId */
         public function child(int $fiberId): self
         {

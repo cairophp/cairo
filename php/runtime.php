@@ -23,6 +23,7 @@ namespace Cairo {
         private int $offloadThreads = 0;
         private int $maxRequests = 0;
         private int $maxMemory = 0;
+        private int $maxInFlight = 0;
         private int $hooks = Hook::ALL;
         private string $concurrency = 'fibers';
         /** @var list<object|callable> */
@@ -75,6 +76,21 @@ namespace Cairo {
         public function isolated(): bool
         {
             return $this->concurrency === 'isolated';
+        }
+
+        /**
+         * Backpressure: at most $n requests in flight per request thread (0,
+         * the default, means no cap). Further requests wait in Go, which costs
+         * a goroutine, not PHP memory, until one finishes or their context
+         * ends. Use it when each request holds a lot of memory.
+         */
+        public function maxInFlight(int $n): static
+        {
+            if ($n < 0) {
+                throw new \InvalidArgumentException('maxInFlight must be 0 or more');
+            }
+            $this->maxInFlight = $n;
+            return $this;
         }
 
         /**
@@ -200,7 +216,7 @@ namespace Cairo {
         /** @internal */
         public function spec(): array
         {
-            $spec = ['threads' => $this->threads, 'offload_threads' => $this->offloadThreads, 'http' => [], 'grpc' => []];
+            $spec = ['threads' => $this->threads, 'offload_threads' => $this->offloadThreads, 'max_in_flight' => $this->maxInFlight, 'http' => [], 'grpc' => []];
             foreach ($this->servers as $server) {
                 if ($server instanceof Http\Server) {
                     $spec['http'][] = $server->spec();

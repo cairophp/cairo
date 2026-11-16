@@ -726,7 +726,18 @@ namespace Cairo\Http {
          * @param callable|array{0:class-string,1:string} $handler a callable, or
          *        [Controller::class, 'method'] (the controller is created once per thread)
          */
-        public function route(string $method, string $path, callable|array $handler): static
+        public function route(string $method, string $path, callable|array|object $handler): static
+        {
+        }
+
+        /**
+         * Handle every request no other route or static path matches, with
+         * any method: a Cairo handler, a PSR-15 RequestHandlerInterface, a
+         * Symfony HttpKernelInterface or a Laravel HTTP Kernel (see
+         * Cairo\Http\Adapter). This is how a whole framework app runs on Cairo.
+         * A "GET /" route also matches every GET path, so leave it out then.
+         */
+        public function fallback(callable|array|object $handler): static
         {
         }
 
@@ -753,6 +764,11 @@ namespace Cairo\Http {
     final class Request
     {
         public function __construct(private readonly array $event)
+        {
+        }
+
+        /** @internal the request as Go sent it */
+        public function event(): array
         {
         }
 
@@ -799,6 +815,63 @@ namespace Cairo\Http {
 
         /** @return list<UploadedFile> every file part, in request order */
         public function files(): array
+        {
+        }
+    }
+
+    /**
+     * Runs framework code as Cairo handlers: PSR-15 request handlers (Slim,
+     * Mezzio, any PSR-15 stack) through PSR-7, and Symfony or Laravel kernels
+     * through HttpFoundation. Route handlers and $http->fallback() accept
+     * those objects directly; these methods are for doing it by hand.
+     */
+    final class Adapter
+    {
+        /** @internal turns a framework object given as a handler into a Cairo handler */
+        public static function wrap(object $handler): mixed
+        {
+        }
+
+        /**
+         * A Cairo handler running a PSR-15 handler. $factory makes the PSR-7
+         * objects (a PSR-17 server request, stream and uploaded file factory in
+         * one); by default nyholm/psr7's or guzzlehttp/psr7's, whichever is installed.
+         */
+        public static function psr15(object $handler, ?object $factory = null): \Closure
+        {
+        }
+
+        /**
+         * A Cairo handler running a Symfony HttpKernelInterface, or a Laravel
+         * HTTP Kernel with $requestClass 'Illuminate\Http\Request'.
+         * terminate() runs after the response is sent.
+         */
+        public static function symfony(object $kernel, string $requestClass = 'Symfony\Component\HttpFoundation\Request'): \Closure
+        {
+        }
+
+        /** The PSR-17 factory of nyholm/psr7 or guzzlehttp/psr7. */
+        public static function psr17(): object
+        {
+        }
+
+        /** A PSR-7 ServerRequestInterface for $req; route parameters become attributes. */
+        public static function toPsr7(Request $req, object $factory): object
+        {
+        }
+
+        /** A Cairo Response from a PSR-7 ResponseInterface. */
+        public static function fromPsr7(object $response): Response
+        {
+        }
+
+        /** A Symfony (or Laravel) Request for $req; route parameters become attributes. */
+        public static function toSymfony(Request $req, string $class = 'Symfony\Component\HttpFoundation\Request'): object
+        {
+        }
+
+        /** A Cairo Response from a Symfony (or Laravel) Response, streamed ones included. */
+        public static function fromSymfony(object $response, ?object $request = null): Response
         {
         }
     }

@@ -346,7 +346,8 @@ the server's `lo_*` functions, run by Go, so in a fiber only the fiber waits.
 
 ### Cairo\Sql
 
-A small typed API over Go's `database/sql` (pgx), for PostgreSQL. The pool
+A small typed API over Go's `database/sql`, for PostgreSQL (pgx) and MySQL or
+MariaDB (go-sql-driver/mysql). The pool
 lives in Go and is shared by every PHP thread: `Db::open()` with the same DSN
 and options returns the same pool on each thread, so `max_open` bounds the
 connections of the whole server rather than of each thread.
@@ -369,12 +370,26 @@ $db->transaction(function (Cairo\Sql\Tx $tx) use ($from, $to, $amount): void {
 
 Queries suspend only the calling fiber, and the request's deadline cancels
 them. Integers, floats, booleans, text and nulls come back as PHP values;
-bytea as a string, timestamps as RFC 3339 strings, and numeric, json and the
+bytea as a string, timestamps as RFC 3339 strings in UTC, and numeric, json and the
 rest in PostgreSQL's text form. Pass binary parameters as
 `new Cairo\Sql\Bytes($raw)`. Failures throw `Cairo\Sql\SqlException` with
 `$sqlState`. A transaction left open when its fiber ends is rolled back.
-`examples/sql` has more. PDO with `pgsql:` keeps working beside it; MySQL is
-not supported in `Cairo\Sql` yet.
+`examples/sql` has more. PDO with `pgsql:` keeps working beside it.
+
+For MySQL, open a `mysql://` URL and use `?` placeholders:
+
+```php
+$db = Db::open('mysql://app:secret@127.0.0.1:3306/app');   // ?socket=/run/mysqld/mysqld.sock for a Unix socket
+$user = $db->queryRow('SELECT * FROM users WHERE id = ?', [$id]);
+```
+
+Text columns come back as strings and binary ones (BLOB, VARBINARY) as
+strings too, DATETIME and TIMESTAMP as RFC 3339 in UTC, DATE as `Y-m-d`, and
+DECIMAL as text. `SqlException::$sqlState` is MySQL's SQLSTATE, and
+`$detail` names the MySQL error number. Other go-sql-driver/mysql parameters
+(`tls`, `timeout`, `loc`, ...) go in the URL's query. `examples/sql/mysql.php`
+is the same example as `server.php` for MySQL. PDO MySQL keeps working too,
+through the hooked streams.
 
 ### TLS
 

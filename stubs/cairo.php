@@ -37,6 +37,17 @@ namespace Cairo {
         }
 
         /**
+         * Development aid: log, with its stack, any request that keeps its
+         * PHP thread busy for more than $seconds without waiting on Cairo (a
+         * CPU loop, or a blocking call Cairo does not hook), since every other
+         * request on that thread waits meanwhile. 0 (the default) turns it off.
+         * Isolated mode, where blocking is expected, is not reported.
+         */
+        public function detectBlocking(float $seconds = 0.1): static
+        {
+        }
+
+        /**
          * Backpressure: at most $n requests in flight per request thread (0,
          * the default, means no cap). Further requests wait in Go, which costs
          * a goroutine, not PHP memory, until one finishes or their context

@@ -194,7 +194,7 @@ func TestTimeoutSetsADeadline(t *testing.T) {
 	if _, err := HTTP(hello, []spec.Middleware{mw("timeout", map[string]any{"seconds": 0})}, slog.Default()); err == nil {
 		t.Fatal("timeout of 0 accepted")
 	}
-	if ics, err := GRPC([]spec.Middleware{mw("timeout", map[string]any{"seconds": 1})}, slog.Default()); err != nil || len(ics) != 1 {
+	if ics, err := GRPC([]spec.Middleware{mw("timeout", map[string]any{"seconds": 1})}, slog.Default()); err != nil || len(ics) != 2 { // panic recovery, then timeout
 		t.Fatalf("grpc timeout: %v", err)
 	}
 }

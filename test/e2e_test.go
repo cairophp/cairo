@@ -59,12 +59,19 @@ func run(m *testing.M) (int, error) {
 	}
 	defer os.RemoveAll(dir)
 	bin := filepath.Join(dir, "cairo")
-	cairoBin = bin
-	build := exec.Command("go", "build", "-o", bin, "../cmd/cairo")
-	build.Stdout, build.Stderr = os.Stderr, os.Stderr
-	if err := build.Run(); err != nil {
-		return 0, fmt.Errorf("build cairo: %w", err)
+	if prebuilt := os.Getenv("CAIRO_TEST_BIN"); prebuilt != "" {
+		// A binary built elsewhere, such as the static one (Dockerfile.static).
+		if bin, err = filepath.Abs(prebuilt); err != nil {
+			return 0, err
+		}
+	} else {
+		build := exec.Command("go", "build", "-o", bin, "../cmd/cairo")
+		build.Stdout, build.Stderr = os.Stderr, os.Stderr
+		if err := build.Run(); err != nil {
+			return 0, fmt.Errorf("build cairo: %w", err)
+		}
 	}
+	cairoBin = bin
 
 	httpAddr, grpcAddr = freeAddr(), freeAddr()
 	cmd := exec.Command(bin, "serve", "../examples/greeter/server.php", "--threads", "1", "--offload-threads", "1")

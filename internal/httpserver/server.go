@@ -134,8 +134,12 @@ func routeHandler(r spec.Route, php Dispatcher, log *slog.Logger) http.Handler {
 		}
 		raw, err := php.Dispatch(req.Context(), ev)
 		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) {
+			switch {
+			case errors.Is(err, context.DeadlineExceeded):
 				http.Error(w, "gateway timeout", http.StatusGatewayTimeout)
+			case req.Context().Err() == nil:
+				// The PHP thread died with the request (a fatal error).
+				http.Error(w, "internal server error", http.StatusInternalServerError)
 			}
 			// Otherwise the client went away; there is nobody to answer.
 			return

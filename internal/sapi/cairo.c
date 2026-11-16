@@ -111,6 +111,19 @@ PHP_FUNCTION(cairo_respond)
 	goRespond((long long)id, json, (int)len);
 }
 
+// cairo_retire(string $reason): void. Asks Go to replace this request thread
+// with a fresh one; Go then sends a "retire" event, after which the thread
+// finishes the requests it holds and exits.
+PHP_FUNCTION(cairo_retire)
+{
+	char *reason;
+	size_t len;
+	ZEND_PARSE_PARAMETERS_START(1, 1)
+		Z_PARAM_STRING(reason, len)
+	ZEND_PARSE_PARAMETERS_END();
+	goThreadRetire(cairo_tid, reason, (int)len);
+}
+
 // cairo_fiber_open(int $parentFiber): int. Gives a new fiber its own
 // goroutine, with a child of the parent fiber's context.
 PHP_FUNCTION(cairo_fiber_open)
@@ -167,6 +180,10 @@ PHP_FUNCTION(cairo_go_call)
 
 PHP_FUNCTION(cairo_guard);
 
+ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_retire, 0, 0, 1)
+	ZEND_ARG_INFO(0, reason)
+ZEND_END_ARG_INFO()
+
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_guard, 0, 0, 1)
 	ZEND_ARG_INFO(0, fn)
 ZEND_END_ARG_INFO()
@@ -176,6 +193,7 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_spec, arginfo_cairo_spec)
 	PHP_FE(cairo_next_event, arginfo_cairo_none)
 	PHP_FE(cairo_respond, arginfo_cairo_respond)
+	PHP_FE(cairo_retire, arginfo_cairo_retire)
 	PHP_FE(cairo_fiber_open, arginfo_cairo_fiber_open)
 	PHP_FE(cairo_fiber_close, arginfo_cairo_fiber_close)
 	PHP_FE(cairo_fiber_op, arginfo_cairo_fiber_op)

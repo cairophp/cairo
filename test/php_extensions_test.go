@@ -2,6 +2,7 @@ package test
 
 import (
 	"encoding/json"
+	"os"
 	"testing"
 )
 
@@ -31,7 +32,8 @@ func TestPHPBuildHasOpcacheAndExtensions(t *testing.T) {
 			t.Errorf("extension %s is not loaded", name)
 		}
 	}
-	if !out.Opcache.Loaded || !out.Opcache.Enabled || !out.Opcache.Cached {
+	// The static binary has no opcache before PHP 8.5 (scripts/build-static.sh).
+	if os.Getenv("CAIRO_TEST_NO_OPCACHE") == "" && (!out.Opcache.Loaded || !out.Opcache.Enabled || !out.Opcache.Cached) {
 		t.Errorf("opcache = %+v, want loaded, enabled and caching the route file", out.Opcache)
 	}
 	want := map[string]any{

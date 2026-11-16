@@ -794,6 +794,8 @@ namespace Cairo\Http {
     final class Request
     {
         /** @internal */
+        private ?array $form = null;
+
         public function __construct(private readonly array $event)
         {
         }
@@ -838,6 +840,77 @@ namespace Cairo\Http {
         public function json(): mixed
         {
             return json_decode($this->body(), true, 512, JSON_THROW_ON_ERROR);
+        }
+
+        /**
+         * The form fields of a urlencoded or multipart/form-data body, nested
+         * by PHP's bracket rules ("tags[]", "a[b]"), like $_POST.
+         */
+        public function form(): array
+        {
+            return $this->form ??= \Cairo\Internal\Form::fields($this->event);
+        }
+
+        /** The first uploaded file sent as $field (or "$field[]"), if any. */
+        public function file(string $field): ?UploadedFile
+        {
+            foreach ($this->files() as $file) {
+                if ($file->field === $field || $file->field === $field . '[]') {
+                    return $file;
+                }
+            }
+            return null;
+        }
+
+        /** @return list<UploadedFile> every file part, in request order */
+        public function files(): array
+        {
+            return array_map(static fn (array $f): UploadedFile => new UploadedFile($f), $this->event['files'] ?? []);
+        }
+    }
+
+    /**
+     * A file from a multipart/form-data request. Its temporary file is removed
+     * after the request unless moved with moveTo() (or move_uploaded_file()).
+     */
+    final class UploadedFile
+    {
+        public readonly string $field;
+        /** The client's file name, without directories. */
+        public readonly string $name;
+        public readonly string $type;
+        public readonly int $size;
+        public readonly string $path;
+        /** One of PHP's UPLOAD_ERR_* codes. */
+        public readonly int $error;
+
+        /** @internal */
+        public function __construct(array $f)
+        {
+            $this->field = (string) $f['field'];
+            $this->name = (string) $f['name'];
+            $this->type = (string) $f['type'];
+            $this->size = (int) $f['size'];
+            $this->path = (string) $f['tmp_name'];
+            $this->error = (int) $f['error'];
+        }
+
+        public function ok(): bool
+        {
+            return $this->error === UPLOAD_ERR_OK;
+        }
+
+        public function contents(): string
+        {
+            return $this->ok() ? (string) file_get_contents($this->path) : '';
+        }
+
+        /** Moves the file to $target; throws when it cannot. */
+        public function moveTo(string $target): void
+        {
+            if (!$this->ok() || !\Cairo\Internal\Form::move($this->path, $target)) {
+                throw new \RuntimeException("cannot move upload {$this->name} to {$target}");
+            }
         }
     }
 
@@ -1130,6 +1203,7 @@ namespace Cairo\Internal {
         private function http(array $event): void
         {
             $isolated = $this->app->isolated();
+            Form::track($event['files'] ?? []);
             try {
                 if ($isolated) {
                     // Classic PHP style: echo and header() become the response.
@@ -1158,6 +1232,7 @@ namespace Cairo\Internal {
                 error_log('cairo: ' . $e);
                 $response = Http\Response::text("Internal Server Error\n", 500);
             }
+            Form::untrack($event['files'] ?? []);   // Go removes what is left once we respond
             $headers = [];
             foreach ($response->headers as $name => $value) {
                 $headers[$name] = is_array($value) ? array_values($value) : [$value];
@@ -1276,16 +1351,13 @@ namespace Cairo\Internal {
                     }
                 }
             }
-            $post = [];
-            if (str_starts_with(strtolower($server['CONTENT_TYPE'] ?? ''), 'application/x-www-form-urlencoded')) {
-                parse_str(base64_decode((string) ($event['body'] ?? '')), $post);
-            }
+            $post = Form::fields($event);
             $_GET = $get;
             $_POST = $post;
             $_COOKIE = $cookies;
             $_SERVER = $server;
             $_REQUEST = array_merge($get, $post);
-            $_FILES = [];
+            $_FILES = Form::superglobal($event['files'] ?? []);
         }
 
         public static function clear(): void
@@ -1302,6 +1374,110 @@ namespace Cairo\Internal {
                 return [$addr, ''];
             }
             return [trim(substr($addr, 0, $i), '[]'), substr($addr, $i + 1)];
+        }
+    }
+
+    /** Form bodies and uploads: $_POST/$_FILES shapes and move_uploaded_file(). */
+    final class Form
+    {
+        /** @var array<string, true> temporary files of requests in flight on this thread */
+        private static array $uploads = [];
+
+        public static function fields(array $event): array
+        {
+            $fields = [];
+            if (isset($event['form'])) {
+                $pairs = [];
+                foreach ($event['form'] as [$name, $value]) {
+                    $pairs[] = urlencode($name) . '=' . urlencode($value);
+                }
+                parse_str(implode('&', $pairs), $fields);
+            } else {
+                foreach ($event['headers'] ?? [] as $name => $values) {
+                    if (strcasecmp($name, 'Content-Type') === 0
+                        && str_starts_with(strtolower((string) ($values[0] ?? '')), 'application/x-www-form-urlencoded')) {
+                        parse_str(base64_decode((string) ($event['body'] ?? '')), $fields);
+                    }
+                }
+            }
+            return $fields;
+        }
+
+        /**
+         * PHP's $_FILES layout: "doc" gives $_FILES['doc']['name'], "docs[]"
+         * gives $_FILES['docs']['name'][0], "a[b]" gives $_FILES['a']['name']['b'].
+         */
+        public static function superglobal(array $files): array
+        {
+            $pairs = [];
+            foreach ($files as $f) {
+                $field = (string) $f['field'];
+                $i = strpos($field, '[');
+                $base = $i === false ? $field : substr($field, 0, $i);
+                $rest = $i === false ? '' : substr($field, $i);
+                if ($base === '') {
+                    continue;
+                }
+                foreach (['name', 'full_path', 'type', 'tmp_name', 'error', 'size'] as $key) {
+                    $pairs[] = urlencode($base) . '[' . $key . ']' . self::encodeBrackets($rest) . '=' . urlencode((string) $f[$key]);
+                }
+            }
+            parse_str(implode('&', $pairs), $out);
+            foreach ($out as &$entry) {
+                foreach (['error', 'size'] as $key) {
+                    if (is_array($entry[$key] ?? null)) {
+                        array_walk_recursive($entry[$key], static function (&$v): void { $v = (int) $v; });
+                    } elseif (isset($entry[$key])) {
+                        $entry[$key] = (int) $entry[$key];
+                    }
+                }
+            }
+            unset($entry);
+            return $out;
+        }
+
+        private static function encodeBrackets(string $rest): string
+        {
+            return preg_replace_callback('/\[([^\]]*)\]/', static fn (array $m): string => '[' . urlencode($m[1]) . ']', $rest) ?? '';
+        }
+
+        /** @param list<array{tmp_name: string}> $files */
+        public static function track(array $files): void
+        {
+            foreach ($files as $f) {
+                if ($f['tmp_name'] !== '') {
+                    self::$uploads[$f['tmp_name']] = true;
+                }
+            }
+        }
+
+        /** @param list<array{tmp_name: string}> $files */
+        public static function untrack(array $files): void
+        {
+            foreach ($files as $f) {
+                unset(self::$uploads[$f['tmp_name']]);
+            }
+        }
+
+        public static function isUpload(string $path): bool
+        {
+            return isset(self::$uploads[$path]);
+        }
+
+        public static function move(string $from, string $to): bool
+        {
+            if (!self::isUpload($from)) {
+                return false;
+            }
+            if (!@rename($from, $to)) {
+                if (!@copy($from, $to)) {
+                    return false;
+                }
+                @unlink($from);
+            }
+            @chmod($to, 0666 & ~umask());
+            unset(self::$uploads[$from]);
+            return true;
         }
     }
 
@@ -1386,6 +1562,21 @@ namespace Cairo\Internal {
             }
             $ips = self::lookup($hostname);
             return $ips === [] ? false : $ips;
+        }
+
+        /** is_uploaded_file(): true for this thread's Cairo uploads. */
+        public static function isUploadedFile(mixed $path = null): ?bool
+        {
+            return is_string($path) && Form::isUpload($path) ? true : null;
+        }
+
+        /** move_uploaded_file() for Cairo uploads; null leaves others to PHP. */
+        public static function moveUploadedFile(mixed $from = null, mixed $to = null): ?bool
+        {
+            if (!is_string($from) || !is_string($to) || !Form::isUpload($from)) {
+                return null;
+            }
+            return Form::move($from, $to);
         }
 
         /** @return list<string> */

@@ -159,9 +159,15 @@ static const zend_function_entry cairo_functions[] = {
 // the runtime declines (hooks off, offload thread, a fiber Cairo did not
 // start), the original handler runs and blocks as usual.
 
-enum { HOOK_SLEEP, HOOK_USLEEP, HOOK_NANOSLEEP, HOOK_GETHOSTBYNAME, HOOK_GETHOSTBYNAMEL, HOOK_COUNT };
+enum {
+	HOOK_SLEEP, HOOK_USLEEP, HOOK_NANOSLEEP, HOOK_GETHOSTBYNAME, HOOK_GETHOSTBYNAMEL,
+	HOOK_IS_UPLOADED_FILE, HOOK_MOVE_UPLOADED_FILE, HOOK_COUNT
+};
 
-static const char *hook_names[HOOK_COUNT] = {"sleep", "usleep", "time_nanosleep", "gethostbyname", "gethostbynamel"};
+static const char *hook_names[HOOK_COUNT] = {
+	"sleep", "usleep", "time_nanosleep", "gethostbyname", "gethostbynamel",
+	"is_uploaded_file", "move_uploaded_file",
+};
 static zif_handler hook_originals[HOOK_COUNT];
 
 // Returns 1 when the runtime slept for us (or threw), 0 to fall back.
@@ -272,9 +278,26 @@ static ZEND_NAMED_FUNCTION(cairo_hook_gethostbynamel)
 	}
 }
 
+// Uploads are parsed by Go, so PHP's own list of uploaded files is empty;
+// these ask the runtime about Cairo's uploads first.
+static ZEND_NAMED_FUNCTION(cairo_hook_is_uploaded_file)
+{
+	if (!cairo_forward("isUploadedFile", execute_data, return_value)) {
+		hook_originals[HOOK_IS_UPLOADED_FILE](INTERNAL_FUNCTION_PARAM_PASSTHRU);
+	}
+}
+
+static ZEND_NAMED_FUNCTION(cairo_hook_move_uploaded_file)
+{
+	if (!cairo_forward("moveUploadedFile", execute_data, return_value)) {
+		hook_originals[HOOK_MOVE_UPLOADED_FILE](INTERNAL_FUNCTION_PARAM_PASSTHRU);
+	}
+}
+
 static const zif_handler hook_handlers[HOOK_COUNT] = {
 	cairo_hook_sleep, cairo_hook_usleep, cairo_hook_nanosleep,
 	cairo_hook_gethostbyname, cairo_hook_gethostbynamel,
+	cairo_hook_is_uploaded_file, cairo_hook_move_uploaded_file,
 };
 
 

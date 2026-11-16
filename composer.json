@@ -1,0 +1,14 @@
+{
+    "name": "mohamed-samir907/cairo",
+    "description": "Cairo's PHP API as stubs, for IDEs and static analysers. Cairo itself is the cairo binary, which has the real classes built in.",
+    "type": "library",
+    "keywords": ["cairo", "stubs", "fibers", "grpc", "app-server"],
+    "require": {
+        "php": ">=8.1"
+    },
+    "extra": {
+        "phpstan": {
+            "includes": ["stubs/phpstan.neon"]
+        }
+    }
+}

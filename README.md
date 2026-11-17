@@ -455,7 +455,11 @@ Text columns come back as strings and binary ones (BLOB, VARBINARY) as
 strings too, DATETIME and TIMESTAMP as RFC 3339 in UTC, DATE as `Y-m-d`, and
 DECIMAL as text. `SqlException::$sqlState` is MySQL's SQLSTATE, and
 `$detail` names the MySQL error number. Other go-sql-driver/mysql parameters
-(`tls`, `timeout`, `loc`, ...) go in the URL's query. `examples/sql/mysql.php`
+(`tls`, `timeout`, `loc`, ...) go in the URL's query. Parameters are
+interpolated into the query by the driver (`interpolateParams=true`), so a
+query is one round trip instead of three (prepare, execute, close); set
+`interpolateParams=false` in the URL for server-side prepared statements.
+`examples/sql/mysql.php`
 is the same example as `server.php` for MySQL. PDO MySQL keeps working too,
 through the hooked streams.
 

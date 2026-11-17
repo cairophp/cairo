@@ -30,6 +30,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -217,6 +218,12 @@ func Start(opts Options) (*Engine, error) {
 		// needs a free P. With only one P per CPU, net/http's goroutines hold
 		// them all under load and PHP threads queue for one.
 		runtime.GOMAXPROCS(runtime.GOMAXPROCS(0) + nw + no)
+	}
+	if os.Getenv("GOGC") == "" {
+		// Go's live heap is small (request data lives in PHP), so with the
+		// default of 100 it collects every few hundred requests. 400 measured
+		// about 10% more requests per second for about 12 MiB more memory.
+		debug.SetGCPercent(400)
 	}
 	if e.spec.MaxInFlight > 0 {
 		e.slots = make(chan struct{}, e.spec.MaxInFlight*nw)

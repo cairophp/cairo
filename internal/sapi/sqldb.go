@@ -193,6 +193,12 @@ func mysqlDSN(raw string) (string, error) {
 		}
 		cfg = parsed
 	}
+	if !q.Has("interpolateParams") {
+		// One round trip per query instead of three (prepare, execute,
+		// close). The driver escapes for the connection's charset and
+		// refuses the charsets where that is not safe.
+		cfg.InterpolateParams = true
+	}
 	return cfg.FormatDSN(), nil
 }
 

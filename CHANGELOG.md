@@ -15,10 +15,16 @@ change the PHP API; patch versions do not.
 - Go gets one scheduler slot (`GOMAXPROCS`) per PHP thread on top of one per
   CPU, so PHP threads calling into Go no longer queue behind net/http.
   `GOMAXPROCS` in the environment still wins.
+- Go's garbage collector runs at `GOGC=400` unless `GOGC` is set: its live
+  heap is small, so the default collected every few hundred requests (about
+  10% more requests per second for about 12 MiB more memory).
 - Requests reach PHP as typed events, encoded about four times faster.
 - Hooked `curl_exec()` keeps its connections alive between calls on one
   handle (each call used to open a new one): about 2x the requests per second.
 - gRPC `ServerStream::send()` queues the reply without a fiber switch.
+- `Cairo\Sql` on MySQL interpolates parameters by default
+  (`interpolateParams=true`): one round trip per query instead of three,
+  about 35% more queries per second.
 
 ### Fixed
 

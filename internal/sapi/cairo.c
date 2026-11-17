@@ -1509,6 +1509,8 @@ static int run_file(const char *file)
 // cairo_boot starts PHP (module startup, then a request on this thread for
 // the declare phase) and runs the runtime script. php_ini is a php.ini path
 // (file or directory), or NULL to search the usual places.
+static void cairo_signals_onstack(void);
+
 int cairo_boot(const char *runtime_file, const char *php_ini)
 {
 	static char *argv[] = {"cairo", NULL};
@@ -1538,12 +1540,33 @@ int cairo_boot(const char *runtime_file, const char *php_ini)
 		php_module_shutdown();
 		return -1;
 	}
+	cairo_signals_onstack();
 	SG(headers_sent) = 1;
 	SG(request_info).no_headers = 1;
 	php_register_variable("PHP_SELF", "-", NULL);
 
 	cairo_tid = -1;
 	return run_file(runtime_file);
+}
+
+// PHP's signal layer (zend_signal) installs handlers without SA_ONSTACK
+// and passes signals it does not use on to the handler it replaced, which is
+// Go's. Go's handlers must run on the alternate signal stack and abort
+// otherwise; Go's CPU profiler (SIGPROF) hit that. Handlers keep their
+// function and only gain SA_ONSTACK. Signals are process-wide, so after the
+// first PHP request startup this changes nothing.
+static void cairo_signals_onstack(void)
+{
+	static const int sigs[] = {SIGPROF, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2, SIGALRM};
+	for (size_t i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) {
+		struct sigaction sa;
+		if (sigaction(sigs[i], NULL, &sa) != 0 || (sa.sa_flags & SA_ONSTACK)
+			|| sa.sa_handler == SIG_DFL || sa.sa_handler == SIG_IGN) {
+			continue;
+		}
+		sa.sa_flags |= SA_ONSTACK;
+		sigaction(sigs[i], &sa, NULL);
+	}
 }
 
 void cairo_shutdown(void)
@@ -1564,6 +1587,7 @@ int cairo_thread_run(int tid, const char *runtime_file)
 		ts_free_thread();
 		return -1;
 	}
+	cairo_signals_onstack();
 	cairo_interrupt_register();
 	int status = run_file(runtime_file);
 	cairo_interrupt_unregister();
@@ -1583,6 +1607,14 @@ struct cairo_thread_arg {
 static void *cairo_thread_main(void *p)
 {
 	struct cairo_thread_arg *arg = p;
+	// SIGPROF (Go's CPU profiler, a process-wide timer) goes to Go's own
+	// threads: Go's handler aborts when it lands on this C thread while it
+	// runs Go code from a callback. Cairo sets max_execution_time=0 and stops
+	// PHP at deadlines itself, so PHP has no use for it here.
+	sigset_t prof;
+	sigemptyset(&prof);
+	sigaddset(&prof, SIGPROF);
+	pthread_sigmask(SIG_BLOCK, &prof, NULL);
 	int status = cairo_thread_run(arg->tid, arg->file);
 	int tid = arg->tid;
 	free(arg->file);

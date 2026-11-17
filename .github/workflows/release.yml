@@ -39,7 +39,6 @@ jobs:
         env:
           CAIRO_TEST_BIN: ${{ github.workspace }}/dist/cairo
           CAIRO_TEST_STATIC: "1"
-          CAIRO_TEST_NO_OPCACHE: "1"   # until the static build moves to PHP 8.5
         run: |
           file dist/cairo
           test "$(dist/cairo version)" = "cairo ${{ github.ref_name }}"

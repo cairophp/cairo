@@ -11,7 +11,7 @@ RUN apk add --no-cache bash build-base autoconf bison re2c pkgconf cmake linux-h
 WORKDIR /src
 # The libraries and PHP take most of the build. They depend only on the
 # script and PHP_VERSION, so this layer stays cached while Cairo's code changes.
-ARG PHP_VERSION=8.3.27
+ARG PHP_VERSION=8.5.12
 ENV WORK=/work
 COPY scripts/build-static.sh scripts/
 RUN STAGE=php scripts/build-static.sh "$PHP_VERSION"

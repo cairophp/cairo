@@ -258,7 +258,6 @@ $http->get('/curl', function (Request $req): Response {
         'errno' => curl_errno($ch),
         'error' => curl_error($ch),
     ];
-    curl_close($ch);
     return Response::json($out);
 });
 

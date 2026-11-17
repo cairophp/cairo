@@ -1311,7 +1311,7 @@ static void cairo_ini_defaults(HashTable *configuration_hash)
 		{"html_errors", "0"},
 		{"implicit_flush", "1"},
 		{"output_buffering", "0"},
-		{"register_argc_argv", "1"},
+		{"register_argc_argv", "0"},   // PHP 8.5 deprecates argv from the query string
 		{"display_errors", "0"},   // errors go to the log (below), once
 		{"log_errors", "1"},
 	};
@@ -1374,8 +1374,8 @@ static void cairo_log_message(const char *message, int syslog_type)
 
 // ---- Opcache ------------------------------------------------------------------
 //
-// Cairo loads opcache (built as opcache.so next to PHP) unless CAIRO_OPCACHE=0
-// or php.ini already loads it. Opcache only starts under the SAPIs it knows,
+// Cairo loads opcache (built as opcache.so next to PHP before PHP 8.5, built
+// in from 8.5) unless CAIRO_OPCACHE=0 or php.ini already loads it. Opcache only starts under the SAPIs it knows,
 // and checks the name once, while Zend extensions start; so the SAPI goes by
 // "cli-server" for that moment (from the cairo module's MINIT, which runs just
 // before) and gets its own name back afterwards. PHP_SAPI and php_sapi_name()
@@ -1390,7 +1390,11 @@ static bool cairo_opcache_wanted(void)
 	if (env != NULL && (strcmp(env, "0") == 0 || strcasecmp(env, "off") == 0 || strcasecmp(env, "false") == 0)) {
 		return false;
 	}
+#if PHP_VERSION_ID >= 80500
+	return true;
+#else
 	return access(PHP_EXTENSION_DIR "/opcache.so", R_OK) == 0;
+#endif
 }
 
 static void cairo_opcache_disguise(void)
@@ -1418,7 +1422,11 @@ static int cairo_sapi_startup(sapi_module_struct *sapi)
 		// like php.ini lines, so zend_extension= loads it; a php.ini that loads
 		// it too only gets a warning.
 		const char *base = sapi->ini_entries != NULL ? sapi->ini_entries : "";
+#if PHP_VERSION_ID >= 80500
+		const char *add = "";   // built in: only the SAPI name below is needed
+#else
 		const char *add = "zend_extension=" PHP_EXTENSION_DIR "/opcache.so\n";
+#endif
 		cairo_ini_entries = malloc(strlen(base) + strlen(add) + 1);
 		if (cairo_ini_entries != NULL) {
 			strcpy(cairo_ini_entries, base);

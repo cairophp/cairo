@@ -1,5 +1,10 @@
 package sapi
 
+/*
+#include "inbox.h"
+*/
+import "C"
+
 import (
 	"errors"
 	"time"
@@ -48,6 +53,7 @@ func (e *Engine) allocTid() (int, bool) {
 
 func (e *Engine) releaseTid(t *thread) {
 	e.table[t.id].CompareAndSwap(t, nil)
+	C.cairo_inbox_reset(C.int(t.id))
 	e.tidMu.Lock()
 	e.freeTids = append(e.freeTids, t.id)
 	e.tidMu.Unlock()
@@ -80,7 +86,7 @@ func (e *Engine) threadExited(t *thread, status int) {
 
 	if retiring && status == 0 {
 		e.releaseTid(t)
-		e.log.Info("php thread recycled", "thread", t.id, "served", t.served.Load())
+		e.log.Info("php thread recycled", "thread", t.id, "served", t.served())
 		return
 	}
 	e.log.Error("php thread stopped unexpectedly", "thread", t.id, "exit_status", status, "failed_calls", failed)
@@ -89,7 +95,7 @@ func (e *Engine) threadExited(t *thread, status int) {
 		return
 	}
 
-	if t.served.Load() == t.bootMark {
+	if t.served() == t.bootMark {
 		t.crashes++
 	} else {
 		t.crashes = 0
@@ -110,7 +116,7 @@ func (e *Engine) threadExited(t *thread, status int) {
 	if t.crashes > 0 {
 		delay = min(100*time.Millisecond<<t.crashes, 5*time.Second)
 	}
-	t.bootMark = t.served.Load()
+	t.bootMark = t.served()
 	go func() {
 		time.Sleep(delay)
 		if err := e.startThread(t); err != nil {
@@ -128,7 +134,7 @@ func (e *Engine) failCalls(t *thread, all bool) int {
 	n := 0
 	e.calls.Range(func(k, v any) bool {
 		c := v.(*call)
-		if c.thread != t || !(all || c.started.Load()) {
+		if c.thread != t || !(all || c.started()) {
 			return true
 		}
 		if _, ok := e.calls.LoadAndDelete(k); ok {
@@ -175,7 +181,7 @@ func (e *Engine) retire(old *thread, reason string) {
 		e.log.Warn("php thread not recycled: no free thread ids", "thread", old.id)
 		return
 	}
-	nt := &thread{id: tid, pool: poolWorker, slot: old.slot, inbox: make(chan event, inboxSize)}
+	nt := &thread{id: tid, pool: poolWorker, slot: old.slot}
 	e.table[tid].Store(nt)
 	e.threadsWG.Add(1)
 	e.lifeMu.Unlock()
@@ -191,7 +197,7 @@ func (e *Engine) retire(old *thread, reason string) {
 	old.retired = true
 	old.sendMu.Unlock()
 	e.post(old, map[string]string{"type": "retire"}) // after every request queued to old
-	e.log.Info("recycling php thread", "thread", old.id, "reason", reason, "served", old.served.Load(), "replacement", tid)
+	e.log.Info("recycling php thread", "thread", old.id, "reason", reason, "served", old.served(), "replacement", tid)
 }
 
 func (e *Engine) report(err error) {

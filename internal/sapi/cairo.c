@@ -33,6 +33,7 @@
 #include <ext/standard/php_fopen_wrappers.h>
 
 #include "cairo.h"
+#include "inbox.h"
 #include "pgsql.h"
 #include "wire.h"
 #include "_cgo_export.h"
@@ -92,15 +93,19 @@ PHP_FUNCTION(cairo_spec)
 }
 
 // cairo_next_event(): array. Blocks this PHP thread until Go has work for
-// it: a new request, a finished I/O operation, or shutdown. Go encodes the
-// event in internal/wire's format; wire.c turns it into the array.
+// it: a new request, a finished I/O operation, or shutdown. The thread waits
+// in its inbox (inbox.c), outside Go; Go encodes the event in internal/wire's
+// format and wire.c turns it into the array.
 PHP_FUNCTION(cairo_next_event)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
-	int len = 0;
-	char *buf = goNextEvent(cairo_tid, &len);
-	int ok = cairo_wire_decode(buf, len < 0 ? 0 : (size_t)len, return_value);
-	free(buf);
+	cairo_inbox_item *it = cairo_inbox_pop(cairo_tid);
+	if (it == NULL) {
+		zend_throw_exception(NULL, "cairo: this thread has no inbox", 0);
+		RETURN_THROWS();
+	}
+	int ok = cairo_wire_decode(it->data, (size_t)it->len, return_value);
+	free(it);
 	if (ok == FAILURE) {
 		zend_throw_exception(NULL, "cairo: malformed event from Go", 0);
 		RETURN_THROWS();

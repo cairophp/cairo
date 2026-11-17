@@ -2,6 +2,7 @@ package sapi
 
 /*
 #include "cairo.h"
+#include "inbox.h"
 */
 import "C"
 
@@ -27,12 +28,13 @@ func (e *Engine) detectBlocking(threshold time.Duration) {
 				if t == nil {
 					continue
 				}
-				since := t.busySince.Load()
+				since := int64(C.cairo_inbox_busy_since(C.int(t.id)))
 				if since == 0 {
 					continue
 				}
 				busy := now.Sub(time.Unix(0, since))
-				if busy >= threshold && !t.reported.Swap(true) {
+				taken := int64(C.cairo_inbox_taken(C.int(t.id)))
+				if busy >= threshold && t.reportedAt.Swap(taken) != taken {
 					C.cairo_report_blocking(C.int(t.id), C.int(busy.Milliseconds()))
 				}
 			}

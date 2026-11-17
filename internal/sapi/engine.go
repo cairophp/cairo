@@ -16,6 +16,7 @@ package sapi
 #cgo LDFLAGS: -lphp -lcurl
 #include <stdlib.h>
 #include "cairo.h"
+#include "inbox.h"
 #include "pgsql.h"
 */
 import "C"
@@ -40,10 +41,6 @@ import (
 	"github.com/mohamed-samir907/cairo/internal/wire"
 	"github.com/mohamed-samir907/cairo/php"
 )
-
-// inboxSize bounds how many events can queue for one PHP thread before the
-// sender waits. It does not limit requests in flight.
-const inboxSize = 4096
 
 // Engine is the embedded PHP runtime. There is one per process: PHP's
 // process-wide state cannot be initialised twice.
@@ -91,36 +88,64 @@ type thread struct {
 	id       int
 	pool     pool
 	slot     int // index in its pool
-	inbox    chan event
 	inflight atomic.Int64
 
-	// The blocking detector (detect.go): when the thread last took an event
-	// (unix ns; 0 while it waits for one), and whether that stretch was reported.
-	busySince atomic.Int64
-	reported  atomic.Bool
+	// The blocking detector (detect.go): the inbox's taken count when it last
+	// reported this thread, so it reports once per busy stretch.
+	reportedAt atomic.Int64
 
 	// Supervision (see supervise.go).
 	sendMu   sync.RWMutex // held for reading while a request is queued; retire takes it to set retired
 	retired  bool         // no new requests may be queued here
 	retiring atomic.Bool  // a replacement was asked for; the thread exits once idle
-	served   atomic.Int64 // requests and jobs the thread has taken
 	crashes  int          // crashes in a row without taking work in between
 	bootMark int64        // served when the thread last started
-}
-
-// event is one message for a PHP thread. call is set for a request or an
-// offload job, so Go knows when PHP has taken it.
-type event struct {
-	data []byte
-	call *call
 }
 
 // call is one unit of work sent to a PHP thread, waiting for cairo_respond().
 // resp receives nil when the thread died before answering.
 type call struct {
-	thread  *thread
-	resp    chan *reply
-	started atomic.Bool // PHP took it from the inbox
+	thread *thread
+	resp   chan *reply
+	seq    atomic.Int64 // its place in the thread's inbox; 0 until queued
+}
+
+// started reports whether PHP has taken the call from its thread's inbox.
+func (c *call) started() bool {
+	s := c.seq.Load()
+	return s > 0 && s <= int64(C.cairo_inbox_taken(C.int(c.thread.id)))
+}
+
+// served is how many requests and offload jobs the thread has taken.
+func (t *thread) served() int64 { return int64(C.cairo_inbox_calls_taken(C.int(t.id))) }
+
+// push queues an event for the thread's PHP side (inbox.c). c is set for a
+// request or an offload job. A full inbox is retried until ctx ends.
+func (t *thread) push(ctx context.Context, data []byte, c *call) error {
+	var p *C.char
+	if len(data) > 0 {
+		p = (*C.char)(unsafe.Pointer(&data[0])) // copied by C before it returns
+	}
+	isCall := C.int(0)
+	if c != nil {
+		isCall = 1
+	}
+	for wait := 50 * time.Microsecond; ; wait = min(wait*2, 10*time.Millisecond) {
+		switch seq := int64(C.cairo_inbox_push(C.int(t.id), p, C.int(len(data)), isCall)); {
+		case seq > 0:
+			if c != nil {
+				c.seq.Store(seq)
+			}
+			return nil
+		case seq != -1:
+			return errors.New("cairo: could not queue an event for a PHP thread")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+	}
 }
 
 // reply is PHP's answer to a call: its metadata (JSON) and, for an HTTP
@@ -240,7 +265,7 @@ func Start(opts Options) (*Engine, error) {
 	var all []*thread
 	for i := 0; i < nw+no; i++ {
 		tid, _ := e.allocTid()
-		t := &thread{id: tid, pool: poolWorker, slot: i, inbox: make(chan event, inboxSize)}
+		t := &thread{id: tid, pool: poolWorker, slot: i}
 		if i >= nw {
 			t.pool, t.slot = poolOffload, i-nw
 			e.offload[t.slot].Store(t)
@@ -330,7 +355,7 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 	stop := wire.Encode(map[string]string{"type": "shutdown"})
 	for i := range e.table {
 		if t := e.table[i].Load(); t != nil {
-			t.inbox <- event{data: stop}
+			_ = t.push(context.Background(), stop, nil)
 		}
 	}
 	select {
@@ -376,14 +401,12 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 		deadline = float64(dl.UnixNano()) / 1e9
 	}
 	b := ev.AppendWire(make([]byte, 0, 512), id, deadline)
-	select {
-	case t.inbox <- event{data: b, call: c}:
-		t.sendMu.RUnlock()
-	case <-ctx.Done():
-		t.sendMu.RUnlock()
+	err = t.push(ctx, b, c)
+	t.sendMu.RUnlock()
+	if err != nil {
 		e.forget(id, c, f)
 		release()
-		return nil, nil, ctx.Err()
+		return nil, nil, err
 	}
 	for {
 		select {
@@ -620,15 +643,13 @@ func (e *Engine) runOffload(ctx context.Context, payload string) (string, error)
 	e.calls.Store(id, c)
 	t.inflight.Add(1)
 	b := wire.Encode(map[string]any{"type": "offload", "id": id, "payload": payload})
-	select {
-	case t.inbox <- event{data: b, call: c}:
-		t.sendMu.RUnlock()
-	case <-ctx.Done():
-		t.sendMu.RUnlock()
+	err := t.push(ctx, b, c)
+	t.sendMu.RUnlock()
+	if err != nil {
 		if _, ok := e.calls.LoadAndDelete(id); ok {
 			t.inflight.Add(-1)
 		}
-		return "", ctx.Err()
+		return "", err
 	}
 	select {
 	case r := <-c.resp:
@@ -676,7 +697,9 @@ func acquire(ts []atomic.Pointer[thread]) *thread {
 }
 
 func (e *Engine) post(t *thread, ev any) {
-	t.inbox <- event{data: wire.Encode(ev)}
+	if err := t.push(context.Background(), wire.Encode(ev), nil); err != nil {
+		e.log.Error("queue event", "thread", t.id, "err", err)
+	}
 }
 
 func ctxError(ctx context.Context) string {
@@ -844,24 +867,6 @@ func goStopTLS(fd C.int, timeoutSec C.double, errOut **C.char) C.int {
 		return -1
 	}
 	return C.int(nfd)
-}
-
-// goNextEvent returns the thread's next event (internal/wire) in C memory,
-// which the caller frees, and its length in n.
-//
-//export goNextEvent
-func goNextEvent(tid C.int, n *C.int) unsafe.Pointer {
-	t := engine.table[int(tid)].Load()
-	t.busySince.Store(0)
-	ev := <-t.inbox
-	t.reported.Store(false)
-	t.busySince.Store(time.Now().UnixNano())
-	if ev.call != nil {
-		ev.call.started.Store(true)
-		t.served.Add(1)
-	}
-	*n = C.int(len(ev.data))
-	return C.CBytes(ev.data)
 }
 
 //export goRespond

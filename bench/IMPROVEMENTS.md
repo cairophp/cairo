@@ -189,6 +189,59 @@ buffer.
 side by side; in the full run, hello 42.3k → 49.6k and the PostgreSQL and
 MySQL point queries +15 %.
 
+## 4. A working profiler, and responses without JSON (commits 6e53913, 0b8bb7e)
+
+From here each step is measured with `bench/ab.sh`, which runs the previous
+build and the new one in turns on the same machine state (three rounds per
+case, median). By this point the laptop ran about 15 % slower than in the
+morning (the `cpu` case, which no change touches, went from 4.0k to 3.4k),
+so absolute numbers from different hours no longer compare; side-by-side
+runs do.
+
+### 4a. Go's CPU profiler no longer crashes Cairo
+
+**What.** PHP's signal handlers get `SA_ONSTACK` after PHP starts, and PHP
+threads block `SIGPROF` (`internal/sapi/cairo.c`).
+
+**Why.** Starting Go's CPU profiler aborted the process: "non-Go code set up
+signal handler without SA_ONSTACK flag". PHP's signal layer (zend_signal)
+installs handlers without that flag and passes signals it does not use on to
+Go's handler, which must run on the alternate signal stack. Cairo does not
+use `SIGPROF` itself (`max_execution_time` is 0; it stops PHP at deadlines on
+its own). With the profiler working, the rest of this log is driven by
+profiles instead of estimates.
+
+### 4b. HTTP responses reach Go without JSON
+
+**What.** `cairo_respond_http()` takes the status, the headers array and the
+body; C writes the status and headers in `internal/wire`'s format, and
+`wire.DecodeResponse` reads them into an `http.Header`, checking every length
+(fuzzed).
+
+**Why.** The first profile of hello showed 7.6 % of all CPU in Go's
+`encoding/json` decoding PHP's response metadata, after PHP had normalised
+the headers and `json_encode()`d them.
+
+**Effect** (`bench/ab.sh`, build d3bacd0 against 0b8bb7e):
+
+| Case | Before | After | Change |
+|---|---:|---:|---:|
+| hello | 42,997 | 44,638 | +3.8 % |
+| json | 38,711 | 42,929 | +10.9 % |
+| PDO PostgreSQL point query | 11,079 | 11,398 | +2.9 % |
+| PDO MySQL point query | 12,591 | 12,980 | +3.1 % |
+| curl | 10,884 | 10,987 | +0.9 % |
+| `Cairo\Sql` MySQL | 12,845 | 13,213 | +2.9 % |
+
+### What the profile shows now (hello, 4 PHP threads)
+
+| Where | Share of CPU |
+|---|---:|
+| net/http, of which the response `write` syscall is 18 % and the request `read` 5 % | 55 % |
+| PHP threads (the PHP VM, `execute_ex` alone 7 %) | 30 % |
+| Cairo's Go code in the request path (`Dispatch`, the route handler) | 14 % |
+| Go's allocator / scheduler | 7 % / 5 % |
+
 ## Tried and not kept
 
 | Change | Result | Branch |
@@ -197,6 +250,7 @@ MySQL point queries +15 %.
 | The socket poller wakes the PHP thread directly, skipping the fiber's goroutine | No difference: that goroutine wake runs on the same P and costs no thread switch | not kept |
 | PHP threads wait for events in a C queue (inbox.c) instead of inside Go | No difference: hello 49k either way, 76-80 µs CPU and 2.1 context switches per request | `experiment-c-inbox` |
 | msgpack instead of the binary format | Not built: slower to decode in PHP without an extension | – |
+| Pooled request buffers, and response headers written straight into the `ResponseWriter` | No difference in alternating runs (48-61k either way) | not kept |
 
 ## Where the time goes now
 

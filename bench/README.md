@@ -9,6 +9,7 @@ JIT off; only the way each one runs it differs.
 make static                                   # dist/cairo
 PATH=/path/to/wrk-and-ghz:$PATH bench/run.sh  # or: bench/run.sh cairo swoole
 WORKERS=64 CASES="sleep curl" bench/run.sh fpm frankenphp roadrunner   # other settings
+bench/ab.sh old/cairo new/cairo                # two Cairo builds, alternating
 ```
 
 `run.sh` needs Docker, `wrk`, `ghz`, Go, and the `cairo-pg` / `cairo-mysql`

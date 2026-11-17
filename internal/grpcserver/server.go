@@ -33,11 +33,12 @@ import (
 
 	"github.com/mohamed-samir907/cairo/internal/middleware"
 	"github.com/mohamed-samir907/cairo/internal/spec"
+	"github.com/mohamed-samir907/cairo/internal/wire"
 )
 
 // Dispatcher sends a call to PHP and returns PHP's JSON response.
 type Dispatcher interface {
-	Dispatch(ctx context.Context, ev any) ([]byte, error)
+	Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte, err error)
 }
 
 type method struct {
@@ -152,14 +153,45 @@ type phpResult struct {
 
 // event is a call as PHP receives it.
 type event struct {
-	Type            string          `json:"type"`
-	Service         int             `json:"service"`
-	Method          string          `json:"method"`
-	Values          map[string]any  `json:"values,omitempty"`
-	Message         json.RawMessage `json:"message,omitempty"`
-	Stream          int64           `json:"stream,omitempty"`
-	ClientStreaming bool            `json:"client_streaming,omitempty"`
-	ServerStreaming bool            `json:"server_streaming,omitempty"`
+	Service         int
+	Method          string
+	Values          map[string]any
+	Message         json.RawMessage // protojson; PHP decodes it to an array
+	Stream          int64
+	ClientStreaming bool
+	ServerStreaming bool
+}
+
+func (ev *event) AppendWire(b []byte, id int64, deadline float64) []byte {
+	n := 4
+	for _, set := range []bool{deadline > 0, len(ev.Values) > 0, ev.Message != nil, ev.Stream != 0} {
+		if set {
+			n++
+		}
+	}
+	if ev.Stream != 0 {
+		n += 2
+	}
+	b = wire.AppendMap(b, n)
+	b = wire.AppendString(wire.AppendKey(b, "type"), "grpc")
+	b = wire.AppendInt(wire.AppendKey(b, "id"), id)
+	if deadline > 0 {
+		b = wire.AppendFloat(wire.AppendKey(b, "deadline"), deadline)
+	}
+	b = wire.AppendInt(wire.AppendKey(b, "service"), int64(ev.Service))
+	b = wire.AppendString(wire.AppendKey(b, "method"), ev.Method)
+	if len(ev.Values) > 0 {
+		b = wire.AppendValue(wire.AppendKey(b, "values"), ev.Values)
+	}
+	if ev.Message != nil {
+		b = wire.AppendJSON(wire.AppendKey(b, "message"), ev.Message)
+	}
+	if ev.Stream != 0 {
+		b = wire.AppendInt(wire.AppendKey(b, "stream"), ev.Stream)
+		b = wire.AppendBool(wire.AppendKey(b, "client_streaming"), ev.ClientStreaming)
+		b = wire.AppendBool(wire.AppendKey(b, "server_streaming"), ev.ServerStreaming)
+	}
+	return b
 }
 
 func (s *Server) handle(_ any, stream grpc.ServerStream) error {
@@ -172,7 +204,6 @@ func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 		return status.Errorf(codes.Unimplemented, "unknown method %s", full)
 	}
 	ev := &event{
-		Type:    "grpc",
 		Service: m.serviceID,
 		Method:  m.name,
 		Values:  middleware.Values(stream.Context()),
@@ -204,7 +235,7 @@ func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 		ctx, cancel = context.WithTimeout(ctx, s.maxDuration)
 		defer cancel()
 	}
-	raw, err := s.php.Dispatch(ctx, ev)
+	raw, _, err := s.php.Dispatch(ctx, ev)
 	if err != nil {
 		if ctx.Err() == nil {
 			// The PHP thread died with the call (a fatal error).

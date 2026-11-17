@@ -5,7 +5,6 @@ package httpserver
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -19,11 +18,13 @@ import (
 
 	"github.com/mohamed-samir907/cairo/internal/middleware"
 	"github.com/mohamed-samir907/cairo/internal/spec"
+	"github.com/mohamed-samir907/cairo/internal/wire"
 )
 
-// Dispatcher sends a call to PHP and returns PHP's JSON response.
+// Dispatcher sends a call to PHP and returns PHP's answer: its metadata
+// (JSON) and the response body.
 type Dispatcher interface {
-	Dispatch(ctx context.Context, ev any) ([]byte, error)
+	Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte, err error)
 }
 
 // maxBody caps request bodies read into memory for PHP.
@@ -86,30 +87,78 @@ func (s *Server) Serve() error {
 // Shutdown stops accepting connections and waits for in-flight requests.
 func (s *Server) Shutdown(ctx context.Context) error { return s.srv.Shutdown(ctx) }
 
-// event is a request as PHP receives it (Cairo\Http\Request). A struct, not
-// a map: it encodes about four times faster.
+// event is a request as PHP receives it (Cairo\Http\Request).
 type event struct {
-	Type    string            `json:"type"`
-	Route   int               `json:"route"`
-	Method  string            `json:"method"`
-	Path    string            `json:"path"`
-	Query   string            `json:"query"`
-	Headers http.Header       `json:"headers"`
-	Params  map[string]string `json:"params"`
-	Body    string            `json:"body"`
-	Remote  string            `json:"remote"`
-	Host    string            `json:"host"`
-	Proto   string            `json:"proto"`
-	TLS     bool              `json:"tls"`
-	Values  map[string]any    `json:"values,omitempty"`
-	Form    []formField       `json:"form,omitempty"`
-	Files   []uploadedFile    `json:"files,omitempty"`
+	route   int
+	method  string
+	path    string
+	query   string
+	headers http.Header
+	params  map[string]string
+	body    []byte
+	remote  string
+	host    string
+	proto   string
+	tls     bool
+	values  map[string]any
+	form    *multipartForm
+}
+
+// AppendWire encodes the request for PHP; the body goes as raw bytes.
+func (ev *event) AppendWire(b []byte, id int64, deadline float64) []byte {
+	n := 13
+	if deadline > 0 {
+		n++
+	}
+	if len(ev.values) > 0 {
+		n++
+	}
+	if ev.form != nil {
+		n += 2
+	}
+	b = wire.AppendMap(b, n)
+	b = wire.AppendString(wire.AppendKey(b, "type"), "http")
+	b = wire.AppendInt(wire.AppendKey(b, "id"), id)
+	if deadline > 0 {
+		b = wire.AppendFloat(wire.AppendKey(b, "deadline"), deadline)
+	}
+	b = wire.AppendInt(wire.AppendKey(b, "route"), int64(ev.route))
+	b = wire.AppendString(wire.AppendKey(b, "method"), ev.method)
+	b = wire.AppendString(wire.AppendKey(b, "path"), ev.path)
+	b = wire.AppendString(wire.AppendKey(b, "query"), ev.query)
+	b = wire.AppendHeader(wire.AppendKey(b, "headers"), ev.headers)
+	b = wire.AppendValue(wire.AppendKey(b, "params"), ev.params)
+	b = wire.AppendBytes(wire.AppendKey(b, "body"), ev.body)
+	b = wire.AppendString(wire.AppendKey(b, "remote"), ev.remote)
+	b = wire.AppendString(wire.AppendKey(b, "host"), ev.host)
+	b = wire.AppendString(wire.AppendKey(b, "proto"), ev.proto)
+	b = wire.AppendBool(wire.AppendKey(b, "tls"), ev.tls)
+	if len(ev.values) > 0 {
+		b = wire.AppendValue(wire.AppendKey(b, "values"), ev.values)
+	}
+	if ev.form != nil {
+		b = wire.AppendList(wire.AppendKey(b, "form"), len(ev.form.fields))
+		for _, f := range ev.form.fields {
+			b = wire.AppendString(wire.AppendString(wire.AppendList(b, 2), f[0]), f[1])
+		}
+		b = wire.AppendList(wire.AppendKey(b, "files"), len(ev.form.files))
+		for _, f := range ev.form.files {
+			b = wire.AppendMap(b, 7)
+			b = wire.AppendString(wire.AppendKey(b, "field"), f.Field)
+			b = wire.AppendString(wire.AppendKey(b, "name"), f.Name)
+			b = wire.AppendString(wire.AppendKey(b, "full_path"), f.FullPath)
+			b = wire.AppendString(wire.AppendKey(b, "type"), f.Type)
+			b = wire.AppendInt(wire.AppendKey(b, "size"), f.Size)
+			b = wire.AppendString(wire.AppendKey(b, "tmp_name"), f.TmpName)
+			b = wire.AppendInt(wire.AppendKey(b, "error"), int64(f.Error))
+		}
+	}
+	return b
 }
 
 type phpResponse struct {
 	Status  int                 `json:"status"`
 	Headers map[string][]string `json:"headers"`
-	Body    string              `json:"body"`
 }
 
 func routeHandler(r spec.Route, php Dispatcher, log *slog.Logger) http.Handler {
@@ -138,25 +187,21 @@ func routeHandler(r spec.Route, php Dispatcher, log *slog.Logger) http.Handler {
 			body = nil // like PHP, php://input is empty for multipart/form-data
 		}
 		ev := &event{
-			Type:    "http",
-			Route:   r.ID,
-			Method:  req.Method,
-			Path:    req.URL.Path,
-			Query:   req.URL.RawQuery,
-			Headers: req.Header,
-			Params:  params,
-			Body:    base64.StdEncoding.EncodeToString(body),
-			Remote:  req.RemoteAddr,
-			Host:    req.Host,
-			Proto:   req.Proto,
-			TLS:     req.TLS != nil,
-			Values:  middleware.Values(req.Context()),
+			route:   r.ID,
+			method:  req.Method,
+			path:    req.URL.Path,
+			query:   req.URL.RawQuery,
+			headers: req.Header,
+			params:  params,
+			body:    body,
+			remote:  req.RemoteAddr,
+			host:    req.Host,
+			proto:   req.Proto,
+			tls:     req.TLS != nil,
+			values:  middleware.Values(req.Context()),
+			form:    form,
 		}
-		if form != nil {
-			ev.Form = form.fields
-			ev.Files = form.files
-		}
-		raw, err := php.Dispatch(req.Context(), ev)
+		raw, out, err := php.Dispatch(req.Context(), ev)
 		if err != nil {
 			switch {
 			case errors.Is(err, context.DeadlineExceeded):
@@ -171,12 +216,6 @@ func routeHandler(r spec.Route, php Dispatcher, log *slog.Logger) http.Handler {
 		var resp phpResponse
 		if err := json.Unmarshal(raw, &resp); err != nil {
 			log.Error("decode php response", "err", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		out, err := base64.StdEncoding.DecodeString(resp.Body)
-		if err != nil {
-			log.Error("decode php response body", "err", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}

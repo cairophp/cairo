@@ -18,7 +18,10 @@ change the PHP API; patch versions do not.
 - Go's garbage collector runs at `GOGC=400` unless `GOGC` is set: its live
   heap is small, so the default collected every few hundred requests (about
   10% more requests per second for about 12 MiB more memory).
-- Requests reach PHP as typed events, encoded about four times faster.
+- Events from Go to PHP (requests, I/O results) use a small binary format
+  that C decodes straight into PHP arrays, instead of JSON text and
+  `json_decode()`; request and response bodies cross as raw bytes instead of
+  base64. Hello-world requests about 10% faster, a 64 KiB echo about 4x.
 - Hooked `curl_exec()` keeps its connections alive between calls on one
   handle (each call used to open a new one): about 2x the requests per second.
 - gRPC `ServerStream::send()` queues the reply without a fiber switch.

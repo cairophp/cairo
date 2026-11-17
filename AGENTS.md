@@ -18,7 +18,8 @@ on I/O through Cairo, only its fiber suspends and Go does the waiting.
 |------|------------------|
 | `cmd/cairo/` | The CLI: `serve`, `gen`, `version` |
 | `internal/sapi/` | cgo: the embedded PHP (`cairo.c`, Cairo's own SAPI), PHP threads, fiber goroutines, offload pool, runtime hooks, and every Go op PHP can call |
-| `internal/sapi/goops.go` | The op registry: `registerOp("name", fn)` in Go, `Cairo\Internal\Go::call('name', $payload)` in PHP. Payloads and results cross as JSON |
+| `internal/sapi/goops.go` | The op registry: `registerOp("name", fn)` in Go, `Cairo\Internal\Go::call('name', $payload)` in PHP. Payloads go to Go as JSON; results come back as events |
+| `internal/wire/` | The binary format of the events Go sends to PHP threads (requests, op results); `internal/sapi/wire.c` decodes it into PHP arrays. Bodies cross as raw bytes |
 | `php/runtime.php` | The whole PHP side: every `Cairo\` class and the fiber scheduler. Embedded in the binary |
 | `php/revolt.php` | `Cairo\Revolt\Driver`, loaded when `revolt/event-loop` is installed |
 | `internal/spec/` | The server declaration that `server.php` sends to Go |
@@ -53,7 +54,7 @@ docker run -d --name cairo-pg -e POSTGRES_USER=cairo -e POSTGRES_PASSWORD=cairo 
 CAIRO_TEST_BIN=$PWD/dist/cairo CAIRO_TEST_STATIC=1 \
 CAIRO_TEST_MYSQL='mysql:host=127.0.0.1;port=3306' CAIRO_TEST_MYSQL_USER=root CAIRO_TEST_MYSQL_PASSWORD=cairo \
 CAIRO_TEST_PGSQL='pgsql:host=127.0.0.1;port=5432;dbname=cairo' CAIRO_TEST_PGSQL_USER=cairo CAIRO_TEST_PGSQL_PASSWORD=cairo \
-go test ./test ./internal/codegen ./internal/middleware ./internal/spec -count=1
+go test ./test ./internal/codegen ./internal/middleware ./internal/spec ./internal/wire -count=1
 ```
 
 `make static` builds from the working tree at the moment Docker copies it.
@@ -209,8 +210,8 @@ Cairo is a server: per-request code runs millions of times.
   (`make([]T, 0, n)`), reuse buffers where profiling shows it matters, avoid
   `fmt.Sprintf` and reflection in per-request Go code, and avoid copying large
   PHP arrays (pass by reference only when measured).
-- **No N+1 calls across the PHP–Go boundary.** Each `Go::call` crosses cgo
-  and JSON; batch work into one op instead of calling per item in a loop.
+- **No N+1 calls across the PHP–Go boundary.** Each `Go::call` crosses cgo,
+  JSON one way and an event the other; batch work into one op instead of calling per item in a loop.
 - **Measure before optimising.** Claim a speed-up only with numbers
   (`go test -bench`, the 50-requests-on-one-thread tests, or wrk), and put
   them in the PR.

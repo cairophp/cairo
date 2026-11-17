@@ -1500,7 +1500,7 @@ namespace Cairo\Http {
 
         public function body(): string
         {
-            return base64_decode($this->event['body'] ?? '');
+            return (string) ($this->event['body'] ?? '');
         }
 
         public function json(): mixed
@@ -3109,7 +3109,7 @@ namespace Cairo\Internal {
                 if ($this->retiring && $this->active === 0 && $this->pending->isEmpty()) {
                     return;   // recycled: Go already runs a replacement thread
                 }
-                $event = json_decode(\cairo_next_event(), true, 512, JSON_THROW_ON_ERROR);
+                $event = \cairo_next_event();
                 switch ($event['type']) {
                     case 'io':
                         $fiber = $this->io[$event['io']] ?? null;
@@ -3260,8 +3260,7 @@ namespace Cairo\Internal {
             \cairo_respond((int) $event['id'], json_encode([
                 'status' => $response->status,
                 'headers' => (object) $headers,
-                'body' => base64_encode($response->body),
-            ], JSON_THROW_ON_ERROR));
+            ], JSON_THROW_ON_ERROR), $response->body);
         }
 
         /** @return array<string, list<string>> the headers set with header() */
@@ -3492,7 +3491,7 @@ namespace Cairo\Internal {
                 foreach ($event['headers'] ?? [] as $name => $values) {
                     if (strcasecmp($name, 'Content-Type') === 0
                         && str_starts_with(strtolower((string) ($values[0] ?? '')), 'application/x-www-form-urlencoded')) {
-                        parse_str(base64_decode((string) ($event['body'] ?? '')), $fields);
+                        parse_str((string) ($event['body'] ?? ''), $fields);
                     }
                 }
             }
@@ -3737,7 +3736,7 @@ namespace Cairo\Internal {
         public function run(): void
         {
             while (true) {
-                $event = json_decode(\cairo_next_event(), true, 512, JSON_THROW_ON_ERROR);
+                $event = \cairo_next_event();
                 if ($event['type'] === 'shutdown') {
                     return;
                 }

@@ -6,6 +6,7 @@
 // cairo_next_event() and runs every request in its own Fiber.
 
 #include <pthread.h>
+#include <limits.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,6 +34,7 @@
 
 #include "cairo.h"
 #include "pgsql.h"
+#include "wire.h"
 #include "_cgo_export.h"
 
 // -1 is the boot thread (declare phase); 0..n-1 are worker threads.
@@ -48,6 +50,7 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_respond, 0, 0, 2)
 	ZEND_ARG_INFO(0, id)
 	ZEND_ARG_INFO(0, json)
+	ZEND_ARG_INFO(0, body)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_fiber_open, 0, 0, 1)
@@ -88,27 +91,41 @@ PHP_FUNCTION(cairo_spec)
 	}
 }
 
-// cairo_next_event(): string (JSON). Blocks this PHP thread until Go has
-// work for it: a new request, a finished I/O operation, or shutdown.
+// cairo_next_event(): array. Blocks this PHP thread until Go has work for
+// it: a new request, a finished I/O operation, or shutdown. Go encodes the
+// event in internal/wire's format; wire.c turns it into the array.
 PHP_FUNCTION(cairo_next_event)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
-	char *s = goNextEvent(cairo_tid);
-	RETVAL_STRING(s);
-	free(s);
+	int len = 0;
+	char *buf = goNextEvent(cairo_tid, &len);
+	int ok = cairo_wire_decode(buf, len < 0 ? 0 : (size_t)len, return_value);
+	free(buf);
+	if (ok == FAILURE) {
+		zend_throw_exception(NULL, "cairo: malformed event from Go", 0);
+		RETURN_THROWS();
+	}
 }
 
-// cairo_respond(int $id, string $json): void
+// cairo_respond(int $id, string $json, string $body = ''): void. $json is
+// the answer's metadata; $body, an HTTP response's body, goes to Go as raw
+// bytes.
 PHP_FUNCTION(cairo_respond)
 {
 	zend_long id;
-	char *json;
-	size_t len;
-	ZEND_PARSE_PARAMETERS_START(2, 2)
+	char *json, *body = NULL;
+	size_t len, blen = 0;
+	ZEND_PARSE_PARAMETERS_START(2, 3)
 		Z_PARAM_LONG(id)
 		Z_PARAM_STRING(json, len)
+		Z_PARAM_OPTIONAL
+		Z_PARAM_STRING(body, blen)
 	ZEND_PARSE_PARAMETERS_END();
-	goRespond((long long)id, json, (int)len);
+	if (len > INT_MAX || blen > INT_MAX) {
+		zend_value_error("cairo_respond(): the answer is larger than 2 GB");
+		RETURN_THROWS();
+	}
+	goRespond((long long)id, json, (int)len, body, (int)blen);
 }
 
 // cairo_retire(string $reason): void. Asks Go to replace this request thread

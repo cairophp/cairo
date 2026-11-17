@@ -1019,7 +1019,7 @@ namespace Cairo {
             throw new \InvalidArgumentException('offload() needs an OffloadTask, a function name or [Class::class, "staticMethod"]');
         }
         $payload = base64_encode(serialize([$fn, $args]));
-        $result = Scheduler::instance()->op(['op' => 'offload', 'payload' => $payload]);
+        $result = Scheduler::instance()->call('offload', $payload);
         $out = unserialize(base64_decode((string) $result));
         if (!($out['ok'] ?? false)) {
             throw new OffloadException(($out['class'] ?? 'Error') . ': ' . ($out['message'] ?? 'offloaded job failed'));
@@ -3035,6 +3035,12 @@ namespace Cairo\Internal {
             return $this->submitted(\cairo_fiber_op(Context::current()->fiberId, json_encode($op, JSON_THROW_ON_ERROR)));
         }
 
+        /** Ask the current fiber's goroutine to run $op with a payload string, and suspend until it is done. */
+        public function call(string $op, string $payload): mixed
+        {
+            return $this->submitted(\cairo_fiber_call(Context::current()->fiberId, $op, $payload));
+        }
+
         /** Wait for the operation a cairo_fiber_*() call just submitted as $id (-1: refused). */
         public function submitted(int $id): mixed
         {
@@ -3367,7 +3373,7 @@ namespace Cairo\Internal {
         {
             if (Scheduler::running() && Context::current()->fiberId !== 0) {
                 $json = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-                return Scheduler::instance()->op(['op' => $op, 'payload' => $json]);
+                return Scheduler::instance()->call($op, $json);
             }
             return self::callNow($op, $payload);
         }
@@ -3691,7 +3697,7 @@ namespace Cairo\Internal {
             if (!self::on(\Cairo\Hook::PGSQL)) {
                 return null;
             }
-            $result = Scheduler::instance()->op(['op' => 'pg', 'payload' => $request]);
+            $result = Scheduler::instance()->call('pg', $request);
             return json_encode($result, JSON_THROW_ON_ERROR);
         }
 

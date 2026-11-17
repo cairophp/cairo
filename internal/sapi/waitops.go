@@ -7,9 +7,9 @@ import "C"
 
 import "unsafe"
 
-// The socket waits behind every hooked read, write and curl transfer are the
-// most frequent operations, so they skip goFiberOp's JSON: C passes the
-// fields as arguments.
+// The most frequent fiber operations skip goFiberOp's JSON: C passes their
+// fields as arguments. These are the socket waits behind every hooked read,
+// write and curl transfer, and the ops that carry a payload.
 
 //export goFiberWait
 func goFiberWait(id C.longlong, fd C.int, write C.int, timeout C.double) C.longlong {
@@ -30,4 +30,13 @@ func cInts(p *C.int, n C.int) []int {
 		out[i] = int(v)
 	}
 	return out
+}
+
+// goFiberCall submits an operation that carries a payload (Go::call ops,
+// "pg", "offload"). The payload is passed as is: wrapping it in the op's
+// JSON escaped it once in PHP and unescaped it again here.
+//
+//export goFiberCall
+func goFiberCall(id C.longlong, name *C.char, nn C.int, payload *C.char, np C.int) C.longlong {
+	return engine.submit(int64(id), op{Op: C.GoStringN(name, nn), Payload: C.GoStringN(payload, np)})
 }

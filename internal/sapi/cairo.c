@@ -328,6 +328,7 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_fiber_op, arginfo_cairo_fiber_op)
 	PHP_FE(cairo_fiber_wait, arginfo_cairo_fiber_wait)
 	PHP_FE(cairo_fiber_waitset, arginfo_cairo_fiber_waitset)
+	PHP_FE(cairo_fiber_call, arginfo_cairo_fiber_call)
 	PHP_FE(cairo_go_call, arginfo_cairo_go_call)
 	PHP_FE(cairo_guard, arginfo_cairo_guard)
 	PHP_FE_END

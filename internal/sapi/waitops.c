@@ -1,4 +1,4 @@
-// The socket waits (see waitops.go): same contract as cairo_fiber_op(), with
+// The most frequent fiber operations (see waitops.go): same contract as cairo_fiber_op(), with
 // the fields passed as arguments instead of JSON.
 
 #include <php.h>
@@ -66,4 +66,21 @@ PHP_FUNCTION(cairo_fiber_waitset)
 	}
 	efree(fds);
 	RETURN_LONG(id);
+}
+
+// cairo_fiber_call(int $fiber, string $op, string $payload): int
+PHP_FUNCTION(cairo_fiber_call)
+{
+	zend_long fiber;
+	zend_string *name, *payload;
+	ZEND_PARSE_PARAMETERS_START(3, 3)
+		Z_PARAM_LONG(fiber)
+		Z_PARAM_STR(name)
+		Z_PARAM_STR(payload)
+	ZEND_PARSE_PARAMETERS_END();
+	if (ZSTR_LEN(name) > INT_MAX || ZSTR_LEN(payload) > INT_MAX) {
+		RETURN_LONG(-1);
+	}
+	RETURN_LONG((zend_long)goFiberCall((long long)fiber, ZSTR_VAL(name), (int)ZSTR_LEN(name),
+		ZSTR_VAL(payload), (int)ZSTR_LEN(payload)));
 }

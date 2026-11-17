@@ -16,6 +16,9 @@ containers from AGENTS.md. It seeds a 1000-row `bench_items` table in both,
 builds the competitor images (`apps/*/Dockerfile`), and writes
 `results/raw.csv` (every run) and `results/results.md` (medians).
 
+[IMPROVEMENTS.md](IMPROVEMENTS.md) lists each performance change made from
+these benchmarks, why, and Cairo's numbers after each one.
+
 ## Cases
 
 | Case | What one request does | wrk connections |

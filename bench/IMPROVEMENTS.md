@@ -242,6 +242,74 @@ the headers and `json_encode()`d them.
 | Cairo's Go code in the request path (`Dispatch`, the route handler) | 14 % |
 | Go's allocator / scheduler | 7 % / 5 % |
 
+## 5. Cheaper socket waits (commits 39e255c, 55b25d8, 56e477a)
+
+Measured on a different machine from steps 1-4: a cloud VM with 4 vCPUs
+(Xeon @ 2.1 GHz, KVM, no SMT), Cairo built natively against PHP 8.5.12, the
+server on CPUs 0-1 and wrk on 2-3. Its absolute numbers do not compare with
+the laptop's; the A/B runs below compare builds on the same machine.
+
+### Where the time went (cloud VM, before step 5)
+
+Go's CPU profiler and `perf`, 8 s under wrk:
+
+| Case | CPU per request | What dominates |
+|---|---:|---|
+| hello | 51 µs | kernel 37 % (thread wakeups, the response `write`), PHP 16 %, net/http's `write` 20 % of Go's samples |
+| MySQL point query | 132 µs | PHP + mysqlnd 48 %; each socket wait costs a cgo callback, `runOp`, the poller (5 %) and `encoding/json` (4 %) |
+| curl | 182 µs | CPU-bound at 10.5k req/s; libcurl 10 % |
+
+"Try the socket read in C first" was already done: `cairo_wait_fd()` polls the
+descriptor before suspending. So this step makes the wait itself cheaper.
+
+### 5a. Socket waits reach Go without JSON
+
+**What.** `cairo_fiber_wait()` and `cairo_fiber_waitset()` (new
+`internal/sapi/waitops.c`) pass the descriptor, direction and timeout as
+arguments; `Hooks::wait()` and `Hooks::waitSet()` use them.
+
+**Why.** Every hooked read or write that has to wait went through
+`json_encode()` in PHP and `json.Unmarshal` in Go for four fields.
+
+**Effect.** MySQL point query +10.8 % (3 rounds); hello and curl unchanged.
+
+### 5b. The poller keeps a socket in epoll between waits
+
+**What.** `poller.wait()` re-arms a descriptor with one `EPOLL_CTL_MOD`
+(`ADD` the first time) and leaves it in the set, disarmed by `EPOLLONESHOT`,
+instead of `ADD` then `DEL` around every wait. A wait that times out or is
+cancelled still deletes it, and the kernel drops a closed descriptor from the
+set.
+
+**Why.** Two `epoll_ctl` syscalls per wait, on every MySQL round trip.
+
+**Effect.** MySQL point query +2.6 % (3 rounds), +5.1 % (6 rounds).
+
+### 5c. Payload ops skip the op's JSON wrapper
+
+**What.** `cairo_fiber_call($fiber, $op, $payload)` for `Go::call()`, PDO
+pgsql and `offload()`.
+
+**Why.** The payload was JSON, then encoded again as a string inside the op's
+JSON (escaping every quote), then unescaped by Go before the op decoded it.
+
+**Effect.** About +2 % on PDO PostgreSQL and `Cairo\Sql`, inside this
+machine's noise; kept because it is less work per call and less code path.
+
+### Step 5 together
+
+`bench/ab.sh`, 80ed102 against 5a-5c, 7 rounds, median:
+
+| Case | Before | After | Change |
+|---|---:|---:|---:|
+| PDO MySQL point query | 16,181 | 17,693 | +9.3 % |
+| PDO PostgreSQL point query | 13,524 | 13,829 | +2.3 % |
+| `Cairo\Sql` MySQL | 17,486 | 17,794 | +1.8 % |
+| json (untouched, as control) | 38,185 | 39,040 | +2.2 % |
+
+The other cases (hello, cpu, sleep, curl, client, the 10 ms queries, gRPC)
+did not move beyond ±5 % in a 3-round run of all of them.
+
 ## Tried and not kept
 
 | Change | Result | Branch |
@@ -251,6 +319,7 @@ the headers and `json_encode()`d them.
 | PHP threads wait for events in a C queue (inbox.c) instead of inside Go | No difference: hello 49k either way, 76-80 µs CPU and 2.1 context switches per request | `experiment-c-inbox` |
 | msgpack instead of the binary format | Not built: slower to decode in PHP without an extension | – |
 | Pooled request buffers, and response headers written straight into the `ResponseWriter` | No difference in alternating runs (48-61k either way) | not kept |
+| Fewer closures and `Context::current()` lookups per request in runtime.php | No difference (hello -0.8 %, json +2.8 %, 6 rounds): PHP is 16 % of hello's CPU on the cloud VM, and this was a small part of it | not kept |
 
 ## Where the time goes now
 

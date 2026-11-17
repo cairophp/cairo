@@ -116,6 +116,32 @@ These apply to every change, whoever writes it. When a rule and the code
 around it disagree, follow the rule in new code and do not rewrite old code
 just to match, unless that is the task.
 
+### Compare solutions before you pick one
+
+For anything beyond a one-line fix, do not ship the first approach that
+works. Challenge it:
+
+1. **Find at least two real options** when they exist: for example a Go op
+   versus a runtime hook, a channel versus a mutex, one batched `Go::call`
+   versus one per item, the standard library versus a dependency, or
+   changing the caller versus changing the API.
+2. **Score each one** on the three things that matter here, in this order
+   when they conflict:
+   - **Security:** what can untrusted input reach? What fails open?
+   - **Efficiency:** work per request, allocations, PHP–Go crossings, and
+     whether it can block the PHP thread.
+   - **Readability:** lines of code, new concepts, and how easy it is to
+     delete later.
+3. **Pick the best and apply it.** Prefer the simpler one when the scores
+   are close. Choose a faster but more complex option only when a measurement
+   shows the gain is worth it.
+4. **Write the decision down** in the PR description: the options you
+   considered, which one you chose, and why the others lost (one line each).
+   For a hot path, include the numbers.
+
+Do not invent options for show. If there is only one sensible way, say so in
+one line and move on.
+
 ### Write less code
 
 - **Solve the task in front of you.** No speculative options, extension
@@ -285,6 +311,7 @@ Cairo is a server: per-request code runs millions of times.
 ### Before you open the PR
 
 - [ ] The diff does one thing, and nothing in it is unused.
+- [ ] You compared the real alternatives and the PR says which won and why.
 - [ ] No file passed its size limit; no new file is a grab-bag.
 - [ ] New waits suspend only the fiber, with a test that proves it.
 - [ ] Input is validated, SQL is parameterised, paths are confined, no

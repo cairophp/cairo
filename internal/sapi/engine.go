@@ -971,3 +971,14 @@ func goFiberOp(id C.longlong, data *C.char, n C.int) C.longlong {
 	v.(*fiber).ops <- o
 	return C.longlong(opID)
 }
+
+// submit hands a decoded operation to fiber id's goroutine; see goFiberOp.
+func (e *Engine) submit(id int64, o op) C.longlong {
+	v, ok := e.fibers.Load(id)
+	if !ok {
+		return -1
+	}
+	o.ID = e.nextID.Add(1)
+	v.(*fiber).ops <- o
+	return C.longlong(o.ID)
+}

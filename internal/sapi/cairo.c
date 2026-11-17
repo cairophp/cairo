@@ -35,6 +35,7 @@
 #include "cairo.h"
 #include "pgsql.h"
 #include "wire.h"
+#include "waitops.h"
 #include "_cgo_export.h"
 
 // -1 is the boot thread (declare phase); 0..n-1 are worker threads.
@@ -325,6 +326,8 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_context_open, arginfo_cairo_context_open)
 	PHP_FE(cairo_context_cancel, arginfo_cairo_fiber_close)
 	PHP_FE(cairo_fiber_op, arginfo_cairo_fiber_op)
+	PHP_FE(cairo_fiber_wait, arginfo_cairo_fiber_wait)
+	PHP_FE(cairo_fiber_waitset, arginfo_cairo_fiber_waitset)
 	PHP_FE(cairo_go_call, arginfo_cairo_go_call)
 	PHP_FE(cairo_guard, arginfo_cairo_guard)
 	PHP_FE_END

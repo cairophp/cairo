@@ -3032,7 +3032,12 @@ namespace Cairo\Internal {
         /** Ask the current fiber's goroutine to perform $op, and suspend until it is done. */
         public function op(array $op): mixed
         {
-            $id = \cairo_fiber_op(Context::current()->fiberId, json_encode($op, JSON_THROW_ON_ERROR));
+            return $this->submitted(\cairo_fiber_op(Context::current()->fiberId, json_encode($op, JSON_THROW_ON_ERROR)));
+        }
+
+        /** Wait for the operation a cairo_fiber_*() call just submitted as $id (-1: refused). */
+        public function submitted(int $id): mixed
+        {
             if ($id < 0) {
                 throw new \LogicException('Cairo I/O must run inside a request handler or an async() task');
             }
@@ -3594,7 +3599,7 @@ namespace Cairo\Internal {
             if (!self::on(\Cairo\Hook::SOCKETS)) {
                 return 0;
             }
-            $result = Scheduler::instance()->op(['op' => 'wait', 'fd' => $fd, 'write' => $write, 'timeout' => $timeout]);
+            $result = Scheduler::instance()->submitted(\cairo_fiber_wait(Context::current()->fiberId, $fd, $write, $timeout));
             return $result === 'timeout' ? -1 : 1;
         }
 
@@ -3611,7 +3616,7 @@ namespace Cairo\Internal {
             if (!self::on(\Cairo\Hook::CURL)) {
                 return 0;
             }
-            Scheduler::instance()->op(['op' => 'waitset', 'read' => $read, 'write_fds' => $write, 'timeout' => $timeout]);
+            Scheduler::instance()->submitted(\cairo_fiber_waitset(Context::current()->fiberId, $read, $write, $timeout));
             return 1;
         }
 

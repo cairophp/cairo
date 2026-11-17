@@ -27,6 +27,8 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       - name: Build the static binary
         uses: docker/build-push-action@v6
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false   # no .dockerbuild artifact for publish to trip on
         with:
           context: .
           file: Dockerfile.static
@@ -55,6 +57,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
+          pattern: cairo-linux-*
           path: dist
           merge-multiple: true
       - name: Checksums

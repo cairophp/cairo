@@ -1,0 +1,19 @@
+version: "3"
+
+server:
+  command: "php /app/roadrunner/worker.php"
+
+http:
+  address: 0.0.0.0:8080
+  pool:
+    num_workers: ${BENCH_WORKERS}
+
+grpc:
+  listen: tcp://0.0.0.0:9000
+  proto:
+    - "/app/roadrunner/greeter.proto"
+  pool:
+    num_workers: ${BENCH_WORKERS}
+
+logs:
+  level: error

@@ -66,11 +66,60 @@ var errPollTimeout = errors.New("socket timeout")
 // wait blocks until fd is ready for reading (or writing), the timeout passes
 // (timeout < 0 means none), or ctx ends. One fiber waits on a descriptor at a
 // time: PHP connections are not shared between fibers.
+//
+// The descriptor stays in the epoll set afterwards, disarmed by
+// EPOLLONESHOT, so the next wait on it is one EPOLL_CTL_MOD instead of an ADD
+// and a DEL. The kernel drops it from the set when PHP closes it.
 func (p *poller) wait(ctx context.Context, fd int, write bool, timeout time.Duration) error {
+	events := uint32(syscall.EPOLLIN | syscall.EPOLLRDHUP)
 	if write {
-		return p.waitSet(ctx, nil, []int{fd}, timeout)
+		events = syscall.EPOLLOUT
 	}
-	return p.waitSet(ctx, []int{fd}, nil, timeout)
+	ch := make(chan struct{}, 1)
+	p.mu.Lock()
+	if _, busy := p.waiters[int32(fd)]; busy {
+		p.mu.Unlock()
+		return errors.New("socket is already in use by another fiber")
+	}
+	p.waiters[int32(fd)] = ch
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		delete(p.waiters, int32(fd))
+		p.mu.Unlock()
+	}()
+
+	ev := syscall.EpollEvent{Events: events | syscall.EPOLLONESHOT, Fd: int32(fd)}
+	err := syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_MOD, fd, &ev)
+	if errors.Is(err, syscall.ENOENT) {
+		err = syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_ADD, fd, &ev)
+	}
+	if err != nil {
+		return err
+	}
+	if err = p.block(ctx, ch, timeout); err != nil {
+		// Still armed: disarm it so a late event cannot reach a later waiter.
+		_ = syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_DEL, fd, nil)
+	}
+	return err
+}
+
+// block waits for ch, the timeout (< 0: none) or the end of ctx.
+func (p *poller) block(ctx context.Context, ch <-chan struct{}, timeout time.Duration) error {
+	var timer <-chan time.Time
+	if timeout >= 0 {
+		t := time.NewTimer(timeout)
+		defer t.Stop()
+		timer = t.C
+	}
+	select {
+	case <-ch:
+		return nil
+	case <-timer:
+		return errPollTimeout
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // waitSet blocks until any descriptor in read is readable or any in write is
@@ -121,18 +170,5 @@ func (p *poller) waitSet(ctx context.Context, read, write []int, timeout time.Du
 		added = append(added, fd)
 	}
 
-	var timer <-chan time.Time
-	if timeout >= 0 {
-		t := time.NewTimer(timeout)
-		defer t.Stop()
-		timer = t.C
-	}
-	select {
-	case <-ch:
-		return nil
-	case <-timer:
-		return errPollTimeout
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return p.block(ctx, ch, timeout)
 }

@@ -5,7 +5,6 @@ package httpserver
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -156,11 +155,6 @@ func (ev *event) AppendWire(b []byte, id int64, deadline float64) []byte {
 	return b
 }
 
-type phpResponse struct {
-	Status  int                 `json:"status"`
-	Headers map[string][]string `json:"headers"`
-}
-
 func routeHandler(r spec.Route, php Dispatcher, log *slog.Logger) http.Handler {
 	var names []string
 	for _, m := range paramRe.FindAllStringSubmatch(r.Path, -1) {
@@ -213,21 +207,20 @@ func routeHandler(r spec.Route, php Dispatcher, log *slog.Logger) http.Handler {
 			// Otherwise the client went away; there is nobody to answer.
 			return
 		}
-		var resp phpResponse
-		if err := json.Unmarshal(raw, &resp); err != nil {
+		status, header, err := wire.DecodeResponse(raw)
+		if err != nil {
 			log.Error("decode php response", "err", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		for k, vs := range resp.Headers {
-			for _, v := range vs {
-				w.Header().Add(k, v)
-			}
+		h := w.Header()
+		for k, vs := range header {
+			h[http.CanonicalHeaderKey(k)] = append(h[http.CanonicalHeaderKey(k)], vs...)
 		}
-		if resp.Status == 0 {
-			resp.Status = http.StatusOK
+		if status == 0 {
+			status = http.StatusOK
 		}
-		w.WriteHeader(resp.Status)
+		w.WriteHeader(status)
 		_, _ = w.Write(out)
 	})
 }

@@ -171,3 +171,24 @@ func BenchmarkEncodeRequest(b *testing.B) {
 		buf = AppendBytes(AppendKey(buf, "body"), nil)
 	}
 }
+
+func TestDecodeResponse(t *testing.T) {
+	b := AppendInt(nil, 201)
+	b = AppendHeader(b, http.Header{"X-A": {"1", "2"}, "Content-Type": {"text/plain"}})
+	status, h, err := DecodeResponse(b)
+	if err != nil || status != 201 || !reflect.DeepEqual(h, http.Header{"X-A": {"1", "2"}, "Content-Type": {"text/plain"}}) {
+		t.Fatalf("got %d %v %v", status, h, err)
+	}
+	for i := range b {
+		if _, _, err := DecodeResponse(b[:i]); err == nil {
+			t.Fatalf("decoded a buffer cut at %d of %d", i, len(b))
+		}
+	}
+}
+
+func FuzzDecodeResponse(f *testing.F) {
+	f.Add(AppendHeader(AppendInt(nil, 200), http.Header{"A": {"b"}}))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		_, _, _ = DecodeResponse(b)
+	})
+}

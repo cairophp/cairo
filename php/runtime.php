@@ -3253,14 +3253,7 @@ namespace Cairo\Internal {
             }
             Context::current()->markAnswered();
             Form::untrack($event['files'] ?? []);   // Go removes what is left once we respond
-            $headers = [];
-            foreach ($response->headers as $name => $value) {
-                $headers[$name] = is_array($value) ? array_values($value) : [$value];
-            }
-            \cairo_respond((int) $event['id'], json_encode([
-                'status' => $response->status,
-                'headers' => (object) $headers,
-            ], JSON_THROW_ON_ERROR), $response->body);
+            \cairo_respond_http((int) $event['id'], $response->status, $response->headers, $response->body);
         }
 
         /** @return array<string, list<string>> the headers set with header() */

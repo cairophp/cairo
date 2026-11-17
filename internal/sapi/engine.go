@@ -30,6 +30,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -211,6 +212,12 @@ func Start(opts Options) (*Engine, error) {
 	if nw+no > maxThreads/2 {
 		return nil, fmt.Errorf("too many PHP threads: %d (at most %d)", nw+no, maxThreads/2)
 	}
+	if os.Getenv("GOMAXPROCS") == "" {
+		// A PHP thread calling into Go (to answer a request, to start I/O)
+		// needs a free P. With only one P per CPU, net/http's goroutines hold
+		// them all under load and PHP threads queue for one.
+		runtime.GOMAXPROCS(runtime.GOMAXPROCS(0) + nw + no)
+	}
 	if e.spec.MaxInFlight > 0 {
 		e.slots = make(chan struct{}, e.spec.MaxInFlight*nw)
 	}
@@ -323,11 +330,11 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 // Dispatch runs one request on a PHP request thread and returns PHP's answer.
 //
 // The calling goroutine becomes the request's root fiber: until PHP answers,
-// it performs that fiber's I/O under ctx. ev must carry a "type" ("http" or
-// "grpc"); Dispatch adds "id" and "deadline". If ctx ends first, Dispatch
-// returns ctx.Err() and a helper goroutine keeps answering the fiber (with
-// the context's error) until PHP finishes.
-func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error) {
+// it performs that fiber's I/O under ctx. ev must encode to a JSON object
+// with a "type" ("http" or "grpc"); Dispatch adds "id" and "deadline". If ctx
+// ends first, Dispatch returns ctx.Err() and a helper goroutine keeps
+// answering the fiber (with the context's error) until PHP finishes.
+func (e *Engine) Dispatch(ctx context.Context, ev any) ([]byte, error) {
 	release := func() {}
 	if e.slots != nil {
 		// Backpressure: wait here, in Go, for a free slot.
@@ -349,17 +356,17 @@ func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error
 	e.fibers.Store(id, f)
 	t.inflight.Add(1)
 
-	ev["id"] = id
-	if dl, ok := ctx.Deadline(); ok {
-		ev["deadline"] = float64(dl.UnixNano()) / 1e9
-	}
 	b, err := json.Marshal(ev)
+	if err == nil && (len(b) < 2 || b[len(b)-1] != '}') {
+		err = fmt.Errorf("event %T is not a JSON object", ev)
+	}
 	if err != nil {
 		t.sendMu.RUnlock()
 		e.forget(id, c, f)
 		release()
 		return nil, err
 	}
+	b = appendMeta(b, id, ctx)
 	select {
 	case t.inbox <- event{data: b, call: c}:
 		t.sendMu.RUnlock()
@@ -409,6 +416,21 @@ func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error
 			return nil, ctx.Err()
 		}
 	}
+}
+
+// appendMeta adds "id" and, when ctx has one, "deadline" to the JSON object b.
+func appendMeta(b []byte, id int64, ctx context.Context) []byte {
+	b = b[:len(b)-1]
+	if len(b) > 1 {
+		b = append(b, ',')
+	}
+	b = append(b, `"id":`...)
+	b = strconv.AppendInt(b, id, 10)
+	if dl, ok := ctx.Deadline(); ok {
+		b = append(b, `,"deadline":`...)
+		b = strconv.AppendFloat(b, float64(dl.UnixNano())/1e9, 'f', 6, 64)
+	}
+	return append(b, '}')
 }
 
 // interruptEvery is how often a request past its deadline interrupts its

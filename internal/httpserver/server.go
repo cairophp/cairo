@@ -23,7 +23,7 @@ import (
 
 // Dispatcher sends a call to PHP and returns PHP's JSON response.
 type Dispatcher interface {
-	Dispatch(ctx context.Context, ev map[string]any) ([]byte, error)
+	Dispatch(ctx context.Context, ev any) ([]byte, error)
 }
 
 // maxBody caps request bodies read into memory for PHP.
@@ -86,6 +86,26 @@ func (s *Server) Serve() error {
 // Shutdown stops accepting connections and waits for in-flight requests.
 func (s *Server) Shutdown(ctx context.Context) error { return s.srv.Shutdown(ctx) }
 
+// event is a request as PHP receives it (Cairo\Http\Request). A struct, not
+// a map: it encodes about four times faster.
+type event struct {
+	Type    string            `json:"type"`
+	Route   int               `json:"route"`
+	Method  string            `json:"method"`
+	Path    string            `json:"path"`
+	Query   string            `json:"query"`
+	Headers http.Header       `json:"headers"`
+	Params  map[string]string `json:"params"`
+	Body    string            `json:"body"`
+	Remote  string            `json:"remote"`
+	Host    string            `json:"host"`
+	Proto   string            `json:"proto"`
+	TLS     bool              `json:"tls"`
+	Values  map[string]any    `json:"values,omitempty"`
+	Form    []formField       `json:"form,omitempty"`
+	Files   []uploadedFile    `json:"files,omitempty"`
+}
+
 type phpResponse struct {
 	Status  int                 `json:"status"`
 	Headers map[string][]string `json:"headers"`
@@ -117,26 +137,24 @@ func routeHandler(r spec.Route, php Dispatcher, log *slog.Logger) http.Handler {
 			defer form.cleanup()
 			body = nil // like PHP, php://input is empty for multipart/form-data
 		}
-		ev := map[string]any{
-			"type":    "http",
-			"route":   r.ID,
-			"method":  req.Method,
-			"path":    req.URL.Path,
-			"query":   req.URL.RawQuery,
-			"headers": req.Header,
-			"params":  params,
-			"body":    base64.StdEncoding.EncodeToString(body),
-			"remote":  req.RemoteAddr,
-			"host":    req.Host,
-			"proto":   req.Proto,
-			"tls":     req.TLS != nil,
-		}
-		if v := middleware.Values(req.Context()); len(v) > 0 {
-			ev["values"] = v
+		ev := &event{
+			Type:    "http",
+			Route:   r.ID,
+			Method:  req.Method,
+			Path:    req.URL.Path,
+			Query:   req.URL.RawQuery,
+			Headers: req.Header,
+			Params:  params,
+			Body:    base64.StdEncoding.EncodeToString(body),
+			Remote:  req.RemoteAddr,
+			Host:    req.Host,
+			Proto:   req.Proto,
+			TLS:     req.TLS != nil,
+			Values:  middleware.Values(req.Context()),
 		}
 		if form != nil {
-			ev["form"] = form.fields
-			ev["files"] = form.files
+			ev.Form = form.fields
+			ev.Files = form.files
 		}
 		raw, err := php.Dispatch(req.Context(), ev)
 		if err != nil {

@@ -37,7 +37,7 @@ import (
 
 // Dispatcher sends a call to PHP and returns PHP's JSON response.
 type Dispatcher interface {
-	Dispatch(ctx context.Context, ev map[string]any) ([]byte, error)
+	Dispatch(ctx context.Context, ev any) ([]byte, error)
 }
 
 type method struct {
@@ -150,6 +150,18 @@ type phpResult struct {
 	Code    int             `json:"code"`
 }
 
+// event is a call as PHP receives it.
+type event struct {
+	Type            string          `json:"type"`
+	Service         int             `json:"service"`
+	Method          string          `json:"method"`
+	Values          map[string]any  `json:"values,omitempty"`
+	Message         json.RawMessage `json:"message,omitempty"`
+	Stream          int64           `json:"stream,omitempty"`
+	ClientStreaming bool            `json:"client_streaming,omitempty"`
+	ServerStreaming bool            `json:"server_streaming,omitempty"`
+}
+
 func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 	full, ok := grpc.MethodFromServerStream(stream)
 	if !ok {
@@ -159,13 +171,11 @@ func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 	if !ok {
 		return status.Errorf(codes.Unimplemented, "unknown method %s", full)
 	}
-	ev := map[string]any{
-		"type":    "grpc",
-		"service": m.serviceID,
-		"method":  m.name,
-	}
-	if v := middleware.Values(stream.Context()); len(v) > 0 {
-		ev["values"] = v
+	ev := &event{
+		Type:    "grpc",
+		Service: m.serviceID,
+		Method:  m.name,
+		Values:  middleware.Values(stream.Context()),
 	}
 	// A client-streaming method's messages are read by PHP through its
 	// stream; every other method starts with one request message.
@@ -178,14 +188,14 @@ func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 		if err != nil {
 			return status.Errorf(codes.Internal, "encode request: %v", err)
 		}
-		ev["message"] = json.RawMessage(reqJSON)
+		ev.Message = reqJSON
 	}
 	if m.desc.IsStreamingClient() || m.desc.IsStreamingServer() {
 		id := openStream(stream, m.desc)
 		defer closeStream(id)
-		ev["stream"] = id
-		ev["client_streaming"] = m.desc.IsStreamingClient()
-		ev["server_streaming"] = m.desc.IsStreamingServer()
+		ev.Stream = id
+		ev.ClientStreaming = m.desc.IsStreamingClient()
+		ev.ServerStreaming = m.desc.IsStreamingServer()
 	}
 
 	ctx := stream.Context()

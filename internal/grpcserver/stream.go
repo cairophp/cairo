@@ -23,9 +23,22 @@ import (
 type activeStream struct {
 	ss     grpc.ServerStream
 	desc   protoreflect.MethodDescriptor
-	sendMu sync.Mutex
 	recvMu sync.Mutex
+
+	// Replies go through out to one writer goroutine, so PHP can queue a
+	// reply without waiting for it to be written. The first send error
+	// stops the writer and is returned by the following sends.
+	startOnce sync.Once
+	closeMu   sync.RWMutex // held for reading while a reply is queued
+	closed    bool
+	out       chan *dynamicpb.Message
+	done      chan struct{}
+	sendErr   atomic.Pointer[error]
 }
+
+// sendQueue is how many replies may wait for the writer; a send beyond it
+// waits on the fiber's goroutine (StreamSend) until there is room.
+const sendQueue = 64
 
 var (
 	streams      sync.Map // int64 -> *activeStream
@@ -38,7 +51,34 @@ func openStream(ss grpc.ServerStream, desc protoreflect.MethodDescriptor) int64 
 	return id
 }
 
-func closeStream(id int64) { streams.Delete(id) }
+// closeStream waits until the queued replies are written, so they reach the
+// client before the call's status.
+func closeStream(id int64) {
+	v, ok := streams.LoadAndDelete(id)
+	if !ok {
+		return
+	}
+	st := v.(*activeStream)
+	st.closeMu.Lock()
+	st.closed = true
+	st.closeMu.Unlock()
+	if st.out != nil {
+		close(st.out)
+		<-st.done
+	}
+}
+
+func (st *activeStream) writer() {
+	defer close(st.done)
+	for m := range st.out {
+		if st.sendErr.Load() != nil {
+			continue // drain: the client is gone or the stream broke
+		}
+		if err := st.ss.SendMsg(m); err != nil {
+			st.sendErr.Store(&err)
+		}
+	}
+}
 
 // ErrStreamClosed is returned for a stream whose handler has returned.
 var ErrStreamClosed = errors.New("the stream has ended")
@@ -67,21 +107,65 @@ func StreamRecv(id int64) (msg json.RawMessage, eof bool, err error) {
 	return b, false, err
 }
 
-// StreamSend sends one reply (protojson) to the client.
+// StreamSend queues one reply (protojson), waiting for room in the queue
+// while the stream is open.
 func StreamSend(id int64, msg []byte) error {
+	st, out, err := sendable(id, msg)
+	if err != nil {
+		return err
+	}
+	defer st.closeMu.RUnlock()
+	select {
+	case st.out <- out:
+		return nil
+	case <-st.ss.Context().Done():
+		return status.FromContextError(st.ss.Context().Err()).Err()
+	}
+}
+
+// StreamTrySend queues one reply if there is room, without waiting; queued
+// is false when the queue is full and the caller should use StreamSend.
+func StreamTrySend(id int64, msg []byte) (queued bool, err error) {
+	st, out, err := sendable(id, msg)
+	if err != nil {
+		return false, err
+	}
+	defer st.closeMu.RUnlock()
+	select {
+	case st.out <- out:
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+// sendable decodes msg for stream id and returns with closeMu held for
+// reading, so the queue stays open until the caller has queued msg.
+func sendable(id int64, msg []byte) (*activeStream, *dynamicpb.Message, error) {
 	v, ok := streams.Load(id)
 	if !ok {
-		return ErrStreamClosed
+		return nil, nil, ErrStreamClosed
 	}
 	st := v.(*activeStream)
 	if !st.desc.IsStreamingServer() {
-		return errors.New("a client-streaming method replies by returning its message")
+		return nil, nil, errors.New("a client-streaming method replies by returning its message")
+	}
+	if err := st.sendErr.Load(); err != nil {
+		return nil, nil, *err
 	}
 	out := dynamicpb.NewMessage(st.desc.Output())
 	if err := protojson.Unmarshal(msg, out); err != nil {
-		return status.Errorf(codes.Internal, "invalid %s: %v", st.desc.Output().FullName(), err)
+		return nil, nil, status.Errorf(codes.Internal, "invalid %s: %v", st.desc.Output().FullName(), err)
 	}
-	st.sendMu.Lock()
-	defer st.sendMu.Unlock()
-	return st.ss.SendMsg(out)
+	st.closeMu.RLock()
+	if st.closed {
+		st.closeMu.RUnlock()
+		return nil, nil, ErrStreamClosed
+	}
+	st.startOnce.Do(func() {
+		st.out = make(chan *dynamicpb.Message, sendQueue)
+		st.done = make(chan struct{})
+		go st.writer()
+	})
+	return st, out, nil
 }

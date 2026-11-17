@@ -1260,6 +1260,12 @@ PHP_FUNCTION(cairo_guard)
 			ZVAL_NULL(return_value);
 			cairo_throw_deadline();
 		}
+		if (st->guards == 0) {
+			// The guarded handler is over; the runtime may run the next
+			// request in this same fiber, which starts unstopped.
+			st->stopped = false;
+			st->unwound = false;
+		}
 	}
 }
 

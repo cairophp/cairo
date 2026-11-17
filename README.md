@@ -181,6 +181,11 @@ public function Chat(ServerStream $stream, Cairo\Context $ctx): void
 }
 ```
 
+`send()` queues the reply for Go to write and returns without a fiber
+switch; once 64 replies are waiting, it waits for room. Queued replies reach
+the client before the call's status, and a write that failed (the client went
+away) is thrown by the next `send()`.
+
 Health checking (`grpc.health.v1`) and server reflection are built in, so
 `grpcurl -plaintext localhost:9000 list` works.
 
@@ -552,7 +557,10 @@ $db->with(fn (PDO $pdo) => $pdo->query('SELECT 1')); // borrowed for the callbac
 
 When all connections are in use, `get()` suspends the fiber until one comes
 back. Using one connection from two fibers at once throws instead of
-corrupting the protocol.
+corrupting the protocol. A connection is dropped instead of given back when
+the request was cancelled or past its deadline while holding it (a wait it was
+in may have cut a reply short), and, with `with()`, when the callback throws.
+After a connection error with `get()`, call `discard()`.
 
 ### Request state: Context values
 

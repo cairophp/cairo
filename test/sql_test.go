@@ -164,10 +164,15 @@ func TestSqlConcurrency(t *testing.T) {
 	var stats struct {
 		MaxOpen int `json:"max_open"`
 		Open    int `json:"open"`
+		Idle    int `json:"idle"`
 	}
 	_, body := do("GET", "/stats")
 	if err := json.Unmarshal([]byte(body), &stats); err != nil || stats.MaxOpen != 50 || stats.Open > 50 {
 		t.Errorf("/stats: %s", body)
+	}
+	// max_idle defaults to max_open: the connections stay for the next burst.
+	if stats.Open < 40 || stats.Idle != stats.Open {
+		t.Errorf("/stats after the burst: %s; want the connections kept idle", body)
 	}
 	t.Logf("50 Cairo\\Sql queries running pg_sleep(1), on 1 PHP thread: %s (pool: %s)", took.Round(time.Millisecond), body)
 }

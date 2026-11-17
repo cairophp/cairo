@@ -17,6 +17,8 @@
 #define _GNU_SOURCE
 #endif
 #include <dlfcn.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <sys/select.h>
 
 #include <php.h>
@@ -24,13 +26,14 @@
 
 // In the static binary (scripts/build-static.sh) libcurl is linked in, so the
 // executable cannot simply define curl's functions over the library's. There
-// the linker renames calls instead (-Wl,--wrap=curl_easy_perform and
-// -Wl,--wrap=curl_multi_wait): callers reach __wrap_curl_easy_perform here,
-// and __real_curl_easy_perform is libcurl's own.
+// the linker renames calls instead (-Wl,--wrap=curl_easy_perform,
+// curl_multi_wait and curl_easy_cleanup): callers reach
+// __wrap_curl_easy_perform here, and __real_curl_easy_perform is libcurl's own.
 #ifdef CAIRO_STATIC_CURL
 #define CAIRO_HOOK(name) __wrap_##name
 CURLcode __real_curl_easy_perform(CURL *easy);
 CURLMcode __real_curl_multi_wait(CURLM *multi, struct curl_waitfd extra[], unsigned int extra_nfds, int timeout_ms, int *numfds);
+void __real_curl_easy_cleanup(CURL *easy);
 #else
 #define CAIRO_HOOK(name) name
 #endif
@@ -67,6 +70,81 @@ static CURLMcode real_multi_wait(CURLM *multi, struct curl_waitfd extra[], unsig
 		}
 	}
 	return real(multi, extra, extra_nfds, timeout_ms, numfds);
+}
+
+typedef void (*easy_cleanup_fn)(CURL *);
+
+static void real_easy_cleanup(CURL *easy)
+{
+#ifdef CAIRO_STATIC_CURL
+	__real_curl_easy_cleanup(easy);
+	return;
+#endif
+	static easy_cleanup_fn real = NULL;
+	if (real == NULL) {
+		real = (easy_cleanup_fn)dlsym(RTLD_NEXT, "curl_easy_cleanup");
+		if (real == NULL) {
+			return;
+		}
+	}
+	real(easy);
+}
+
+// A hooked transfer runs on a multi handle, and a multi handle keeps the
+// connections its transfers opened. Each easy handle keeps its own multi
+// handle, so the next curl_exec() on it reuses the kept-alive connection,
+// as curl_easy_perform() would. It lives until curl_easy_cleanup(). PHP
+// objects never cross threads, so the table is per thread.
+#define CAIRO_MULTI_BUCKETS 256
+
+struct easy_multi {
+	CURL *easy;
+	CURLM *multi;
+	struct easy_multi *next;
+};
+
+static __thread struct easy_multi *easy_multis[CAIRO_MULTI_BUCKETS];
+
+static struct easy_multi **easy_multi_slot(CURL *easy)
+{
+	struct easy_multi **p = &easy_multis[((uintptr_t)easy >> 4) % CAIRO_MULTI_BUCKETS];
+	while (*p != NULL && (*p)->easy != easy) {
+		p = &(*p)->next;
+	}
+	return p;
+}
+
+static CURLM *easy_multi_get(CURL *easy)
+{
+	struct easy_multi **p = easy_multi_slot(easy);
+	if (*p != NULL) {
+		return (*p)->multi;
+	}
+	struct easy_multi *m = malloc(sizeof(*m));
+	if (m == NULL) {
+		return NULL;
+	}
+	m->multi = curl_multi_init();
+	if (m->multi == NULL) {
+		free(m);
+		return NULL;
+	}
+	m->easy = easy;
+	m->next = NULL;
+	*p = m;
+	return m->multi;
+}
+
+void CAIRO_HOOK(curl_easy_cleanup)(CURL *easy)
+{
+	struct easy_multi **p = easy_multi_slot(easy);
+	if (*p != NULL) {
+		struct easy_multi *m = *p;
+		*p = m->next;
+		curl_multi_cleanup(m->multi);
+		free(m);
+	}
+	real_easy_cleanup(easy);
 }
 
 // Waits until one of curl's sockets is ready or the timeout passes.
@@ -118,12 +196,8 @@ CURLcode CAIRO_HOOK(curl_easy_perform)(CURL *easy)
 	if (EG(active_fiber) == NULL) {
 		return real_easy_perform(easy);
 	}
-	CURLM *multi = curl_multi_init();
-	if (multi == NULL) {
-		return real_easy_perform(easy);
-	}
-	if (curl_multi_add_handle(multi, easy) != CURLM_OK) {
-		curl_multi_cleanup(multi);
+	CURLM *multi = easy_multi_get(easy);
+	if (multi == NULL || curl_multi_add_handle(multi, easy) != CURLM_OK) {
 		return real_easy_perform(easy);
 	}
 
@@ -169,7 +243,6 @@ CURLcode CAIRO_HOOK(curl_easy_perform)(CURL *easy)
 		}
 	}
 	curl_multi_remove_handle(multi, easy);
-	curl_multi_cleanup(multi);
 	return result;
 }
 

@@ -56,36 +56,37 @@ server is pinned to two physical cores (CPUs 0,1,4,5), wrk/ghz to CPUs 2,3,6
 and the upstream to CPU 7; the databases are not pinned. Each case runs 3 s
 of warm-up, then 3 runs of 10 s; tables show the median.
 
-## Results (2026-11-17, Cairo after the performance fixes)
+## Results (2026-11-17, Cairo with the perf-fixes branch)
 
 Requests per second, median of 3 runs, p99 latency in brackets. Cairo before
 the fixes (v0.1.0, other servers on 16 workers) is in `results-v0.1.0/`.
 
 | Case | Go net/http | Cairo | nginx + PHP-FPM | FrankenPHP | RoadRunner | Swoole |
 |---|---:|---:|---:|---:|---:|---:|
-| hello | 99,085 (3.1 ms) | 36,314 (8.2 ms) | 13,798 (18.6 ms) | 18,144 (9.6 ms) | 13,604 (14.0 ms) | 121,563 (1.3 ms) |
-| json | – | 35,120 (8.0 ms) | 11,248 (16.8 ms) | 16,897 (10.3 ms) | 13,443 (14.2 ms) | 119,565 (1.3 ms) |
-| cpu | – | 3,901 (23.0 ms) | 3,146 (43.2 ms) | 3,174 (37.0 ms) | 3,808 (32.4 ms) | 3,801 (40.1 ms) |
-| sleep | – | 11,023 (45.3 ms) | 1,921 (140.1 ms) | 1,967 (139.3 ms) | 1,901 (142.5 ms) | 11,981 (23.6 ms) |
-| curl | – | 11,430 (38.5 ms) | 1,781 (160.9 ms) | 1,834 (151.9 ms) | 1,773 (156.0 ms) | 9,113 (49.8 ms) |
-| client | – | 10,631 (40.3 ms) | – | – | – | – |
-| pgsql | – | 11,682 (13.2 ms) | 6,357 (16.9 ms) | 7,622 (19.0 ms) | 6,367 (20.2 ms) | 9,246 (21.4 ms) |
-| pgsql-slow | – | 3,567 (162.5 ms) | 3,643 (106.1 ms) | 3,750 (79.8 ms) | 3,528 (108.7 ms) | 3,607 (114.0 ms) |
-| sql-pgsql | – | 13,875 (12.9 ms) | – | – | – | – |
-| mysql | – | 12,881 (11.7 ms) | 7,901 (14.2 ms) | 9,610 (16.0 ms) | 9,014 (16.2 ms) | 24,803 (5.7 ms) |
-| mysql-slow | – | 3,679 (81.5 ms) | 3,632 (103.0 ms) | 3,764 (92.1 ms) | 3,522 (93.8 ms) | 3,734 (92.2 ms) |
-| sql-mysql | – | 9,459 (15.8 ms) | – | – | – | – |
-| grpc-unary | – | 15,075 (9.7 ms) | – | – | 15,430 (9.8 ms) | – |
-| grpc-stream-100 | – | 820 streams (163.2 ms) | – | – | – | – |
-| grpc-slow-20ms | – | 2,745 (31.8 ms) | – | – | – | – |
+| hello | 99,085 (3.1 ms) | 42,322 (7.4 ms) | 13,798 (18.6 ms) | 18,144 (9.6 ms) | 13,604 (14.0 ms) | 121,563 (1.3 ms) |
+| json | – | 40,633 (6.8 ms) | 11,248 (16.8 ms) | 16,897 (10.3 ms) | 13,443 (14.2 ms) | 119,565 (1.3 ms) |
+| cpu | – | 3,895 (22.8 ms) | 3,146 (43.2 ms) | 3,174 (37.0 ms) | 3,808 (32.4 ms) | 3,801 (40.1 ms) |
+| sleep | – | 11,227 (39.0 ms) | 1,921 (140.1 ms) | 1,967 (139.3 ms) | 1,901 (142.5 ms) | 11,981 (23.6 ms) |
+| curl | – | 11,612 (31.4 ms) | 1,781 (160.9 ms) | 1,834 (151.9 ms) | 1,773 (156.0 ms) | 9,113 (49.8 ms) |
+| client | – | 11,351 (33.2 ms) | – | – | – | – |
+| pgsql | – | 12,377 (11.3 ms) | 6,357 (16.9 ms) | 7,622 (19.0 ms) | 6,367 (20.2 ms) | 9,246 (21.4 ms) |
+| pgsql-slow | – | 3,620 (168.9 ms) | 3,643 (106.1 ms) | 3,750 (79.8 ms) | 3,528 (108.7 ms) | 3,607 (114.0 ms) |
+| sql-pgsql | – | 15,374 (10.4 ms) | – | – | – | – |
+| mysql | – | 13,461 (10.7 ms) | 7,901 (14.2 ms) | 9,610 (16.0 ms) | 9,014 (16.2 ms) | 24,803 (5.7 ms) |
+| mysql-slow | – | 3,666 (89.4 ms) | 3,632 (103.0 ms) | 3,764 (92.1 ms) | 3,522 (93.8 ms) | 3,734 (92.2 ms) |
+| sql-mysql | – | 15,425 (9.6 ms) | – | – | – | – |
+| grpc-unary | – | 15,926 (9.1 ms) | – | – | 15,430 (9.8 ms) | – |
+| grpc-stream-100 | – | 886 streams (144.4 ms) | – | – | – | – |
+| grpc-slow-20ms | – | 2,778 (29.8 ms) | – | – | – | – |
 
-Resident memory after the sleep case (MiB): Cairo 76, FPM + nginx 50,
+Resident memory after the sleep case (MiB): Cairo 100, FPM + nginx 50,
 FrankenPHP 96, RoadRunner 975, Swoole 26.
 
-Cairo before and after the fixes, same machine: hello 19,481 → 36,314, json
-19,231 → 35,120, curl 5,973 → 11,430, PostgreSQL point query 8,089 → 11,682,
-MySQL point query 7,131 → 12,881, `Cairo\Sql` PostgreSQL 9,023 → 13,875,
-gRPC unary 12,979 → 15,075, gRPC streaming 444 → 820 streams/s.
+Cairo before and after the fixes, same machine: hello 19,481 → 42,322, json
+19,231 → 40,633, curl 5,973 → 11,612, PostgreSQL point query 8,089 → 12,377,
+MySQL point query 7,131 → 13,461, `Cairo\Sql` PostgreSQL 9,023 → 15,374 and
+MySQL 6,854 → 15,425, gRPC unary 12,979 → 15,926, gRPC streaming 444 → 886
+streams/s.
 
 ## Reading the numbers
 
@@ -96,10 +97,10 @@ gRPC unary 12,979 → 15,075, gRPC streaming 444 → 820 streams/s.
 - The slow-query cases measure the connection budget, not the server: 40
   connections at 10 ms allow at most 4,000 req/s, and every server reaches
   about 3,600.
-- Swoole is about 3x Cairo on hello and json, and ahead of plain Go: its HTTP
+- Swoole is about 2.9x Cairo on hello and json, and ahead of plain Go: its HTTP
   server is C inside the PHP process. Cairo pays for Go's net/http (Go alone
   does 99k here) plus the handoff to a PHP thread.
-- Swoole is 2x Cairo on the MySQL point query: its mysqlnd hooks run in C in
+- Swoole is 1.8x Cairo on the MySQL point query: its mysqlnd hooks run in C in
   its reactor, while each Cairo socket wait is a round trip through Go.
 - CPU-bound work is the same everywhere: it is PHP's speed on two cores.
 

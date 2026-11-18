@@ -3750,8 +3750,9 @@ namespace Cairo\Internal {
         // Cairo\Revolt\Driver implements Revolt's interface, so it can only be
         // declared once revolt/event-loop is loadable: on first use.
         spl_autoload_register(static function (string $class): void {
-            if ($class === 'Cairo\\Cache' || $class === 'Cairo\\Pool') {
-                require_once __DIR__ . '/' . strtolower(substr($class, 6)) . '.php';
+            $file = ['Cairo\\Cache' => 'cache.php', 'Cairo\\Pool' => 'pool.php', 'Cairo\\PoolTimeout' => 'pool.php'][$class] ?? null;
+            if ($file !== null) {
+                require_once __DIR__ . '/' . $file;
                 return;
             }
             if (str_starts_with($class, 'Cairo\\Revolt\\')) {

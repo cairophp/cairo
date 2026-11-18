@@ -116,9 +116,17 @@ func pgDo(ctx context.Context, req pgRequest) map[string]any {
 	if pc.conn.IsClosed() {
 		return pgFail("08006", "server closed the connection")
 	}
+	resp := pgDoOn(ctx, pc, req)
+	// The driver keeps this for PDO::inTransaction().
+	resp["tx"] = string(rune(pc.conn.TxStatus()))
+	return resp
+}
+
+// pgDoOn runs a request on its connection, which the caller has locked.
+func pgDoOn(ctx context.Context, pc *pgConn, req pgRequest) map[string]any {
 	switch req.Kind {
 	case "status":
-		return map[string]any{"ok": true, "tx": string(rune(pc.conn.TxStatus())), "server_version": pc.conn.ParameterStatus("server_version"), "pid": pc.conn.PID()}
+		return map[string]any{"ok": true, "server_version": pc.conn.ParameterStatus("server_version"), "pid": pc.conn.PID()}
 	case "notify":
 		return pgNotify(ctx, pc, req.WaitMS)
 	case "copy_in":

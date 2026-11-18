@@ -7,6 +7,25 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+### Added
+
+- `Cairo\Pool` options: `acquireTimeout` (a `Cairo\PoolTimeout` when no
+  connection becomes free in time, and a waiting request leaves the queue
+  the moment it is cancelled), `maxLifetime` and `maxIdleTime` (retire old
+  connections), and `reset` (run on every connection before it is reused).
+
+### Changed
+
+- `Cairo\Pool` rolls back a PDO transaction a request left open before the
+  next request gets the connection, and drops a connection whose reset fails.
+- A request past its deadline no longer receives a pooled connection it was
+  waiting for.
+
+### Performance
+
+- `PDO::inTransaction()` on PostgreSQL no longer calls into Go: every reply
+  carries the transaction status.
+
 ## [0.2.0] - 2026-11-18
 
 A response cache in Go, and the stubs as their own Composer package.

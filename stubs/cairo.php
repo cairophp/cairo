@@ -1691,6 +1691,11 @@ namespace Cairo {
 }
 
 namespace Cairo {
+    /** Cairo\Pool had no free connection within its acquireTimeout. */
+    final class PoolTimeout extends \RuntimeException
+    {
+    }
+
     /**
      * A per-thread pool of connections (PDO, Redis clients, sockets), so each
      * fiber gets its own connection: a connection must never be used by two
@@ -1702,11 +1707,29 @@ namespace Cairo {
      *
      * Build pools in server.php: every PHP thread runs it, so every thread
      * gets its own pool. When all connections are in use, get() suspends the
-     * fiber until one is returned.
+     * fiber until one is returned. A request past its deadline is skipped
+     * when a connection comes back (a Cairo\Context\ContextException). With
+     * $acquireTimeout the wait also ends after that many seconds (a
+     * PoolTimeout) and the moment the request is cancelled; that wait goes
+     * through Go, which costs a little on a pool that is always full.
+     *
+     * A connection is reset before the next fiber gets it: by default a PDO
+     * transaction left open is rolled back; pass $reset to do more, such as
+     * `fn (PDO $pdo) => $pdo->exec('DISCARD ALL')`. A connection whose reset
+     * throws is dropped. $maxLifetime and $maxIdleTime (seconds, 0: no limit)
+     * retire connections before the server or a firewall cuts them.
      */
     final class Pool
     {
-        public function __construct(callable $factory, private readonly int $max = 16)
+        /** @param (callable(mixed): void)|null $reset */
+        public function __construct(
+            callable $factory,
+            private readonly int $max = 16,
+            private readonly ?float $acquireTimeout = null,
+            private readonly float $maxLifetime = 0,
+            private readonly float $maxIdleTime = 0,
+            ?callable $reset = null,
+        )
         {
         }
 

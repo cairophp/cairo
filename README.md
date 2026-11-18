@@ -143,6 +143,7 @@ examples/frameworks/  PSR-15 handlers and Symfony-style kernels (composer instal
 examples/supervise/   thread restart after a fatal error, maxRequests and maxMemory
 examples/blocking/    detectBlocking: logs requests that hold their PHP thread
 examples/cache/       response cache: ->cache() and Cache::purge()
+examples/pool/        Cairo\Pool: wait timeout, reset, lifetimes
 
 examples/revolt/      Amp and Revolt on Cairo's scheduler (Composer project)
 examples/sql/         Cairo\Sql: PostgreSQL (server.php) and MySQL (mysql.php) through Go's database/sql

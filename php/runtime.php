@@ -2981,6 +2981,9 @@ namespace Cairo\Internal {
         private const IDLE_FIBERS = 64;
         /** @var list<\Fiber> */
         private array $idle = [];
+        /** A task failed or a request ended early since the last collectAfterFailure(). */
+        private bool $failed = false;
+        private float $lastCollect = 0.0;
         private bool $retireAsked = false;
         private bool $retiring = false;
 
@@ -3014,6 +3017,7 @@ namespace Cairo\Internal {
             $fiber = new \Fiber(function (\Closure $job): void {
                 do {
                     $job();
+                    unset($job);   // an idle fiber must not keep the last job's captures alive
                     if (count($this->idle) >= self::IDLE_FIBERS) {
                         return;
                     }
@@ -3204,9 +3208,40 @@ namespace Cairo\Internal {
                     $context->finish();
                     $this->active--;
                     $this->served++;
+                    if ($context->err() !== null) {
+                        $this->failed = true;
+                    }
+                    $this->collectAfterFailure();
                     $this->checkRecycle();
                 }
             }, $context);
+        }
+
+        /** @internal An async() task threw. */
+        public function taskFailed(): void
+        {
+            $this->failed = true;
+        }
+
+        /**
+         * A failed task's exception trace, or a cancelled request's half-done
+         * objects, often sit in a reference cycle holding curl handles and their
+         * descriptors. PHP frees cycles only after 10,000 possible roots, so
+         * collect them now, at most once a second so a burst of failures does
+         * not collect for each one.
+         */
+        private function collectAfterFailure(): void
+        {
+            if (!$this->failed) {
+                return;
+            }
+            $now = hrtime(true) / 1e9;
+            if ($now - $this->lastCollect < 1.0) {
+                return;
+            }
+            $this->failed = false;
+            $this->lastCollect = $now;
+            gc_collect_cycles();
         }
 
         private function resolve(int $id): mixed
@@ -3775,6 +3810,7 @@ namespace Cairo\Internal {
                 $task->result = \cairo_guard($fn);
             } catch (\Throwable $e) {
                 $task->error = $e;
+                Scheduler::instance()->taskFailed();
             } finally {
                 $context->finish();
                 \cairo_fiber_close($goroutine);

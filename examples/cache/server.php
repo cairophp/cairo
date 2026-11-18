@@ -3,10 +3,12 @@
 // Response cache: ->cache() lets Go answer repeated GET requests to a route
 // without running PHP. Identical requests that arrive together make one PHP
 // call, and a stale response is served while one request rebuilds it.
+// Cache::purge() drops the responses of tagged routes when their data changes.
 
 declare(strict_types=1);
 
 use Cairo\App;
+use Cairo\Cache;
 use Cairo\Http\{Request, Response};
 
 use function Cairo\sleep;
@@ -40,6 +42,16 @@ $http->get('/session', function (): Response {
     ++Calls::$n;
     return new Response(200, ['set-cookie' => 'sid=' . bin2hex(random_bytes(8))], 'new session');
 })->cache(ttl: 60);
+
+// Tagged: fresh for a minute, unless the POST below purges it first.
+$http->get('/stock', function (): Response {
+    return Response::json(['build' => ++Calls::$n]);
+})->cache(ttl: 60, tags: ['stock']);
+
+$http->post('/stock', function (): Response {
+    Cache::purge('stock');
+    return Response::text('purged');
+});
 
 $http->get('/calls', fn (): Response => Response::text((string) Calls::$n));
 

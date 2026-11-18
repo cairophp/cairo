@@ -1354,7 +1354,7 @@ namespace Cairo\Http {
 
     final class Server
     {
-        /** @var list<array{id:int,method:string,path:string,cache?:array{ttl:float,stale_while_revalidate:float,vary:list<string>}}> */
+        /** @var list<array{id:int,method:string,path:string,cache?:array{ttl:float,stale_while_revalidate:float,vary:list<string>,tags:list<string>}}> */
         private array $routes = [];
         /** @var list<array{prefix:string,dir:string}> */
         private array $static = [];
@@ -1419,9 +1419,13 @@ namespace Cairo\Http {
          * with Authorization or Cookie skips the cache unless $vary names
          * that header.
          *
+         * $tags name the route's responses for Cairo\Cache::purge(), which
+         * drops them when the data behind them changes.
+         *
          * @param list<string> $vary request headers that change the response
+         * @param list<string> $tags names to purge the route's responses by
          */
-        public function cache(float $ttl, float $staleWhileRevalidate = 0, array $vary = []): static
+        public function cache(float $ttl, float $staleWhileRevalidate = 0, array $vary = [], array $tags = []): static
         {
             $last = array_key_last($this->routes);
             if ($last === null) {
@@ -1431,6 +1435,7 @@ namespace Cairo\Http {
                 'ttl' => $ttl,
                 'stale_while_revalidate' => $staleWhileRevalidate,
                 'vary' => array_values($vary),
+                'tags' => array_values($tags),
             ];
             return $this;
         }
@@ -3913,6 +3918,10 @@ namespace Cairo\Internal {
         // Cairo\Revolt\Driver implements Revolt's interface, so it can only be
         // declared once revolt/event-loop is loadable: on first use.
         spl_autoload_register(static function (string $class): void {
+            if ($class === 'Cairo\\Cache') {
+                require_once __DIR__ . '/cache.php';
+                return;
+            }
             if (str_starts_with($class, 'Cairo\\Revolt\\')) {
                 if (!interface_exists(\Revolt\EventLoop\Driver::class)) {
                     throw new \LogicException("$class needs revolt/event-loop: composer require revolt/event-loop, and load vendor/autoload.php first");

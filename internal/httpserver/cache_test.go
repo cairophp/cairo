@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cairophp/cairo/internal/cachetag"
 	"github.com/cairophp/cairo/internal/spec"
 	"github.com/cairophp/cairo/internal/wire"
 )
@@ -167,16 +168,76 @@ func TestCacheEvictsPastItsSize(t *testing.T) {
 	p := &cachePolicy{ttl: time.Minute}
 	for i := range 100 {
 		c.mu.Lock()
-		c.store(strconv.Itoa(i), &response{status: 200, body: make([]byte, 100)}, p)
+		c.store(strconv.Itoa(i), &response{status: 200, body: make([]byte, 100)}, p, 0)
 		c.mu.Unlock()
 	}
 	if c.bytes > c.maxBytes || len(c.entries) != c.lru.Len() || len(c.entries) == 0 {
 		t.Fatalf("bytes %d of %d, %d entries, %d in LRU", c.bytes, c.maxBytes, len(c.entries), c.lru.Len())
 	}
-	if resp, _ := c.lookup("99"); resp == nil {
+	if resp, _ := c.lookup("99", p, true); resp == nil {
 		t.Fatal("the newest entry was evicted")
 	}
-	if resp, _ := c.lookup("0"); resp != nil {
+	if resp, _ := c.lookup("0", p, true); resp != nil {
 		t.Fatal("the oldest entry survived")
+	}
+}
+
+// A purge drops the tagged routes' entries, and only theirs.
+func TestCachePurgeByTag(t *testing.T) {
+	php := &fakePHP{}
+	products := cachedRoute(t, php, spec.RouteCache{TTL: 60, StaleWhileRevalidate: 60, Tags: []string{"t-products", "t-shop"}})
+	users := cachedRoute(t, php, spec.RouteCache{TTL: 60, Tags: []string{"t-users"}})
+	products(get("/"))
+	users(get("/"))
+	cachetag.Purge("t-products")
+	if got := products(get("/")); got != "3" {
+		t.Fatalf("purged route got %q, want a new answer (3)", got)
+	}
+	if got := users(get("/")); got != "2" {
+		t.Fatalf("route with another tag got %q, want its cached answer (2)", got)
+	}
+	if got := products(get("/")); got != "3" {
+		t.Fatalf("after the purge got %q, want the new answer cached (3)", got)
+	}
+}
+
+// An answer PHP started building before a purge is neither stored nor handed
+// to requests that arrive after the purge.
+func TestCachePurgeDuringCall(t *testing.T) {
+	php := &fakePHP{delay: 150 * time.Millisecond}
+	do := cachedRoute(t, php, spec.RouteCache{TTL: 60, Tags: []string{"t-during"}})
+	first := make(chan string)
+	go func() { first <- do(get("/")) }()
+	for php.calls.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	cachetag.Purge("t-during")
+	if got := do(get("/")); got != "2" {
+		t.Fatalf("request after the purge got %q, want its own answer (2)", got)
+	}
+	if got := <-first; got != "1" {
+		t.Fatalf("request before the purge got %q, want 1", got)
+	}
+	if got := do(get("/")); got != "2" {
+		t.Fatalf("got %q: the answer from before the purge was stored", got)
+	}
+}
+
+// HEAD reads what GET stored and never fills the cache itself.
+func TestCacheHead(t *testing.T) {
+	php := &fakePHP{}
+	do := cachedRoute(t, php, spec.RouteCache{TTL: 60})
+	head := func() { do(httptest.NewRequest("HEAD", "/", nil)) }
+	head()
+	head()
+	if n := php.calls.Load(); n != 2 {
+		t.Fatalf("PHP ran %d times for two HEAD misses, want 2", n)
+	}
+	if got := do(get("/")); got != "3" {
+		t.Fatalf("GET after HEAD got %q, want PHP to run: HEAD must not fill the cache", got)
+	}
+	head()
+	if n := php.calls.Load(); n != 3 {
+		t.Fatalf("PHP ran %d times, want 3: HEAD after GET is a cache hit", n)
 	}
 }

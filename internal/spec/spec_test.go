@@ -12,6 +12,10 @@ func TestValidate(t *testing.T) {
 		"same listen":             {`{"http":[{"listen":":8080"},{"listen":":8080"}]}`, false},
 		"duplicate route":         {`{"http":[{"listen":":8080","routes":[{"id":0,"method":"GET","path":"/a"},{"id":1,"method":"get","path":"/a"}]}]}`, false},
 		"relative path":           {`{"http":[{"listen":":8080","routes":[{"id":0,"method":"GET","path":"a"}]}]}`, false},
+		"cached route":            {`{"http":[{"listen":":8080","routes":[{"id":0,"method":"GET","path":"/a","cache":{"ttl":5,"vary":["Accept-Language"],"tags":["products"]}}]}]}`, true},
+		"cache without ttl":       {`{"http":[{"listen":":8080","routes":[{"id":0,"method":"GET","path":"/a","cache":{"ttl":0}}]}]}`, false},
+		"cache vary not a header": {`{"http":[{"listen":":8080","routes":[{"id":0,"method":"GET","path":"/a","cache":{"ttl":5,"vary":["a b"]}}]}]}`, false},
+		"empty cache tag":         {`{"http":[{"listen":":8080","routes":[{"id":0,"method":"GET","path":"/a","cache":{"ttl":5,"tags":[""]}}]}]}`, false},
 		"services without protos": {`{"grpc":[{"listen":":9000","services":[{"id":0,"name":"x.Y"}]}]}`, false},
 	}
 	for name, c := range cases {

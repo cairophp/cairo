@@ -14,3 +14,8 @@ var Runtime []byte
 //
 //go:embed revolt.php
 var Revolt []byte
+
+// Cache is php/cache.php: Cairo\Cache, loaded on first use.
+//
+//go:embed cache.php
+var Cache []byte

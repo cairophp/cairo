@@ -695,9 +695,11 @@ func writeRuntime() (string, error) {
 	if err := os.WriteFile(f, php.Runtime, 0o600); err != nil {
 		return "", err
 	}
-	// Next to it: loaded by runtime.php's autoloader for Cairo\Revolt\*.
-	if err := os.WriteFile(filepath.Join(dir, "revolt.php"), php.Revolt, 0o600); err != nil {
-		return "", err
+	// Next to it: loaded by runtime.php's autoloader on first use.
+	for name, code := range map[string][]byte{"revolt.php": php.Revolt, "cache.php": php.Cache} {
+		if err := os.WriteFile(filepath.Join(dir, name), code, 0o600); err != nil {
+			return "", err
+		}
 	}
 	return f, nil
 }

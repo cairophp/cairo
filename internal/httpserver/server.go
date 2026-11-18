@@ -172,7 +172,17 @@ func routeHandler(r spec.Route, php Dispatcher, cache *responseCache, log *slog.
 			return
 		}
 		defer cleanup()
-		if key, ok := policy.key(req); ok && ev.form == nil {
+		key, ok := policy.key(req)
+		if ok && req.Method == http.MethodHead {
+			// PHP may answer HEAD without a body, so HEAD only reads what a
+			// GET stored and never fills the cache.
+			if resp, _ := cache.lookup(key, policy, false); resp != nil {
+				resp.write(w)
+				return
+			}
+			ok = false
+		}
+		if ok && ev.form == nil {
 			resp, err := cache.serve(req, key, policy, func(ctx context.Context) (*response, error) {
 				r, err := callPHP(ctx, php, ev)
 				return &r, err

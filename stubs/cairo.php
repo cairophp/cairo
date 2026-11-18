@@ -750,9 +750,13 @@ namespace Cairo\Http {
          * with Authorization or Cookie skips the cache unless $vary names
          * that header.
          *
+         * $tags name the route's responses for Cairo\Cache::purge(), which
+         * drops them when the data behind them changes.
+         *
          * @param list<string> $vary request headers that change the response
+         * @param list<string> $tags names to purge the route's responses by
          */
-        public function cache(float $ttl, float $staleWhileRevalidate = 0, array $vary = []): static
+        public function cache(float $ttl, float $staleWhileRevalidate = 0, array $vary = [], array $tags = []): static
         {
         }
 
@@ -1710,6 +1714,31 @@ namespace Cairo\Sql {
 
         /** @internal commit (true) or roll back */
         public function end(bool $commit): void
+        {
+        }
+    }
+}
+
+namespace Cairo {
+    final class Cache
+    {
+        /**
+         * Drop the cached responses of every route whose ->cache() names one
+         * of $tags, on all servers of this process. Call it when the data
+         * behind those routes changes:
+         *
+         *     $http->get('/products', $list)->cache(ttl: 60, tags: ['products']);
+         *     $http->post('/products', function (Request $r) use ($db): Response {
+         *         $db->exec('INSERT ...');
+         *         Cache::purge('products');
+         *         return Response::json(['ok' => true], 201);
+         *     });
+         *
+         * The next request for a purged route runs PHP again; a response PHP
+         * was already building when the purge came is not stored. A tag no
+         * route declares is ignored.
+         */
+        public static function purge(string ...$tags): void
         {
         }
     }

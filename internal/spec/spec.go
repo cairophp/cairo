@@ -52,6 +52,8 @@ type RouteCache struct {
 	TTL                  float64  `json:"ttl"`
 	StaleWhileRevalidate float64  `json:"stale_while_revalidate"`
 	Vary                 []string `json:"vary"`
+	// Tags name the route's responses for Cairo\Cache::purge().
+	Tags []string `json:"tags"`
 }
 
 // StaticPath is served by Go directly, with no PHP involved.
@@ -144,6 +146,9 @@ func (s *Spec) Validate() error {
 	return nil
 }
 
+// maxCacheTag is the longest tag name, in bytes.
+const maxCacheTag = 128
+
 func (c *RouteCache) validate() error {
 	if c == nil {
 		return nil
@@ -154,6 +159,11 @@ func (c *RouteCache) validate() error {
 	for _, h := range c.Vary {
 		if !validHeaderName(h) {
 			return fmt.Errorf("cache vary: %q is not a header name", h)
+		}
+	}
+	for _, t := range c.Tags {
+		if t == "" || len(t) > maxCacheTag {
+			return fmt.Errorf("cache tags: a tag must have 1 to %d bytes", maxCacheTag)
 		}
 	}
 	return nil

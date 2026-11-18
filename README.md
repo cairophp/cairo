@@ -846,6 +846,10 @@ licenses.
 people and coding agents alike. Changes go through pull requests against
 `main`; add a line to `CHANGELOG.md` under Unreleased.
 
+Benchmarks against PHP-FPM, FrankenPHP, RoadRunner and Swoole, and the log of
+every performance change with its measured effect, are in
+[cairophp/benchmarks](https://github.com/cairophp/benchmarks).
+
 ## Layout
 
 ```

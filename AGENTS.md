@@ -214,7 +214,11 @@ Cairo is a server: per-request code runs millions of times.
   JSON one way and an event the other; batch work into one op instead of calling per item in a loop.
 - **Measure before optimising.** Claim a speed-up only with numbers
   (`go test -bench`, the 50-requests-on-one-thread tests, or wrk), and put
-  them in the PR.
+  them in the PR. The benchmark suite against other PHP servers and the log
+  of every performance change live in
+  [cairophp/benchmarks](https://github.com/cairophp/benchmarks): run it from
+  a checkout next to this one, and record the change there in
+  `IMPROVEMENTS.md`.
 
 ### Security
 

@@ -25,6 +25,9 @@ change the PHP API; patch versions do not.
 - Hooked `curl_exec()` keeps its connections alive between calls on one
   handle (each call used to open a new one): about 2x the requests per second.
 - gRPC `ServerStream::send()` queues the reply without a fiber switch.
+- Hooked socket waits (PDO MySQL, streams, curl) reach Go without JSON, and
+  the poller keeps a socket in epoll between waits: about 9% more MySQL
+  queries per second.
 - `Cairo\Sql` on MySQL interpolates parameters by default
   (`interpolateParams=true`): one round trip per query instead of three,
   about 35% more queries per second.

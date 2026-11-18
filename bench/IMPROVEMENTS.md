@@ -401,6 +401,44 @@ At 4 connections p50 went from 52.9 to 50.5 ms (sequential) and from 26.2 to
 these cases run many fibers per thread and keep their curl handles), PDO
 PostgreSQL +7.8 % (not touched by either change; noise).
 
+## 7. Response cache in Go (`->cache()`)
+
+Roadmap idea 2: a route that opts in with `->cache(ttl, staleWhileRevalidate,
+vary)` is answered by Go from a bounded in-memory LRU (64 MiB per server, 1
+MiB per response), identical requests in flight wait for one PHP call, and a
+stale entry is served while one background request rebuilds it. Only GET and
+200 responses without `Set-Cookie` or private `Cache-Control` are stored; a
+request with `Authorization` or `Cookie` skips it unless the route varies on
+that header.
+
+**Options.** (1) Our own map + `container/list` LRU with a flight per key,
+chosen. (2) `golang.org/x/sync/singleflight` for merging: it hands the
+leader's answer to every waiter, including an answer that may not be shared
+(`Set-Cookie`), so waiters would need a second check anyway; 30 lines of our
+own are simpler. (3) A sharded cache: not needed, a hit holds the lock for a
+map lookup and a list move, and the cached cases below run at 80-96k req/s.
+
+**Effect on uncached routes.** The route handler was split into
+`newEvent`, `callPHP` and `write`; `callPHP` returns its response by value so
+the uncached path allocates what it did before (13 allocations,
+`BenchmarkUncachedRoute`). `bench/ab.sh`, 5 rounds in each order, the build
+before against this one: hello -0.1 % and +2.1 %, json +1.1 % and +4.9 %
+(noise). An earlier draft that allocated the response and a closure per
+request measured -6.5 to -8.9 % on hello and was changed.
+
+**Effect on cached routes.** `bench/run.sh cairo`, 3 runs of 10 s:
+
+| Case | Without cache | With `->cache()` | Change |
+|---|---:|---:|---:|
+| cpu (`fib(20)`, 64 connections) | 3,510 (p99 25.9 ms) | 82,560 (p99 9.0 ms) | 23x |
+| PDO MySQL 10 ms query (256 connections, ttl 1 s, stale 10 s) | 3,716 (p99 83.6 ms) | 79,229 (p99 22.2 ms) | 21x |
+| hello, uncached, same run | 46,428 | | |
+
+A hit costs Go's HTTP server and a map lookup, so cached routes run above
+uncached hello (no PHP at all) and below plain Go net/http (99k on hello).
+In the MySQL case one background request rebuilds the entry about once a
+second (the TTL); every other request gets the cached or stale copy.
+
 ## Tried and not kept
 
 | Change | Result | Branch |

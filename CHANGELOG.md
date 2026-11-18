@@ -7,6 +7,14 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+### Added
+
+- `->cache(ttl, staleWhileRevalidate, vary)` on an HTTP route: Go answers
+  repeated GET requests from memory, merges identical requests that arrive
+  together into one PHP call, and serves a stale response while one request
+  rebuilds it. Responses with `Set-Cookie` or private `Cache-Control`, and
+  requests with `Authorization` or `Cookie`, are not cached by default.
+
 ### Changed
 
 - The stubs' Composer package is now `cairophp/stubs`, a mirror of `stubs/`

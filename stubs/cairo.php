@@ -736,6 +736,27 @@ namespace Cairo\Http {
         }
 
         /**
+         * Let Go answer repeated GET requests to the route declared just
+         * before this call, without running PHP.
+         *
+         * A response stays fresh for $ttl seconds. After that, for
+         * $staleWhileRevalidate more seconds, Go keeps serving it and rebuilds
+         * it with one request in the background. Identical requests that
+         * arrive while PHP builds a response wait for that one.
+         *
+         * The key is the route, host, path, raw query string and the $vary
+         * request headers. Only 200 responses are stored, and never one with
+         * Set-Cookie or Cache-Control private, no-store or no-cache. A request
+         * with Authorization or Cookie skips the cache unless $vary names
+         * that header.
+         *
+         * @param list<string> $vary request headers that change the response
+         */
+        public function cache(float $ttl, float $staleWhileRevalidate = 0, array $vary = []): static
+        {
+        }
+
+        /**
          * Handle every request no other route or static path matches, with
          * any method: a Cairo handler, a PSR-15 RequestHandlerInterface, a
          * Symfony HttpKernelInterface or a Laravel HTTP Kernel (see

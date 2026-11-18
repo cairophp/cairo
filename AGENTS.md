@@ -23,7 +23,7 @@ on I/O through Cairo, only its fiber suspends and Go does the waiting.
 | `internal/wire/` | The binary format of the events Go sends to PHP threads (requests, op results); `internal/sapi/wire.c` decodes it into PHP arrays. Bodies cross as raw bytes |
 | `php/runtime.php` | The whole PHP side: every `Cairo\` class and the fiber scheduler. Embedded in the binary |
 | `php/revolt.php` | `Cairo\Revolt\Driver`, loaded when `revolt/event-loop` is installed |
-| `php/cache.php` | `Cairo\Cache`, loaded on first use |
+| `php/cache.php`, `php/pool.php` | `Cairo\Cache` and `Cairo\Pool`, each loaded on first use |
 | `internal/spec/` | The server declaration that `server.php` sends to Go |
 | `internal/httpserver/`, `internal/grpcserver/` | net/http and grpc-go servers built from the declaration |
 | `internal/middleware/` | Go middleware declared from PHP |

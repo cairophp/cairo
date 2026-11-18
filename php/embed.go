@@ -19,3 +19,8 @@ var Revolt []byte
 //
 //go:embed cache.php
 var Cache []byte
+
+// Pool is php/pool.php: Cairo\Pool, loaded on first use.
+//
+//go:embed pool.php
+var Pool []byte

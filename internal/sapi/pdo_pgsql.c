@@ -56,6 +56,7 @@ void cairo_pg_result_free(cairo_pg_result *r)
 typedef struct {
 	zend_long conn;
 	char *errmsg;   // last error, for errorInfo()
+	char tx;        // transaction status after the last reply: I, T or E
 } cairo_pg_dbh;
 
 typedef struct {
@@ -71,8 +72,10 @@ typedef struct {
 // ---- talking to Go ---------------------------------------------------------
 
 // Sends one request. Returns 1 with *out set to the decoded response array,
-// or 0 when an exception is pending (the request's deadline passed).
-static int pg_call(zval *req, zval *out)
+// or 0 when an exception is pending (the request's deadline passed). Every
+// reply from a connection carries its transaction status, kept on H (NULL
+// while connecting) so inTransaction() costs no call to Go.
+static int pg_call(cairo_pg_dbh *H, zval *req, zval *out)
 {
 	smart_str json = {0};
 	php_json_encode(&json, req, 0);
@@ -110,6 +113,10 @@ static int pg_call(zval *req, zval *out)
 		add_assoc_bool(out, "ok", 0);
 		add_assoc_string(out, "sqlstate", "HY000");
 		add_assoc_string(out, "error", "bad response from the pgsql driver");
+	}
+	zval *tx = H != NULL ? zend_hash_str_find(Z_ARRVAL_P(out), "tx", 2) : NULL;
+	if (tx != NULL && Z_TYPE_P(tx) == IS_STRING && Z_STRLEN_P(tx) == 1) {
+		H->tx = Z_STRVAL_P(tx)[0];
 	}
 	return 1;
 }
@@ -162,7 +169,7 @@ static zend_long pg_exec(pdo_dbh_t *dbh, const char *sql, size_t len)
 	zval req, resp;
 	pg_request(&req, "exec", H->conn);
 	add_assoc_stringl(&req, "sql", (char *)sql, len);
-	int done = pg_call(&req, &resp);
+	int done = pg_call(dbh->driver_data, &req, &resp);
 	zval_ptr_dtor(&req);
 	if (!done) {
 		pg_clear_error(dbh, NULL);
@@ -206,7 +213,7 @@ static cairo_pg_result *pg_query(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zend_string *
 		}
 		add_assoc_zval(&req, "binary", &bin);
 	}
-	int done = pg_call(&req, &resp);
+	int done = pg_call(dbh->driver_data, &req, &resp);
 	zval_ptr_dtor(&req);
 	if (!done) {
 		pg_clear_error(dbh, stmt);
@@ -642,15 +649,8 @@ static int pg_status(pdo_dbh_t *dbh, zval *resp)
 
 static bool pg_in_transaction(pdo_dbh_t *dbh)
 {
-	zval resp;
-	ZVAL_UNDEF(&resp);
-	bool in = false;
-	if (pg_status(dbh, &resp)) {
-		zval *tx = zend_hash_str_find(Z_ARRVAL(resp), "tx", 2);
-		in = tx != NULL && Z_TYPE_P(tx) == IS_STRING && (Z_STRVAL_P(tx)[0] == 'T' || Z_STRVAL_P(tx)[0] == 'E');
-	}
-	zval_ptr_dtor(&resp);
-	return in;
+	cairo_pg_dbh *H = dbh->driver_data;
+	return H->tx == 'T' || H->tx == 'E';
 }
 
 static int pg_get_attribute(pdo_dbh_t *dbh, zend_long attr, zval *val)
@@ -735,7 +735,7 @@ static void pg_error_msg(pdo_dbh_t *dbh, const char *state, const char *msg)
 // already pending). *resp is set on success and the caller frees it.
 static int pg_method_call(pdo_dbh_t *dbh, zval *req, zval *resp)
 {
-	int done = pg_call(req, resp);
+	int done = pg_call(dbh->driver_data, req, resp);
 	zval_ptr_dtor(req);
 	if (!done) {
 		return 0;
@@ -1042,7 +1042,7 @@ static ZEND_NAMED_FUNCTION(pg_get_pid)
 // returned; an exception may be pending.
 static int pg_lo_call(pdo_dbh_t *dbh, zval *req, zval *resp)
 {
-	int done = pg_call(req, resp);
+	int done = pg_call(dbh->driver_data, req, resp);
 	zval_ptr_dtor(req);
 	if (!done) {
 		return 0;
@@ -1398,7 +1398,7 @@ static int pg_handle_factory(pdo_dbh_t *dbh, zval *driver_options)
 		add_assoc_string(&req, "password", dbh->password);
 	}
 	add_assoc_double(&req, "timeout", (double)timeout);
-	int done = pg_call(&req, &resp);
+	int done = pg_call(dbh->driver_data, &req, &resp);
 	zval_ptr_dtor(&req);
 
 	dbh->methods = &pg_methods;

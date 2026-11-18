@@ -1,7 +1,8 @@
 # Working on Cairo
 
 Instructions for coding agents (and people) changing this repository. The
-README is the user documentation; this file is about the code. The design doc
+user documentation is in [cairophp/docs](https://github.com/cairophp/docs)
+(the README is its front page); this file is about the code. The design doc
 linked from the README explains why things are the way they are.
 
 ## What Cairo is
@@ -89,8 +90,8 @@ PHP headers. `go vet ./...` only works where `make php` has run.
 - **A new PHP-facing feature has four parts:** the Go op or hook in its own
   file in `internal/sapi`, the PHP API with docblocks (they become the stubs;
   see Code standards for where it goes), an example route or script under `examples/`, and an
-  end-to-end test in `test/` that serves that example. Document it in the
-  README section for that area.
+  end-to-end test in `test/` that serves that example. Document it on the
+  page for that area in cairophp/docs, in a pull request linked from yours.
 - **Concurrency is the point.** A feature that waits must suspend only its
   fiber. Test that explicitly: the existing tests run 50 requests that each
   wait 1 s on ONE PHP thread and require them to finish in about 1 s. Copy
@@ -325,7 +326,8 @@ Cairo is a server: per-request code runs millions of times.
       on new PHP.
 - [ ] Tests cover the change, and you listed which tests ran and which
       skipped.
-- [ ] README and CHANGELOG (Unreleased) are updated if users see the change.
+- [ ] CHANGELOG (Unreleased) is updated, and cairophp/docs has a linked pull
+      request, if users see the change.
 
 ## Pull requests
 

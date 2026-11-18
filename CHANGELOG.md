@@ -7,6 +7,10 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-18
+
+A response cache in Go, and the stubs as their own Composer package.
+
 ### Added
 
 - `->cache(ttl, staleWhileRevalidate, vary)` on an HTTP route: Go answers
@@ -162,6 +166,7 @@ PHP, with many requests per PHP thread as fibers.
 - `Cairo\Sql` returns timestamps in UTC instead of the server's time zone
   (#40).
 
-[Unreleased]: https://github.com/cairophp/cairo/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/cairophp/cairo/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/cairophp/cairo/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/cairophp/cairo/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/cairophp/cairo/releases/tag/v0.1.0

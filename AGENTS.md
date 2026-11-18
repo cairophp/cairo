@@ -26,7 +26,7 @@ on I/O through Cairo, only its fiber suspends and Go does the waiting.
 | `internal/httpserver/`, `internal/grpcserver/` | net/http and grpc-go servers built from the declaration |
 | `internal/middleware/` | Go middleware declared from PHP |
 | `internal/codegen/` | `cairo gen`: PHP classes and clients from `.proto` files |
-| `stubs/` | Generated IDE stubs of `php/runtime.php`; CI mirrors this directory to `cairophp/stubs`, the Composer package, on each tag |
+| `stubs/` | Generated IDE stubs of `php/runtime.php`; `scripts/publish-stubs.sh` copies this directory to `cairophp/stubs`, the Composer package, on each release |
 | `examples/` | Runnable apps. The end-to-end tests serve these, so they are also fixtures |
 | `test/` | End-to-end tests: they start the `cairo` binary on an example and talk to it over HTTP and gRPC |
 | `scripts/` | `build-php.sh` (ZTS PHP into /opt/php-zts), `build-static.sh` (the static binary), `stubs.php`, `publish-stubs.sh` |
@@ -343,8 +343,8 @@ Cairo is a server: per-request code runs millions of times.
    arm64 with `cairo version` set to the tag, checks them, and publishes a
    GitHub release with `SHA256SUMS` and the changelog section as notes. Tags
    with a hyphen (`v0.2.0-rc.1`) become prereleases.
-4. `.github/workflows/stubs.yml` publishes `stubs/` to `cairophp/stubs`
-   under the same tag.
+4. Publish the stubs under the same tag, by hand for now:
+   `git clone git@github.com:cairophp/stubs.git /tmp/stubs && scripts/publish-stubs.sh /tmp/stubs vx.y.z`.
 
 ## Writing apps on Cairo
 

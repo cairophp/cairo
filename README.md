@@ -728,7 +728,7 @@ The `Cairo\` classes are built into the binary, so an IDE cannot find them on
 its own. `stubs/cairo.php` has the whole public API (signatures and docblocks,
 no bodies) and ships as the Composer package
 [cairophp/stubs](https://github.com/cairophp/stubs), a mirror of `stubs/`
-that CI publishes on every release tag. Until it is on Packagist, add the
+published with every release. Until it is on Packagist, add the
 repository and require it as a dev dependency:
 
 ```json

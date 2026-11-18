@@ -16,5 +16,5 @@ that for you). For Psalm, list `vendor/cairophp/stubs/cairo.php` under
 stubs, since Cairo already declares these classes.
 
 This repository is a read-only mirror. It is generated from `stubs/` in
-[cairophp/cairo](https://github.com/cairophp/cairo) on every release tag and
+[cairophp/cairo](https://github.com/cairophp/cairo) with every release and
 carries the same tags; open issues and pull requests there.

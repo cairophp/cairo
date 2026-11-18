@@ -10,7 +10,7 @@ change the PHP API; patch versions do not.
 ### Changed
 
 - The stubs' Composer package is now `cairophp/stubs`, a mirror of `stubs/`
-  that CI publishes on each release tag; it replaces `cairophp/cairo`.
+  published with each release; it replaces `cairophp/cairo`.
 
 ## [0.1.1] - 2026-11-18
 

@@ -34,6 +34,17 @@ change the PHP API; patch versions do not.
 
 ### Fixed
 
+- Hooked curl took 200 ms or more per transfer once the process had 1024 or
+  more descriptors open (any busy server): it found curl's sockets with
+  `curl_multi_fdset()`, which cannot hold higher numbers, and fell back to
+  polling every 100 ms. `curl_exec()` now learns its sockets
+  from curl's socket callback, and `curl_multi_select()` uses
+  `curl_multi_waitfds()` where libcurl has it (8.8 and later, as in the static
+  binary).
+- Curl handles of failed `async()` tasks and cancelled requests are freed when
+  the request ends: their exceptions kept them in reference cycles until PHP's
+  collector ran, and each one held two descriptors. Cairo now collects cycles
+  after a failure, at most once a second per thread.
 - `Cairo\Pool` drops a connection whose request was cancelled while holding
   it, and `with()` drops it when the callback throws, instead of handing a
   broken connection to the next request.

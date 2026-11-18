@@ -9,8 +9,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/cairophp/cairo/internal/cachetag"
 	"github.com/cairophp/cairo/internal/spec"
 )
 
@@ -27,12 +29,13 @@ const (
 
 // cachePolicy is one route's ->cache(...): how long its responses stay
 // fresh, how long after that a stale one is served while it is rebuilt, and
-// which request headers it varies on.
+// which request headers it varies on, and the tags that purge it.
 type cachePolicy struct {
 	route int
 	ttl   time.Duration
 	stale time.Duration
 	vary  []string // canonical names, sorted
+	tags  []*atomic.Uint64
 }
 
 func newCachePolicy(route int, c spec.RouteCache) *cachePolicy {
@@ -41,14 +44,28 @@ func newCachePolicy(route int, c spec.RouteCache) *cachePolicy {
 		vary = append(vary, textproto.CanonicalMIMEHeaderKey(h))
 	}
 	slices.Sort(vary)
-	return &cachePolicy{route: route, ttl: seconds(c.TTL), stale: seconds(c.StaleWhileRevalidate), vary: slices.Compact(vary)}
+	p := &cachePolicy{route: route, ttl: seconds(c.TTL), stale: seconds(c.StaleWhileRevalidate), vary: slices.Compact(vary)}
+	for _, t := range c.Tags {
+		p.tags = append(p.tags, cachetag.Counter(t))
+	}
+	return p
+}
+
+// gen changes whenever one of the route's tags is purged: generations only
+// grow, so their sum does too.
+func (p *cachePolicy) gen() uint64 {
+	var g uint64
+	for _, t := range p.tags {
+		g += t.Load()
+	}
+	return g
 }
 
 // key is the cache key of req, or false when req must not use the cache:
-// only GET is cached, and a request carrying credentials is personal unless
-// the route varies on that header.
+// only GET is cached (HEAD may read what GET stored), and a request carrying
+// credentials is personal unless the route varies on that header.
 func (p *cachePolicy) key(req *http.Request) (string, bool) {
-	if p == nil || req.Method != http.MethodGet {
+	if p == nil || req.Method != http.MethodGet && req.Method != http.MethodHead {
 		return "", false
 	}
 	for _, h := range [...]string{"Authorization", "Cookie"} {
@@ -105,6 +122,7 @@ type cacheEntry struct {
 	key        string
 	resp       *response
 	size       int
+	gen        uint64    // the policy's generation when PHP was called
 	fresh      time.Time // served as is until then
 	expires    time.Time // served stale, and rebuilt, until then
 	refreshing bool
@@ -137,7 +155,7 @@ type callFunc func(ctx context.Context) (*response, error)
 // serve answers req from the cache, or through call when it has no usable
 // entry. A stale entry is served at once and rebuilt by one background call.
 func (c *responseCache) serve(req *http.Request, key string, p *cachePolicy, call callFunc) (*response, error) {
-	resp, refresh := c.lookup(key)
+	resp, refresh := c.lookup(key, p, true)
 	if resp == nil {
 		return c.fetch(req.Context(), key, p, call)
 	}
@@ -151,9 +169,10 @@ func (c *responseCache) serve(req *http.Request, key string, p *cachePolicy, cal
 	return resp, nil
 }
 
-// lookup returns the entry for key if it is fresh or stale, and whether the
-// caller should start its refresh (true once per stale entry).
-func (c *responseCache) lookup(key string) (*response, bool) {
+// lookup returns the entry for key if it is fresh or stale and not purged.
+// With claim, it also reports whether the caller should start the entry's
+// refresh (true once per stale entry).
+func (c *responseCache) lookup(key string, p *cachePolicy, claim bool) (*response, bool) {
 	now := time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -162,12 +181,12 @@ func (c *responseCache) lookup(key string) (*response, bool) {
 		return nil, false
 	}
 	e := el.Value.(*cacheEntry)
-	if !now.Before(e.expires) {
+	if !now.Before(e.expires) || e.gen != p.gen() {
 		c.remove(el)
 		return nil, false
 	}
 	c.lru.MoveToFront(el)
-	if now.Before(e.fresh) || e.refreshing {
+	if now.Before(e.fresh) || e.refreshing || !claim {
 		return e.resp, false
 	}
 	e.refreshing = true
@@ -177,8 +196,15 @@ func (c *responseCache) lookup(key string) (*response, bool) {
 // fetch runs call, unless an identical call is already running: then it
 // waits for that one and shares its answer when the answer is cacheable.
 func (c *responseCache) fetch(ctx context.Context, key string, p *cachePolicy, call callFunc) (*response, error) {
+	// A purge during the call makes its answer old: requests after the
+	// purge must not join that flight, and the answer must not be stored.
+	gen := p.gen()
+	fkey := key
+	if len(p.tags) > 0 {
+		fkey = string(strconv.AppendUint(append([]byte(key), ' '), gen, 10))
+	}
 	c.mu.Lock()
-	if f, ok := c.flights[key]; ok {
+	if f, ok := c.flights[fkey]; ok {
 		c.mu.Unlock()
 		select {
 		case <-f.done:
@@ -191,15 +217,17 @@ func (c *responseCache) fetch(ctx context.Context, key string, p *cachePolicy, c
 		return call(ctx) // not shareable: this client gets its own answer
 	}
 	f := &flight{done: make(chan struct{})}
-	c.flights[key] = f
+	c.flights[fkey] = f
 	c.mu.Unlock()
 
 	resp, err := call(ctx)
 	c.mu.Lock()
-	delete(c.flights, key)
+	delete(c.flights, fkey)
 	if err == nil && cacheable(resp) {
 		f.resp = resp
-		c.store(key, resp, p)
+		if p.gen() == gen {
+			c.store(key, resp, p, gen)
+		}
 	} else if el, ok := c.entries[key]; ok {
 		el.Value.(*cacheEntry).refreshing = false // let a later request retry
 	}
@@ -210,7 +238,7 @@ func (c *responseCache) fetch(ctx context.Context, key string, p *cachePolicy, c
 
 // store adds or replaces the entry for key and evicts the least recently
 // used ones past the size limit. c.mu is held.
-func (c *responseCache) store(key string, r *response, p *cachePolicy) {
+func (c *responseCache) store(key string, r *response, p *cachePolicy, gen uint64) {
 	if el, ok := c.entries[key]; ok {
 		c.remove(el)
 	}
@@ -225,7 +253,7 @@ func (c *responseCache) store(key string, r *response, p *cachePolicy) {
 		return
 	}
 	now := time.Now()
-	e := &cacheEntry{key: key, resp: r, size: size, fresh: now.Add(p.ttl), expires: now.Add(p.ttl + p.stale)}
+	e := &cacheEntry{key: key, resp: r, size: size, gen: gen, fresh: now.Add(p.ttl), expires: now.Add(p.ttl + p.stale)}
 	c.entries[key] = c.lru.PushFront(e)
 	c.bytes += size
 	for c.bytes > c.maxBytes {

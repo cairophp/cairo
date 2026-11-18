@@ -14,6 +14,9 @@ change the PHP API; patch versions do not.
   together into one PHP call, and serves a stale response while one request
   rebuilds it. Responses with `Set-Cookie` or private `Cache-Control`, and
   requests with `Authorization` or `Cookie`, are not cached by default.
+- `->cache(tags: [...])` and `Cairo\Cache::purge('tag', ...)`: drop the cached
+  responses of tagged routes when the data behind them changes.
+- A HEAD request to a cached route is answered from what a GET stored.
 
 ### Changed
 

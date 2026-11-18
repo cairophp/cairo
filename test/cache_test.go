@@ -12,7 +12,8 @@ import (
 	"time"
 )
 
-// startCache runs examples/cache on one PHP thread and returns a GET helper.
+// startCache runs examples/cache on one PHP thread and returns a GET helper
+// ("POST /path" and "HEAD /path" send other methods).
 func startCache(t *testing.T) func(path string, header ...string) (string, http.Header) {
 	t.Helper()
 	addr := freeAddr()
@@ -31,7 +32,11 @@ func startCache(t *testing.T) func(path string, header ...string) (string, http.
 	}
 	client := &http.Client{Timeout: 10 * time.Second}
 	return func(path string, header ...string) (string, http.Header) {
-		req, _ := http.NewRequest("GET", "http://"+addr+path, nil)
+		method := "GET"
+		if m, p, ok := strings.Cut(path, " "); ok {
+			method, path = m, p
+		}
+		req, _ := http.NewRequest(method, "http://"+addr+path, nil)
 		for i := 0; i+1 < len(header); i += 2 {
 			req.Header.Set(header[i], header[i+1])
 		}
@@ -123,5 +128,29 @@ func TestResponseCacheVaryAndPrivate(t *testing.T) {
 	}
 	if calls, _ := get("/calls"); calls != "5" {
 		t.Fatalf("PHP ran %s times, want 5: a request with a cookie skips the cache", calls)
+	}
+}
+
+// Cache::purge() drops a tagged route's response; HEAD reads what GET stored.
+func TestResponseCachePurgeAndHead(t *testing.T) {
+	get := startCache(t)
+	first, _ := get("/stock")
+	if again, _ := get("/stock"); again != first {
+		t.Fatalf("got %s then %s, want the cached response", first, again)
+	}
+	if _, h := get("HEAD /stock"); h.Get("Content-Type") != "application/json" {
+		t.Fatalf("HEAD headers: %v", h)
+	}
+	if calls, _ := get("/calls"); calls != "1" {
+		t.Fatalf("PHP ran %s times, want 1: the repeat and the HEAD are cache hits", calls)
+	}
+	if body, _ := get("POST /stock"); body != "purged" {
+		t.Fatalf("POST /stock: %q", body)
+	}
+	if after, _ := get("/stock"); after == first {
+		t.Fatalf("got %s after the purge, want a new response", after)
+	}
+	if calls, _ := get("/calls"); calls != "2" {
+		t.Fatalf("PHP ran %s times, want 2", calls)
 	}
 }

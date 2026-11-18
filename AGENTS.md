@@ -23,9 +23,11 @@ on I/O through Cairo, only its fiber suspends and Go does the waiting.
 | `internal/wire/` | The binary format of the events Go sends to PHP threads (requests, op results); `internal/sapi/wire.c` decodes it into PHP arrays. Bodies cross as raw bytes |
 | `php/runtime.php` | The whole PHP side: every `Cairo\` class and the fiber scheduler. Embedded in the binary |
 | `php/revolt.php` | `Cairo\Revolt\Driver`, loaded when `revolt/event-loop` is installed |
+| `php/cache.php` | `Cairo\Cache`, loaded on first use |
 | `internal/spec/` | The server declaration that `server.php` sends to Go |
 | `internal/httpserver/`, `internal/grpcserver/` | net/http and grpc-go servers built from the declaration |
 | `internal/middleware/` | Go middleware declared from PHP |
+| `internal/cachetag/` | Tags of cached responses: declared by routes in `httpserver`, purged from PHP through `sapi` |
 | `internal/codegen/` | `cairo gen`: PHP classes and clients from `.proto` files |
 | `stubs/` | Generated IDE stubs of `php/runtime.php`; `scripts/publish-stubs.sh` copies this directory to `cairophp/stubs`, the Composer package, on each release |
 | `examples/` | Runnable apps. The end-to-end tests serve these, so they are also fixtures |
@@ -182,8 +184,8 @@ one line and move on.
   `internal/sapi/pdo_pgsql.c`, `internal/sapi/engine.go`, `test/e2e_test.go`)
   must not grow by a whole feature. A new PHP subsystem goes in its own file
   under `php/`, embedded in `php/embed.go` and loaded like `revolt.php`, and
-  is added to `make stubs` (`scripts/stubs.php` reads one file today: teach it
-  to read several in the same PR). New C goes in its own `.c` file with a
+  is added to `make stubs` and to `TestStubsUpToDate` (`scripts/stubs.php`
+  takes several files; `php/cache.php` is the model). New C goes in its own `.c` file with a
   header; new end-to-end tests go in their own `test/<feature>_test.go`.
   When a change touches a big file, moving the part you touch into its own
   file is welcome, as a separate commit.

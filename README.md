@@ -131,14 +131,17 @@ internal/sapi/        embedded PHP: C bridge, PHP threads, fiber goroutines, off
 internal/spec/        the server declaration sent by server.php
 internal/httpserver/  net/http server built from the declaration
 internal/middleware/  Go middleware declared from PHP (HTTP and gRPC)
+internal/cachetag/    tags of cached responses, for Cairo\Cache::purge()
 internal/grpcserver/  grpc-go server, proto compilation, health, reflection
 php/runtime.php       the PHP side: Cairo\ classes and the fiber scheduler (embedded in the binary)
 php/revolt.php        Cairo\Revolt\Driver, loaded when revolt/event-loop is installed
+php/cache.php         Cairo\Cache, loaded on first use
 examples/greeter/     HTTP + gRPC example
 examples/isolated/    isolated mode: superglobals, echo/header(), resets
 examples/frameworks/  PSR-15 handlers and Symfony-style kernels (composer install first)
 examples/supervise/   thread restart after a fatal error, maxRequests and maxMemory
 examples/blocking/    detectBlocking: logs requests that hold their PHP thread
+examples/cache/       response cache: ->cache() and Cache::purge()
 
 examples/revolt/      Amp and Revolt on Cairo's scheduler (Composer project)
 examples/sql/         Cairo\Sql: PostgreSQL (server.php) and MySQL (mysql.php) through Go's database/sql

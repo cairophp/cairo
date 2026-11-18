@@ -310,6 +310,97 @@ machine's noise; kept because it is less work per call and less code path.
 The other cases (hello, cpu, sleep, curl, client, the 10 ms queries, gRPC)
 did not move beyond ±5 % in a 3-round run of all of them.
 
+## 6. Laravel: waits on the PHP thread, and connections kept across curl handles
+
+Found with the Laravel benchmark (a dashboard endpoint: two Eloquent queries
+on MariaDB and two `Http::get()` calls of 20 ms, 40 PHP threads in isolated
+mode on 2 vCPUs of the cloud VM). `perf` on that endpoint at 64 connections:
+
+| Where | Share of CPU |
+|---|---:|
+| libphp (Laravel's own PHP code; `execute_ex` alone 21 %) | 64 % |
+| Kernel, about half of it thread switches (`finish_task_switch`, the run-queue lock) | 18 % |
+| Cairo's Go side (scheduler, cgo callbacks) | 9 % |
+| libc and libcurl | 8 % |
+
+Two thirds is the application, the same on every server. What Cairo can
+change is the cost of each wait and what the waits are for: `connect`,
+`close`, `socket` and `pipe2` showed up because every `Http::get()` opened a
+new connection.
+
+### 6a. Short socket waits happen on the PHP thread
+
+**What.** Before a hooked socket wait goes to Go, the thread polls the socket
+itself for up to 1 ms (`cairo_wait_here()` in `internal/sapi/waitops.c`,
+`Scheduler::waitHere()`), but only when nothing else could run on the thread
+meanwhile: no fiber is ready or waiting for Go, and Go has no event queued for
+the thread (isolated mode skips that last check, since a queued request waits
+for the running one anyway).
+
+**Why.** A wait through Go is a cgo call, an `epoll_ctl`, a goroutine wake and
+an event back: about four thread switches. A database on the same network
+answers a point query in 100-300 µs, so one `poll()` on the thread usually
+gets the reply directly. When other fibers have work, the thread must not
+block, so the wait goes to Go as before.
+
+**Options.** (1) This. (2) The same without the queue check: faster at 1-4
+connections (+40 % and +22 %) but 29 % slower at 64, because the thread held
+still while requests queued. (3) An eventfd that interrupts the poll when Go
+queues an event: no 1 ms cap needed, but a second wake path to maintain; not
+needed for these numbers.
+
+**Effect.** PDO MySQL point query in fiber mode, 2 threads (req/s, median of 3):
+
+| Connections | Before | After | Change |
+|---:|---:|---:|---:|
+| 1 | 2,586 | 3,193 | +23 % |
+| 4 | 7,811 | 8,329 | +7 % |
+| 16 | 12,732 | 13,704 | +5 % (within noise) |
+| 64 | 15,424 | 15,414 | 0 % |
+
+Laravel dashboard, 64 connections, 5 alternating rounds: 376 → 386 req/s
+(+2.6 %, within noise: at saturation the database's replies are slower than
+the poll and Laravel dominates).
+
+### 6b. A new curl handle takes over a closed handle's connections
+
+**What.** When a hooked easy handle is closed, its multi handle (which owns
+the connections) is kept, up to 4 per thread, and given to the thread's next
+new easy handle (`spare_multis` in `internal/sapi/curl_hook.c`). They are
+closed when the thread ends.
+
+**Why.** Step 1d kept connections alive per easy handle. Laravel's `Http`
+facade builds a new Guzzle client, and so a new curl handle, for every call,
+as does any code that calls `curl_init()` per request: each call paid a TCP
+connect (and for HTTPS a TLS handshake), a close and a new multi handle.
+libcurl only reuses a connection whose host, TLS settings and credentials
+match, so handing the cache to another handle is what a shared Guzzle client
+does already.
+
+**Options.** (1) This: 30 lines, no change to the handles themselves. (2) One
+multi handle per thread for all transfers: also shares connections between
+transfers that run at the same time, but fibers would complete each other's
+transfers and consume each other's messages. (3) A curl share handle with
+`CURL_LOCK_DATA_CONNECT` set on every easy handle: would override a share the
+application set.
+
+**Effect.** Laravel, 64 connections, 4 alternating rounds, against 6a alone:
+
+| Case | Before | After | Change |
+|---|---:|---:|---:|
+| dashboard | 388 (p50 186 ms) | 434 (p50 164 ms) | +12 % |
+| dashboard with `async()` | 396 (p50 172 ms) | 440 (p50 155 ms) | +11 % |
+
+At 4 connections p50 went from 52.9 to 50.5 ms (sequential) and from 26.2 to
+24.5 ms (`async()`), 6a and 6b together.
+
+### Step 6 together
+
+`bench/ab.sh`, 5 rounds, the build before step 6 against 6a + 6b: hello
+-0.4 %, PDO MySQL +0.2 %, curl -0.5 %, `Cairo\Sql` MySQL +0.2 % (all noise:
+these cases run many fibers per thread and keep their curl handles), PDO
+PostgreSQL +7.8 % (not touched by either change; noise).
+
 ## Tried and not kept
 
 | Change | Result | Branch |
@@ -320,6 +411,7 @@ did not move beyond ±5 % in a 3-round run of all of them.
 | msgpack instead of the binary format | Not built: slower to decode in PHP without an extension | – |
 | Pooled request buffers, and response headers written straight into the `ResponseWriter` | No difference in alternating runs (48-61k either way) | not kept |
 | Fewer closures and `Context::current()` lookups per request in runtime.php | No difference (hello -0.8 %, json +2.8 %, 6 rounds): PHP is 16 % of hello's CPU on the cloud VM, and this was a small part of it | not kept |
+| opcache's tracing JIT for the Laravel benchmark (`opcache.jit=tracing`, 128 MB buffer) | No difference in two alternating runs (373-383 and 360-369 without, 343-368 and 362-372 with): framework code is calls and hash lookups, which the JIT does not speed up | not kept |
 
 ## Where the time goes now
 

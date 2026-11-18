@@ -9,6 +9,16 @@ change the PHP API; patch versions do not.
 
 ### Performance
 
+- A hooked socket wait first polls the socket on the PHP thread for up to
+  1 ms when the thread has nothing else to run, instead of going through Go: a
+  database on the same network usually answers within that. PDO MySQL point
+  queries at one connection went from 2.6k to 3.2k per second; busy threads
+  are unchanged.
+- A new curl handle takes over the kept-alive connections of a handle that was
+  closed on the same thread (up to 4 per thread), so code that makes a handle
+  per call, such as Laravel's `Http` client, stops opening a connection each
+  time. A Laravel endpoint with two upstream calls went from 388 to 434
+  requests per second.
 - Request fibers are reused: a new fiber costs a stack mmap and, when freed, a
   TLB shootdown on every CPU. Hello-world requests went from 23k to about 40k
   per second on two cores.

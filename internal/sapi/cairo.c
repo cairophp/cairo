@@ -41,6 +41,12 @@
 // -1 is the boot thread (declare phase); 0..n-1 are worker threads.
 static __thread int cairo_tid = -1;
 
+// For waitops.c.
+int cairo_thread_id(void)
+{
+	return cairo_tid;
+}
+
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_none, 0, 0, 0)
 ZEND_END_ARG_INFO()
 
@@ -327,6 +333,7 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_context_cancel, arginfo_cairo_fiber_close)
 	PHP_FE(cairo_fiber_op, arginfo_cairo_fiber_op)
 	PHP_FE(cairo_fiber_wait, arginfo_cairo_fiber_wait)
+	PHP_FE(cairo_wait_here, arginfo_cairo_wait_here)
 	PHP_FE(cairo_fiber_waitset, arginfo_cairo_fiber_waitset)
 	PHP_FE(cairo_fiber_call, arginfo_cairo_fiber_call)
 	PHP_FE(cairo_go_call, arginfo_cairo_go_call)
@@ -1635,6 +1642,7 @@ int cairo_thread_run(int tid, const char *runtime_file)
 	int status = run_file(runtime_file);
 	cairo_interrupt_unregister();
 	php_request_shutdown(NULL);
+	cairo_curl_thread_end();   // after the request's curl handles were closed
 	ts_free_thread();
 	return status;
 }

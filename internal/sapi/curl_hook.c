@@ -27,6 +27,8 @@
 #include <php.h>
 #include <curl/curl.h>
 
+#include "cairo.h"
+
 // In the static binary (scripts/build-static.sh) libcurl is linked in, so the
 // executable cannot simply define curl's functions over the library's. There
 // the linker renames calls instead (-Wl,--wrap=curl_easy_perform,
@@ -96,8 +98,8 @@ static void real_easy_cleanup(CURL *easy)
 // A hooked transfer runs on a multi handle, and a multi handle keeps the
 // connections its transfers opened. Each easy handle keeps its own multi
 // handle, so the next curl_exec() on it reuses the kept-alive connection,
-// as curl_easy_perform() would. It lives until curl_easy_cleanup(). PHP
-// objects never cross threads, so the table is per thread.
+// as curl_easy_perform() would. It is the handle's until curl_easy_cleanup().
+// PHP objects never cross threads, so the table is per thread.
 #define CAIRO_MULTI_BUCKETS 256
 
 // A socket curl wants watched, and for what (CURL_POLL_IN, _OUT, _INOUT).
@@ -116,6 +118,34 @@ struct easy_multi {
 };
 
 static __thread struct easy_multi *easy_multis[CAIRO_MULTI_BUCKETS];
+
+// Multi handles whose easy handle was closed, kept with their open
+// connections for the thread's next new easy handle. Code that makes a handle
+// per request (Laravel's Http client, a new Guzzle client each call) then
+// reuses connections as code that keeps one handle does. At most
+// CAIRO_SPARE_MULTIS per thread, each with curl's own cap on connections.
+#define CAIRO_SPARE_MULTIS 4
+
+static __thread struct easy_multi *spare_multis;
+static __thread int nspare;
+
+static void easy_multi_free(struct easy_multi *m)
+{
+	curl_multi_cleanup(m->multi);
+	free(m->socks);
+	free(m);
+}
+
+// Closes the thread's spare multi handles; called when a PHP thread ends.
+void cairo_curl_thread_end(void)
+{
+	while (spare_multis != NULL) {
+		struct easy_multi *m = spare_multis;
+		spare_multis = m->next;
+		easy_multi_free(m);
+	}
+	nspare = 0;
+}
 
 static struct easy_multi **easy_multi_slot(CURL *easy)
 {
@@ -167,7 +197,16 @@ static struct easy_multi *easy_multi_get(CURL *easy)
 	if (*p != NULL) {
 		return *p;
 	}
-	struct easy_multi *m = calloc(1, sizeof(*m));
+	struct easy_multi *m = spare_multis;
+	if (m != NULL) {
+		spare_multis = m->next;
+		nspare--;
+		m->easy = easy;
+		m->next = NULL;
+		*p = m;
+		return m;
+	}
+	m = calloc(1, sizeof(*m));
 	if (m == NULL) {
 		return NULL;
 	}
@@ -192,9 +231,14 @@ void CAIRO_HOOK(curl_easy_cleanup)(CURL *easy)
 	if (*p != NULL) {
 		struct easy_multi *m = *p;
 		*p = m->next;
-		curl_multi_cleanup(m->multi);
-		free(m->socks);
-		free(m);
+		if (nspare < CAIRO_SPARE_MULTIS) {
+			m->easy = NULL;
+			m->next = spare_multis;
+			spare_multis = m;
+			nspare++;
+		} else {
+			easy_multi_free(m);
+		}
 	}
 	real_easy_cleanup(easy);
 }

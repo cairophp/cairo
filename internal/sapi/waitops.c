@@ -1,9 +1,13 @@
 // The most frequent fiber operations (see waitops.go): same contract as cairo_fiber_op(), with
 // the fields passed as arguments instead of JSON.
 
+#include <poll.h>
+
 #include <php.h>
 
 #include "_cgo_export.h"
+
+int cairo_thread_id(void);   // cairo.c
 
 // Descriptors per curl wait; curl uses a handful per transfer.
 #define CAIRO_WAITSET_MAX 1024
@@ -83,4 +87,31 @@ PHP_FUNCTION(cairo_fiber_call)
 	}
 	RETURN_LONG((zend_long)goFiberCall((long long)fiber, ZSTR_VAL(name), (int)ZSTR_LEN(name),
 		ZSTR_VAL(payload), (int)ZSTR_LEN(payload)));
+}
+
+// Longest wait on the PHP thread itself, in milliseconds: long enough for a
+// database on the same network to answer, short enough that a cancelled
+// request or a new one is not held up noticeably.
+#define CAIRO_WAIT_HERE_MS 1
+
+// cairo_wait_here(int $fd, bool $write, bool $unlessQueued): bool
+// Waits for the socket on this thread, without Go, and says whether it became
+// ready. A wait through Go costs two thread switches each way; a reply that
+// comes within the millisecond costs one poll() here. The scheduler calls it
+// only when no other fiber could run meanwhile (Scheduler::waitHere), and with
+// $unlessQueued it declines when Go already has an event for this thread.
+PHP_FUNCTION(cairo_wait_here)
+{
+	zend_long fd;
+	bool write, unless_queued;
+	ZEND_PARSE_PARAMETERS_START(3, 3)
+		Z_PARAM_LONG(fd)
+		Z_PARAM_BOOL(write)
+		Z_PARAM_BOOL(unless_queued)
+	ZEND_PARSE_PARAMETERS_END();
+	if (fd < 0 || fd > INT_MAX || (unless_queued && goInboxLen(cairo_thread_id()) > 0)) {
+		RETURN_FALSE;
+	}
+	struct pollfd pfd = {.fd = (int)fd, .events = write ? POLLOUT : POLLIN};
+	RETURN_BOOL(poll(&pfd, 1, CAIRO_WAIT_HERE_MS) > 0);
 }

@@ -7,6 +7,14 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+### Added
+
+- `->cache(ttl, staleWhileRevalidate, vary)` on an HTTP route: Go answers
+  repeated GET requests from memory, merges identical requests that arrive
+  together into one PHP call, and serves a stale response while one request
+  rebuilds it. Responses with `Set-Cookie` or private `Cache-Control`, and
+  requests with `Authorization` or `Cookie`, are not cached by default.
+
 ## [0.1.1] - 2026-11-18
 
 Faster requests, socket waits and curl, and the static binary on PHP 8.5.

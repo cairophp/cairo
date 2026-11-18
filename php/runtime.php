@@ -1354,7 +1354,7 @@ namespace Cairo\Http {
 
     final class Server
     {
-        /** @var list<array{id:int,method:string,path:string}> */
+        /** @var list<array{id:int,method:string,path:string,cache?:array{ttl:float,stale_while_revalidate:float,vary:list<string>}}> */
         private array $routes = [];
         /** @var list<array{prefix:string,dir:string}> */
         private array $static = [];
@@ -1401,6 +1401,37 @@ namespace Cairo\Http {
         {
             $id = $this->app->register($handler);
             $this->routes[] = ['id' => $id, 'method' => strtoupper($method), 'path' => $path];
+            return $this;
+        }
+
+        /**
+         * Let Go answer repeated GET requests to the route declared just
+         * before this call, without running PHP.
+         *
+         * A response stays fresh for $ttl seconds. After that, for
+         * $staleWhileRevalidate more seconds, Go keeps serving it and rebuilds
+         * it with one request in the background. Identical requests that
+         * arrive while PHP builds a response wait for that one.
+         *
+         * The key is the route, host, path, raw query string and the $vary
+         * request headers. Only 200 responses are stored, and never one with
+         * Set-Cookie or Cache-Control private, no-store or no-cache. A request
+         * with Authorization or Cookie skips the cache unless $vary names
+         * that header.
+         *
+         * @param list<string> $vary request headers that change the response
+         */
+        public function cache(float $ttl, float $staleWhileRevalidate = 0, array $vary = []): static
+        {
+            $last = array_key_last($this->routes);
+            if ($last === null) {
+                throw new \LogicException('cache() applies to the route declared before it: declare a route first');
+            }
+            $this->routes[$last]['cache'] = [
+                'ttl' => $ttl,
+                'stale_while_revalidate' => $staleWhileRevalidate,
+                'vary' => array_values($vary),
+            ];
             return $this;
         }
 

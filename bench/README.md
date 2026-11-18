@@ -27,11 +27,13 @@ these benchmarks, why, and Cairo's numbers after each one.
 | hello | return `Hello, World!` | 64 |
 | json | `json_encode` a small array | 64 |
 | cpu | recursive `fib(20)` in PHP, about 1 ms | 64 |
+| cpu-cached | the same behind `->cache(ttl: 60)` (Cairo only) | 64 |
 | sleep | `usleep(20000)` | 256 |
 | curl | curl GET to a Go upstream that answers after 20 ms | 256 |
 | client | the same through `Cairo\Http\Client` (Cairo only) | 256 |
 | pgsql, mysql | PDO prepared `SELECT ... WHERE id = ?` on a random row | 64 |
 | pgsql-slow, mysql-slow | PDO query that takes 10 ms in the database | 256 |
+| mysql-slow-cached | mysql-slow behind `->cache(ttl: 1, staleWhileRevalidate: 10)` (Cairo only) | 256 |
 | sql-pgsql, sql-mysql | the point query through `Cairo\Sql` (Cairo only) | 64 |
 | grpc-unary | `SayHello`, ghz, 4 connections, 64 concurrent | – |
 | grpc-stream-100 | `CountUp` server streaming 100 replies (Cairo only) | – |

@@ -43,6 +43,15 @@ type Route struct {
 	ID     int    `json:"id"`
 	Method string `json:"method"`
 	Path   string `json:"path"`
+	// Cache is the route's ->cache(...), nil when it has none.
+	Cache *RouteCache `json:"cache,omitempty"`
+}
+
+// RouteCache lets Go answer repeated GET requests to a route from memory.
+type RouteCache struct {
+	TTL                  float64  `json:"ttl"`
+	StaleWhileRevalidate float64  `json:"stale_while_revalidate"`
+	Vary                 []string `json:"vary"`
 }
 
 // StaticPath is served by Go directly, with no PHP involved.
@@ -113,6 +122,9 @@ func (s *Spec) Validate() error {
 				return fmt.Errorf("duplicate handler id %d", r.ID)
 			}
 			ids[r.ID] = true
+			if err := r.Cache.validate(); err != nil {
+				return fmt.Errorf("route %s: %w", key, err)
+			}
 		}
 	}
 	for _, g := range s.GRPC {
@@ -130,4 +142,32 @@ func (s *Spec) Validate() error {
 		}
 	}
 	return nil
+}
+
+func (c *RouteCache) validate() error {
+	if c == nil {
+		return nil
+	}
+	if c.TTL <= 0 || c.StaleWhileRevalidate < 0 {
+		return fmt.Errorf("cache ttl must be positive and staleWhileRevalidate not negative")
+	}
+	for _, h := range c.Vary {
+		if !validHeaderName(h) {
+			return fmt.Errorf("cache vary: %q is not a header name", h)
+		}
+	}
+	return nil
+}
+
+// validHeaderName reports whether h is an HTTP token (RFC 9110).
+func validHeaderName(h string) bool {
+	if h == "" {
+		return false
+	}
+	for _, c := range []byte(h) {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0) {
+			return false
+		}
+	}
+	return true
 }

@@ -33,6 +33,7 @@ ALL_CASES=(
     "hello 64 /hello"
     "json 64 /json"
     "cpu 64 /cpu"
+    "cpu-cached 64 /cpu-cached cairo"
     "sleep 256 /sleep"
     "curl 256 /curl"
     "client 256 /client cairo"
@@ -41,6 +42,7 @@ ALL_CASES=(
     "sql-pgsql 64 /sql-pgsql cairo"
     "mysql 64 /mysql"
     "mysql-slow 256 /mysql-slow"
+    "mysql-slow-cached 256 /mysql-slow-cached cairo"
     "sql-mysql 64 /sql-mysql cairo"
 )
 

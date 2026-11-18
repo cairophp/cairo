@@ -6,6 +6,7 @@ package httpserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -41,12 +42,13 @@ type Server struct {
 // New builds the router for one declared HTTP server and opens its listener.
 func New(decl spec.HTTPServer, php Dispatcher, log *slog.Logger) (*Server, error) {
 	mux := http.NewServeMux()
+	cache := newResponseCache(cacheMaxBytes)
 	for _, r := range decl.Routes {
 		pattern := r.Method + " " + r.Path
 		if r.Method == "*" {
 			pattern = r.Path // $http->fallback(): any method
 		}
-		mux.Handle(pattern, routeHandler(r, php, log))
+		mux.Handle(pattern, routeHandler(r, php, cache, log))
 	}
 	for _, s := range decl.Static {
 		prefix := "/" + strings.Trim(s.Prefix, "/") + "/"
@@ -155,74 +157,132 @@ func (ev *event) AppendWire(b []byte, id int64, deadline float64) []byte {
 	return b
 }
 
-func routeHandler(r spec.Route, php Dispatcher, log *slog.Logger) http.Handler {
+func routeHandler(r spec.Route, php Dispatcher, cache *responseCache, log *slog.Logger) http.Handler {
 	var names []string
 	for _, m := range paramRe.FindAllStringSubmatch(r.Path, -1) {
 		names = append(names, m[1])
 	}
+	var policy *cachePolicy
+	if r.Cache != nil {
+		policy = newCachePolicy(r.ID, *r.Cache)
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, maxBody))
-		if err != nil {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		ev, cleanup, ok := newEvent(w, req, r.ID, names)
+		if !ok {
 			return
 		}
-		params := make(map[string]string, len(names))
-		for _, n := range names {
-			params[n] = req.PathValue(n)
-		}
-		var form *multipartForm
-		if strings.HasPrefix(strings.ToLower(req.Header.Get("Content-Type")), "multipart/form-data") {
-			form, err = parseMultipart(body, req.Header.Get("Content-Type"), os.TempDir())
+		defer cleanup()
+		if key, ok := policy.key(req); ok && ev.form == nil {
+			resp, err := cache.serve(req, key, policy, func(ctx context.Context) (*response, error) {
+				r, err := callPHP(ctx, php, ev)
+				return &r, err
+			})
 			if err != nil {
-				http.Error(w, "malformed multipart body", http.StatusBadRequest)
+				writeError(w, req, err, log)
 				return
 			}
-			defer form.cleanup()
-			body = nil // like PHP, php://input is empty for multipart/form-data
-		}
-		ev := &event{
-			route:   r.ID,
-			method:  req.Method,
-			path:    req.URL.Path,
-			query:   req.URL.RawQuery,
-			headers: req.Header,
-			params:  params,
-			body:    body,
-			remote:  req.RemoteAddr,
-			host:    req.Host,
-			proto:   req.Proto,
-			tls:     req.TLS != nil,
-			values:  middleware.Values(req.Context()),
-			form:    form,
-		}
-		raw, out, err := php.Dispatch(req.Context(), ev)
-		if err != nil {
-			switch {
-			case errors.Is(err, context.DeadlineExceeded):
-				http.Error(w, "gateway timeout", http.StatusGatewayTimeout)
-			case req.Context().Err() == nil:
-				// The PHP thread died with the request (a fatal error).
-				http.Error(w, "internal server error", http.StatusInternalServerError)
-			}
-			// Otherwise the client went away; there is nobody to answer.
+			resp.write(w)
 			return
 		}
-		status, header, err := wire.DecodeResponse(raw)
+		resp, err := callPHP(req.Context(), php, ev)
 		if err != nil {
-			log.Error("decode php response", "err", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			writeError(w, req, err, log)
 			return
 		}
-		h := w.Header()
-		for k, vs := range header {
-			h[http.CanonicalHeaderKey(k)] = append(h[http.CanonicalHeaderKey(k)], vs...)
-		}
-		if status == 0 {
-			status = http.StatusOK
-		}
-		w.WriteHeader(status)
-		_, _ = w.Write(out)
+		resp.write(w)
 	})
+}
+
+// newEvent reads req into the event PHP receives. It answers the client
+// itself and returns false when the request is malformed.
+func newEvent(w http.ResponseWriter, req *http.Request, route int, names []string) (*event, func(), bool) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, maxBody))
+	if err != nil {
+		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		return nil, nil, false
+	}
+	params := make(map[string]string, len(names))
+	for _, n := range names {
+		params[n] = req.PathValue(n)
+	}
+	cleanup := func() {}
+	var form *multipartForm
+	if strings.HasPrefix(strings.ToLower(req.Header.Get("Content-Type")), "multipart/form-data") {
+		form, err = parseMultipart(body, req.Header.Get("Content-Type"), os.TempDir())
+		if err != nil {
+			http.Error(w, "malformed multipart body", http.StatusBadRequest)
+			return nil, nil, false
+		}
+		cleanup = form.cleanup
+		body = nil // like PHP, php://input is empty for multipart/form-data
+	}
+	return &event{
+		route:   route,
+		method:  req.Method,
+		path:    req.URL.Path,
+		query:   req.URL.RawQuery,
+		headers: req.Header,
+		params:  params,
+		body:    body,
+		remote:  req.RemoteAddr,
+		host:    req.Host,
+		proto:   req.Proto,
+		tls:     req.TLS != nil,
+		values:  middleware.Values(req.Context()),
+		form:    form,
+	}, cleanup, true
+}
+
+// response is PHP's answer to one request.
+type response struct {
+	status int
+	header http.Header
+	body   []byte
+}
+
+var errBadResponse = errors.New("bad php response")
+
+// callPHP returns a value, not a pointer: uncached routes then allocate
+// nothing for it.
+func callPHP(ctx context.Context, php Dispatcher, ev *event) (response, error) {
+	raw, body, err := php.Dispatch(ctx, ev)
+	if err != nil {
+		return response{}, err
+	}
+	status, header, err := wire.DecodeResponse(raw)
+	if err != nil {
+		return response{}, fmt.Errorf("%w: %w", errBadResponse, err)
+	}
+	if status == 0 {
+		status = http.StatusOK
+	}
+	return response{status: status, header: header, body: body}, nil
+}
+
+func writeError(w http.ResponseWriter, req *http.Request, err error, log *slog.Logger) {
+	switch {
+	case errors.Is(err, errBadResponse):
+		log.Error("decode php response", "err", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	case errors.Is(err, context.DeadlineExceeded):
+		http.Error(w, "gateway timeout", http.StatusGatewayTimeout)
+	case req.Context().Err() == nil:
+		// The PHP thread died with the request (a fatal error).
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}
+	// Otherwise the client went away; there is nobody to answer.
+}
+
+// write sends the response; the header map may be shared with the cache, so
+// it is copied, never handed over.
+func (r *response) write(w http.ResponseWriter) {
+	h := w.Header()
+	for k, vs := range r.header {
+		ck := http.CanonicalHeaderKey(k)
+		h[ck] = append(h[ck], vs...)
+	}
+	w.WriteHeader(r.status)
+	_, _ = w.Write(r.body)
 }
 
 func seconds(s float64) time.Duration { return time.Duration(s * float64(time.Second)) }

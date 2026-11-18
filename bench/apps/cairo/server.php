@@ -87,6 +87,11 @@ $http->get('/info', fn (): Response => Response::json(bench_info() + ['server' =
 $http->get('/hello', fn (): Response => $text(bench_hello()));
 $http->get('/json', fn (): Response => $json(bench_json()));
 $http->get('/cpu', fn (): Response => $text(bench_cpu()));
+// The same work behind Go's response cache: after the first request, Go
+// answers alone, or serves the stale copy while one request rebuilds it.
+$http->get('/cpu-cached', fn (): Response => $text(bench_cpu()))->cache(ttl: 60);
+$http->get('/mysql-slow-cached', fn (): Response => $json($my->with(bench_slow_query(...))))
+    ->cache(ttl: 1, staleWhileRevalidate: 10);
 $http->get('/sleep', fn (): Response => $text(bench_sleep()));
 $http->get('/curl', fn (): Response => $text($curl->with(bench_curl(...))));
 $http->get('/client', fn (): Response => $text($client->get(bench_upstream_url())->body));

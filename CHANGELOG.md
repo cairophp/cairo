@@ -7,6 +7,21 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-18
+
+Faster requests, socket waits and curl, and the static binary on PHP 8.5.
+
+### Build
+
+- The static binary is built on PHP 8.5.12 with opcache built in, and CI
+  and the release workflow require opcache. The native build (`make php`,
+  the Dockerfile) stays on PHP 8.3, so CI covers both.
+
+### Changed
+
+- `register_argc_argv` defaults to 0: PHP 8.5 deprecates deriving `argv`
+  from the query string.
+
 ### Performance
 
 - A hooked socket wait first polls the socket on the PHP thread for up to
@@ -121,7 +136,7 @@ PHP, with many requests per PHP thread as fibers.
 
 - PHP built with opcache and the common extensions (#18).
 - One static musl binary, `make static`, with cached library and PHP layers
-  (#24, #37), for amd64 and arm64, on PHP 8.5 with opcache built in.
+  (#24, #37), for amd64 and arm64.
 - IDE stubs and a Composer package with a PHPStan include (#34); typed gRPC
   streams and generated messages for static analysis (#39).
 - License notices for adapted code (#29); Cairo is licensed under Apache-2.0.
@@ -131,5 +146,6 @@ PHP, with many requests per PHP thread as fibers.
 - `Cairo\Sql` returns timestamps in UTC instead of the server's time zone
   (#40).
 
-[Unreleased]: https://github.com/cairophp/cairo/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/cairophp/cairo/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/cairophp/cairo/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/cairophp/cairo/releases/tag/v0.1.0

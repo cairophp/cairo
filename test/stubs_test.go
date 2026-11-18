@@ -18,7 +18,7 @@ func TestStubsUpToDate(t *testing.T) {
 	if out, _ := exec.Command(php, "-r", "echo class_exists('PhpToken') ? 'y' : 'n';").Output(); string(out) != "y" {
 		t.Skip("the php CLI has no tokenizer")
 	}
-	want, err := exec.Command(php, "../scripts/stubs.php", "../php/runtime.php", "../php/cache.php").Output()
+	want, err := exec.Command(php, "../scripts/stubs.php", "../php/runtime.php", "../php/cache.php", "../php/pool.php").Output()
 	if err != nil {
 		t.Fatalf("scripts/stubs.php: %v", err)
 	}

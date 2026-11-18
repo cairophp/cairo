@@ -136,6 +136,7 @@ internal/grpcserver/  grpc-go server, proto compilation, health, reflection
 php/runtime.php       the PHP side: Cairo\ classes and the fiber scheduler (embedded in the binary)
 php/revolt.php        Cairo\Revolt\Driver, loaded when revolt/event-loop is installed
 php/cache.php         Cairo\Cache, loaded on first use
+php/pool.php          Cairo\Pool, loaded on first use
 examples/greeter/     HTTP + gRPC example
 examples/isolated/    isolated mode: superglobals, echo/header(), resets
 examples/frameworks/  PSR-15 handlers and Symfony-style kernels (composer install first)

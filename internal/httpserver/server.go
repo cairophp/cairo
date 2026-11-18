@@ -15,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mohamed-samir907/cairo/internal/middleware"
-	"github.com/mohamed-samir907/cairo/internal/spec"
-	"github.com/mohamed-samir907/cairo/internal/wire"
+	"github.com/cairophp/cairo/internal/middleware"
+	"github.com/cairophp/cairo/internal/spec"
+	"github.com/cairophp/cairo/internal/wire"
 )
 
 // Dispatcher sends a call to PHP and returns PHP's answer: its metadata

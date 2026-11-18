@@ -31,9 +31,9 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"github.com/mohamed-samir907/cairo/internal/middleware"
-	"github.com/mohamed-samir907/cairo/internal/spec"
-	"github.com/mohamed-samir907/cairo/internal/wire"
+	"github.com/cairophp/cairo/internal/middleware"
+	"github.com/cairophp/cairo/internal/spec"
+	"github.com/cairophp/cairo/internal/wire"
 )
 
 // Dispatcher sends a call to PHP and returns PHP's JSON response.

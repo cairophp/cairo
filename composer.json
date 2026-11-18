@@ -1,5 +1,5 @@
 {
-    "name": "mohamed-samir907/cairo",
+    "name": "cairophp/cairo",
     "description": "Cairo's PHP API as stubs, for IDEs and static analysers. Cairo itself is the cairo binary, which has the real classes built in.",
     "type": "library",
     "license": "Apache-2.0",

@@ -131,5 +131,5 @@ PHP, with many requests per PHP thread as fibers.
 - `Cairo\Sql` returns timestamps in UTC instead of the server's time zone
   (#40).
 
-[Unreleased]: https://github.com/mohamed-samir907/cairo/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/mohamed-samir907/cairo/releases/tag/v0.1.0
+[Unreleased]: https://github.com/cairophp/cairo/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/cairophp/cairo/releases/tag/v0.1.0

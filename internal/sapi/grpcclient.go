@@ -27,7 +27,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"github.com/mohamed-samir907/cairo/internal/grpcserver"
+	"github.com/cairophp/cairo/internal/grpcserver"
 )
 
 // Cairo\Grpc\Client: unary calls through grpc-go. Messages cross as

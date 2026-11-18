@@ -15,6 +15,11 @@ change the PHP API; patch versions do not.
   rebuilds it. Responses with `Set-Cookie` or private `Cache-Control`, and
   requests with `Authorization` or `Cookie`, are not cached by default.
 
+### Changed
+
+- The stubs' Composer package is now `cairophp/stubs`, a mirror of `stubs/`
+  published with each release; it replaces `cairophp/cairo`.
+
 ## [0.1.1] - 2026-11-18
 
 Faster requests, socket waits and curl, and the static binary on PHP 8.5.

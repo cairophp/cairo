@@ -1,5 +1,5 @@
 {
-    "name": "cairophp/cairo",
+    "name": "cairophp/stubs",
     "description": "Cairo's PHP API as stubs, for IDEs and static analysers. Cairo itself is the cairo binary, which has the real classes built in.",
     "type": "library",
     "license": "Apache-2.0",
@@ -9,7 +9,7 @@
     },
     "extra": {
         "phpstan": {
-            "includes": ["stubs/phpstan.neon"]
+            "includes": ["phpstan.neon"]
         }
     }
 }

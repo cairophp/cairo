@@ -40,3 +40,15 @@ func cInts(p *C.int, n C.int) []int {
 func goFiberCall(id C.longlong, name *C.char, nn C.int, payload *C.char, np C.int) C.longlong {
 	return engine.submit(int64(id), op{Op: C.GoStringN(name, nn), Payload: C.GoStringN(payload, np)})
 }
+
+// goInboxLen reports how many events wait for the PHP thread: cairo_wait_here()
+// does not hold the thread while it has other work.
+//
+//export goInboxLen
+func goInboxLen(tid C.int) C.int {
+	t := engine.table[int(tid)].Load()
+	if t == nil {
+		return 0
+	}
+	return C.int(len(t.inbox))
+}

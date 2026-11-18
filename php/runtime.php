@@ -3217,6 +3217,19 @@ namespace Cairo\Internal {
             }, $context);
         }
 
+        /**
+         * @internal Wait for socket $fd on the thread itself for a moment (see
+         * cairo_wait_here() in waitops.c), when nothing else could run on it
+         * meanwhile: no fiber is ready or waiting for Go and, unless the
+         * thread serves one request at a time anyway, Go has no event queued
+         * for it. Returns whether the socket became ready.
+         */
+        public function waitHere(int $fd, bool $write): bool
+        {
+            return $this->io === [] && $this->ready->isEmpty() && $this->later->isEmpty()
+                && \cairo_wait_here($fd, $write, !$this->busy);
+        }
+
         /** @internal An async() task threw. */
         public function taskFailed(): void
         {
@@ -3640,7 +3653,11 @@ namespace Cairo\Internal {
             if (!self::on(\Cairo\Hook::SOCKETS)) {
                 return 0;
             }
-            $result = Scheduler::instance()->submitted(\cairo_fiber_wait(Context::current()->fiberId, $fd, $write, $timeout));
+            $scheduler = Scheduler::instance();
+            if ($scheduler->waitHere($fd, $write)) {
+                return 1;
+            }
+            $result = $scheduler->submitted(\cairo_fiber_wait(Context::current()->fiberId, $fd, $write, $timeout));
             return $result === 'timeout' ? -1 : 1;
         }
 

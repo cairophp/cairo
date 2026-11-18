@@ -46,6 +46,7 @@ func init() {
 	ops := map[string]func(context.Context, grpcStreamRequest) map[string]any{
 		"grpc.server.recv":      grpcServerRecv,
 		"grpc.server.send":      grpcServerSend,
+		"grpc.server.trySend":   grpcServerTrySend,
 		"grpc.stream.open":      grpcStreamOpen,
 		"grpc.stream.send":      grpcStreamSend,
 		"grpc.stream.closeSend": grpcStreamCloseSend,
@@ -85,6 +86,16 @@ func grpcServerSend(_ context.Context, req grpcStreamRequest) map[string]any {
 		return grpcStatusFail(err)
 	}
 	return map[string]any{"ok": true}
+}
+
+// grpcServerTrySend runs on the PHP thread (it never waits): queued is
+// false when the reply queue is full and PHP should use grpc.server.send.
+func grpcServerTrySend(_ context.Context, req grpcStreamRequest) map[string]any {
+	queued, err := grpcserver.StreamTrySend(req.ID, req.Message)
+	if err != nil {
+		return grpcStatusFail(err)
+	}
+	return map[string]any{"ok": true, "queued": queued}
 }
 
 // grpcStreamOpen starts a streaming call. The stream is not tied to the

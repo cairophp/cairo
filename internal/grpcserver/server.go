@@ -33,11 +33,12 @@ import (
 
 	"github.com/mohamed-samir907/cairo/internal/middleware"
 	"github.com/mohamed-samir907/cairo/internal/spec"
+	"github.com/mohamed-samir907/cairo/internal/wire"
 )
 
 // Dispatcher sends a call to PHP and returns PHP's JSON response.
 type Dispatcher interface {
-	Dispatch(ctx context.Context, ev map[string]any) ([]byte, error)
+	Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte, err error)
 }
 
 type method struct {
@@ -150,6 +151,49 @@ type phpResult struct {
 	Code    int             `json:"code"`
 }
 
+// event is a call as PHP receives it.
+type event struct {
+	Service         int
+	Method          string
+	Values          map[string]any
+	Message         json.RawMessage // protojson; PHP decodes it to an array
+	Stream          int64
+	ClientStreaming bool
+	ServerStreaming bool
+}
+
+func (ev *event) AppendWire(b []byte, id int64, deadline float64) []byte {
+	n := 4
+	for _, set := range []bool{deadline > 0, len(ev.Values) > 0, ev.Message != nil, ev.Stream != 0} {
+		if set {
+			n++
+		}
+	}
+	if ev.Stream != 0 {
+		n += 2
+	}
+	b = wire.AppendMap(b, n)
+	b = wire.AppendString(wire.AppendKey(b, "type"), "grpc")
+	b = wire.AppendInt(wire.AppendKey(b, "id"), id)
+	if deadline > 0 {
+		b = wire.AppendFloat(wire.AppendKey(b, "deadline"), deadline)
+	}
+	b = wire.AppendInt(wire.AppendKey(b, "service"), int64(ev.Service))
+	b = wire.AppendString(wire.AppendKey(b, "method"), ev.Method)
+	if len(ev.Values) > 0 {
+		b = wire.AppendValue(wire.AppendKey(b, "values"), ev.Values)
+	}
+	if ev.Message != nil {
+		b = wire.AppendJSON(wire.AppendKey(b, "message"), ev.Message)
+	}
+	if ev.Stream != 0 {
+		b = wire.AppendInt(wire.AppendKey(b, "stream"), ev.Stream)
+		b = wire.AppendBool(wire.AppendKey(b, "client_streaming"), ev.ClientStreaming)
+		b = wire.AppendBool(wire.AppendKey(b, "server_streaming"), ev.ServerStreaming)
+	}
+	return b
+}
+
 func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 	full, ok := grpc.MethodFromServerStream(stream)
 	if !ok {
@@ -159,13 +203,10 @@ func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 	if !ok {
 		return status.Errorf(codes.Unimplemented, "unknown method %s", full)
 	}
-	ev := map[string]any{
-		"type":    "grpc",
-		"service": m.serviceID,
-		"method":  m.name,
-	}
-	if v := middleware.Values(stream.Context()); len(v) > 0 {
-		ev["values"] = v
+	ev := &event{
+		Service: m.serviceID,
+		Method:  m.name,
+		Values:  middleware.Values(stream.Context()),
 	}
 	// A client-streaming method's messages are read by PHP through its
 	// stream; every other method starts with one request message.
@@ -178,14 +219,14 @@ func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 		if err != nil {
 			return status.Errorf(codes.Internal, "encode request: %v", err)
 		}
-		ev["message"] = json.RawMessage(reqJSON)
+		ev.Message = reqJSON
 	}
 	if m.desc.IsStreamingClient() || m.desc.IsStreamingServer() {
 		id := openStream(stream, m.desc)
 		defer closeStream(id)
-		ev["stream"] = id
-		ev["client_streaming"] = m.desc.IsStreamingClient()
-		ev["server_streaming"] = m.desc.IsStreamingServer()
+		ev.Stream = id
+		ev.ClientStreaming = m.desc.IsStreamingClient()
+		ev.ServerStreaming = m.desc.IsStreamingServer()
 	}
 
 	ctx := stream.Context()
@@ -194,7 +235,7 @@ func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 		ctx, cancel = context.WithTimeout(ctx, s.maxDuration)
 		defer cancel()
 	}
-	raw, err := s.php.Dispatch(ctx, ev)
+	raw, _, err := s.php.Dispatch(ctx, ev)
 	if err != nil {
 		if ctx.Err() == nil {
 			// The PHP thread died with the call (a fatal error).

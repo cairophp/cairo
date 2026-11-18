@@ -1019,7 +1019,7 @@ namespace Cairo {
             throw new \InvalidArgumentException('offload() needs an OffloadTask, a function name or [Class::class, "staticMethod"]');
         }
         $payload = base64_encode(serialize([$fn, $args]));
-        $result = Scheduler::instance()->op(['op' => 'offload', 'payload' => $payload]);
+        $result = Scheduler::instance()->call('offload', $payload);
         $out = unserialize(base64_decode((string) $result));
         if (!($out['ok'] ?? false)) {
             throw new OffloadException(($out['class'] ?? 'Error') . ': ' . ($out['message'] ?? 'offloaded job failed'));
@@ -1064,8 +1064,9 @@ namespace Cairo {
 
         /**
          * The current fiber's connection: the same one on every call in this
-         * fiber, returned to the pool when the fiber ends. A child task from
-         * async() gets its own.
+         * fiber, returned to the pool when the fiber ends (dropped if the
+         * request was cancelled; call discard() after a connection error). A
+         * child task from async() gets its own.
          */
         public function get(): mixed
         {
@@ -1079,14 +1080,26 @@ namespace Cairo {
             return $conn;
         }
 
-        /** Borrow a connection for $fn only, then return it. */
+        /**
+         * Borrow a connection for $fn only, then return it. When $fn throws,
+         * or the request was cancelled meanwhile, the connection is dropped
+         * instead: it may have been cut off in the middle of a reply.
+         */
         public function with(callable $fn): mixed
         {
             $conn = $this->acquire();
+            $ok = false;
             try {
-                return $fn($conn);
+                $result = $fn($conn);
+                $ok = true;
+                return $result;
             } finally {
-                $this->giveBack($conn);
+                if ($ok && Context::current()->err() === null) {
+                    $this->giveBack($conn);
+                } else {
+                    $this->open--;
+                    $this->wakeOne();
+                }
             }
         }
 
@@ -1150,6 +1163,13 @@ namespace Cairo {
             }
             $conn = $this->held[$ctx];
             unset($this->held[$ctx]);
+            if ($ctx->err() !== null) {
+                // Cancelled or past its deadline: an I/O wait on the
+                // connection may have been cut off, so it is not reused.
+                $this->open--;
+                $this->wakeOne();
+                return;
+            }
             $this->giveBack($conn);
         }
 
@@ -1480,7 +1500,7 @@ namespace Cairo\Http {
 
         public function body(): string
         {
-            return base64_decode($this->event['body'] ?? '');
+            return (string) ($this->event['body'] ?? '');
         }
 
         public function json(): mixed
@@ -2185,7 +2205,16 @@ namespace Cairo\Grpc {
         /** @param TReply $message */
         public function send(array|object $message): void
         {
-            Stream::call('grpc.server.send', ['id' => $this->id, 'message' => Stream::encode($message)]);
+            // Queued without a fiber switch while Go's reply queue has room;
+            // a full queue waits on the fiber's goroutine instead.
+            $payload = ['id' => $this->id, 'message' => Stream::encode($message)];
+            $r = \Cairo\Internal\Go::callNow('grpc.server.trySend', $payload);
+            if (!is_array($r) || !($r['ok'] ?? false)) {
+                throw new Exception((int) ($r['code'] ?? Code::UNKNOWN), (string) ($r['error'] ?? 'stream failed'));
+            }
+            if (!($r['queued'] ?? false)) {
+                Stream::call('grpc.server.send', $payload);
+            }
         }
 
         /** @return \Generator<int, TRequest> */
@@ -2783,17 +2812,21 @@ namespace Cairo\Sql {
          * plus the go-sql-driver/mysql parameters such as tls or timeout).
          *
          * Options: max_open (connections, 0 for no limit; default 10),
-         * max_idle (default 2), max_lifetime and max_idle_time (seconds).
-         * Connecting is lazy: a bad DSN shows on the first query.
+         * max_idle (default max_open, or 10 with no limit), max_lifetime and
+         * max_idle_time (seconds). Fewer idle than open connections means a
+         * reconnect for most queries under load; max_idle_time closes the
+         * ones a quiet pool does not need. Connecting is lazy: a bad DSN shows
+         * on the first query.
          *
          * @param array{max_open?: int, max_idle?: int, max_lifetime?: float, max_idle_time?: float} $options
          */
         public static function open(string $dsn, array $options = []): self
         {
+            $maxOpen = (int) ($options['max_open'] ?? 10);
             $pool = self::call('sql.open', [
                 'dsn' => $dsn,
-                'max_open' => (int) ($options['max_open'] ?? 10),
-                'max_idle' => (int) ($options['max_idle'] ?? 2),
+                'max_open' => $maxOpen,
+                'max_idle' => (int) ($options['max_idle'] ?? ($maxOpen > 0 ? $maxOpen : 10)),
                 'max_lifetime' => (float) ($options['max_lifetime'] ?? 0),
                 'max_idle_time' => (float) ($options['max_idle_time'] ?? 0),
             ]);
@@ -2943,6 +2976,11 @@ namespace Cairo\Internal {
         /** Thread recycling (App::maxRequests(), App::maxMemory()). */
         private int $active = 0;
         private int $served = 0;
+
+        /** Idle fibers kept by startFiber(), at most IDLE_FIBERS. */
+        private const IDLE_FIBERS = 64;
+        /** @var list<\Fiber> */
+        private array $idle = [];
         private bool $retireAsked = false;
         private bool $retiring = false;
 
@@ -2959,6 +2997,33 @@ namespace Cairo\Internal {
             return self::$instance ?? throw new \LogicException('the Cairo scheduler is not running');
         }
 
+        /**
+         * Run $job in a fiber bound to $context. A fiber whose job finished is
+         * kept and runs the next job: a new fiber costs a stack mmap and, when
+         * it is freed, a TLB shootdown on every CPU.
+         */
+        public function startFiber(\Closure $job, Context $context): void
+        {
+            while (($fiber = array_pop($this->idle)) !== null && !$fiber->isSuspended()) {
+            }
+            if ($fiber !== null) {
+                Context::bind($fiber, $context);
+                $fiber->resume($job);
+                return;
+            }
+            $fiber = new \Fiber(function (\Closure $job): void {
+                do {
+                    $job();
+                    if (count($this->idle) >= self::IDLE_FIBERS) {
+                        return;
+                    }
+                    $this->idle[] = \Fiber::getCurrent();
+                } while (($job = \Fiber::suspend()) instanceof \Closure);
+            });
+            Context::bind($fiber, $context);
+            $fiber->start($job);
+        }
+
         public static function running(): bool
         {
             return self::$instance !== null;
@@ -2967,7 +3032,18 @@ namespace Cairo\Internal {
         /** Ask the current fiber's goroutine to perform $op, and suspend until it is done. */
         public function op(array $op): mixed
         {
-            $id = \cairo_fiber_op(Context::current()->fiberId, json_encode($op, JSON_THROW_ON_ERROR));
+            return $this->submitted(\cairo_fiber_op(Context::current()->fiberId, json_encode($op, JSON_THROW_ON_ERROR)));
+        }
+
+        /** Ask the current fiber's goroutine to run $op with a payload string, and suspend until it is done. */
+        public function call(string $op, string $payload): mixed
+        {
+            return $this->submitted(\cairo_fiber_call(Context::current()->fiberId, $op, $payload));
+        }
+
+        /** Wait for the operation a cairo_fiber_*() call just submitted as $id (-1: refused). */
+        public function submitted(int $id): mixed
+        {
             if ($id < 0) {
                 throw new \LogicException('Cairo I/O must run inside a request handler or an async() task');
             }
@@ -3044,7 +3120,7 @@ namespace Cairo\Internal {
                 if ($this->retiring && $this->active === 0 && $this->pending->isEmpty()) {
                     return;   // recycled: Go already runs a replacement thread
                 }
-                $event = json_decode(\cairo_next_event(), true, 512, JSON_THROW_ON_ERROR);
+                $event = \cairo_next_event();
                 switch ($event['type']) {
                     case 'io':
                         $fiber = $this->io[$event['io']] ?? null;
@@ -3121,7 +3197,7 @@ namespace Cairo\Internal {
             $context = new Context($id, $id, isset($event['deadline']) ? (float) $event['deadline'] : null);
             $context->setGoValues((array) ($event['values'] ?? []));
             $this->active++;
-            $fiber = new \Fiber(function () use ($fn, $context): void {
+            $this->startFiber(function () use ($fn, $context): void {
                 try {
                     $fn();
                 } finally {
@@ -3130,9 +3206,7 @@ namespace Cairo\Internal {
                     $this->served++;
                     $this->checkRecycle();
                 }
-            });
-            Context::bind($fiber, $context);
-            $fiber->start();
+            }, $context);
         }
 
         private function resolve(int $id): mixed
@@ -3181,21 +3255,16 @@ namespace Cairo\Internal {
                 }
             } catch (Context\DeadlineExceeded) {
                 $response = Http\Response::text("Gateway Timeout\n", 504);
+            } catch (Context\Canceled) {
+                // The client went away; nobody reads this, and it is not an error.
+                $response = Http\Response::text("Client Closed Request\n", 499);
             } catch (\Throwable $e) {
                 error_log('cairo: ' . $e);
                 $response = Http\Response::text("Internal Server Error\n", 500);
             }
             Context::current()->markAnswered();
             Form::untrack($event['files'] ?? []);   // Go removes what is left once we respond
-            $headers = [];
-            foreach ($response->headers as $name => $value) {
-                $headers[$name] = is_array($value) ? array_values($value) : [$value];
-            }
-            \cairo_respond((int) $event['id'], json_encode([
-                'status' => $response->status,
-                'headers' => (object) $headers,
-                'body' => base64_encode($response->body),
-            ], JSON_THROW_ON_ERROR));
+            \cairo_respond_http((int) $event['id'], $response->status, $response->headers, $response->body);
         }
 
         /** @return array<string, list<string>> the headers set with header() */
@@ -3302,10 +3371,22 @@ namespace Cairo\Internal {
         /** @param array<string, mixed> $payload */
         public static function call(string $op, array $payload): mixed
         {
-            $json = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
             if (Scheduler::running() && Context::current()->fiberId !== 0) {
-                return Scheduler::instance()->op(['op' => $op, 'payload' => $json]);
+                $json = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                return Scheduler::instance()->call($op, $json);
             }
+            return self::callNow($op, $payload);
+        }
+
+        /**
+         * Run $op on this thread without suspending the fiber: only for ops
+         * that never wait.
+         *
+         * @param array<string, mixed> $payload
+         */
+        public static function callNow(string $op, array $payload): mixed
+        {
+            $json = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
             $response = json_decode(\cairo_go_call($op, $json), true, 512, JSON_THROW_ON_ERROR);
             if (isset($response['error'])) {
                 throw new \RuntimeException((string) $response['error']);
@@ -3414,7 +3495,7 @@ namespace Cairo\Internal {
                 foreach ($event['headers'] ?? [] as $name => $values) {
                     if (strcasecmp($name, 'Content-Type') === 0
                         && str_starts_with(strtolower((string) ($values[0] ?? '')), 'application/x-www-form-urlencoded')) {
-                        parse_str(base64_decode((string) ($event['body'] ?? '')), $fields);
+                        parse_str((string) ($event['body'] ?? ''), $fields);
                     }
                 }
             }
@@ -3524,7 +3605,7 @@ namespace Cairo\Internal {
             if (!self::on(\Cairo\Hook::SOCKETS)) {
                 return 0;
             }
-            $result = Scheduler::instance()->op(['op' => 'wait', 'fd' => $fd, 'write' => $write, 'timeout' => $timeout]);
+            $result = Scheduler::instance()->submitted(\cairo_fiber_wait(Context::current()->fiberId, $fd, $write, $timeout));
             return $result === 'timeout' ? -1 : 1;
         }
 
@@ -3541,7 +3622,7 @@ namespace Cairo\Internal {
             if (!self::on(\Cairo\Hook::CURL)) {
                 return 0;
             }
-            Scheduler::instance()->op(['op' => 'waitset', 'read' => $read, 'write_fds' => $write, 'timeout' => $timeout]);
+            Scheduler::instance()->submitted(\cairo_fiber_waitset(Context::current()->fiberId, $read, $write, $timeout));
             return 1;
         }
 
@@ -3616,7 +3697,7 @@ namespace Cairo\Internal {
             if (!self::on(\Cairo\Hook::PGSQL)) {
                 return null;
             }
-            $result = Scheduler::instance()->op(['op' => 'pg', 'payload' => $request]);
+            $result = Scheduler::instance()->call('pg', $request);
             return json_encode($result, JSON_THROW_ON_ERROR);
         }
 
@@ -3659,7 +3740,7 @@ namespace Cairo\Internal {
         public function run(): void
         {
             while (true) {
-                $event = json_decode(\cairo_next_event(), true, 512, JSON_THROW_ON_ERROR);
+                $event = \cairo_next_event();
                 if ($event['type'] === 'shutdown') {
                     return;
                 }
@@ -3689,7 +3770,7 @@ namespace Cairo\Internal {
         // Go starts the goroutine that will serve this fiber.
         $goroutine = \cairo_fiber_open($parent->fiberId);
         $context = $parent->child($goroutine);
-        $fiber = new \Fiber(static function () use ($fn, $task, $goroutine, $context): void {
+        Scheduler::instance()->startFiber(static function () use ($fn, $task, $goroutine, $context): void {
             try {
                 $task->result = \cairo_guard($fn);
             } catch (\Throwable $e) {
@@ -3703,9 +3784,7 @@ namespace Cairo\Internal {
                 Scheduler::instance()->ready($waiter);
             }
             $task->waiters = [];
-        });
-        Context::bind($fiber, $context);
-        $fiber->start();
+        }, $context);
         return $task;
     }
 

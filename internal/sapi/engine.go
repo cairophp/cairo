@@ -30,12 +30,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
 
 	"github.com/mohamed-samir907/cairo/internal/spec"
+	"github.com/mohamed-samir907/cairo/internal/wire"
 	"github.com/mohamed-samir907/cairo/php"
 )
 
@@ -117,8 +119,15 @@ type event struct {
 // resp receives nil when the thread died before answering.
 type call struct {
 	thread  *thread
-	resp    chan []byte
+	resp    chan *reply
 	started atomic.Bool // PHP took it from the inbox
+}
+
+// reply is PHP's answer to a call: its metadata (JSON) and, for an HTTP
+// response, the body as raw bytes.
+type reply struct {
+	meta []byte
+	body []byte
 }
 
 // fiber is the goroutine side of one PHP fiber.
@@ -210,6 +219,18 @@ func Start(opts Options) (*Engine, error) {
 	no := pick(opts.OffloadThreads, e.spec.OffloadThreads)
 	if nw+no > maxThreads/2 {
 		return nil, fmt.Errorf("too many PHP threads: %d (at most %d)", nw+no, maxThreads/2)
+	}
+	if os.Getenv("GOMAXPROCS") == "" {
+		// A PHP thread calling into Go (to answer a request, to start I/O)
+		// needs a free P. With only one P per CPU, net/http's goroutines hold
+		// them all under load and PHP threads queue for one.
+		runtime.GOMAXPROCS(runtime.GOMAXPROCS(0) + nw + no)
+	}
+	if os.Getenv("GOGC") == "" {
+		// Go's live heap is small (request data lives in PHP), so with the
+		// default of 100 it collects every few hundred requests. 400 measured
+		// about 10% more requests per second for about 12 MiB more memory.
+		debug.SetGCPercent(400)
 	}
 	if e.spec.MaxInFlight > 0 {
 		e.slots = make(chan struct{}, e.spec.MaxInFlight*nw)
@@ -306,7 +327,7 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 	}
 	close(e.shutdownCh)
 	e.lifeMu.Unlock()
-	stop, _ := json.Marshal(map[string]string{"type": "shutdown"})
+	stop := wire.Encode(map[string]string{"type": "shutdown"})
 	for i := range e.table {
 		if t := e.table[i].Load(); t != nil {
 			t.inbox <- event{data: stop}
@@ -320,14 +341,15 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 	}
 }
 
-// Dispatch runs one request on a PHP request thread and returns PHP's answer.
+// Dispatch runs one request on a PHP request thread and returns PHP's answer:
+// its metadata (JSON) and, for HTTP, the response body.
 //
 // The calling goroutine becomes the request's root fiber: until PHP answers,
-// it performs that fiber's I/O under ctx. ev must carry a "type" ("http" or
-// "grpc"); Dispatch adds "id" and "deadline". If ctx ends first, Dispatch
-// returns ctx.Err() and a helper goroutine keeps answering the fiber (with
-// the context's error) until PHP finishes.
-func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error) {
+// it performs that fiber's I/O under ctx. ev carries a "type" ("http" or
+// "grpc"); Dispatch gives it the "id" and "deadline". If ctx ends first,
+// Dispatch returns ctx.Err() and a helper goroutine keeps answering the
+// fiber (with the context's error) until PHP finishes.
+func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte, err error) {
 	release := func() {}
 	if e.slots != nil {
 		// Backpressure: wait here, in Go, for a free slot.
@@ -336,12 +358,12 @@ func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error
 			var once sync.Once
 			release = func() { once.Do(func() { <-e.slots }) }
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		}
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	t := acquire(e.workers)
-	c := &call{thread: t, resp: make(chan []byte, 1)}
+	c := &call{thread: t, resp: make(chan *reply, 1)}
 	f := &fiber{ctx: ctx, cancel: cancel, thread: t, ops: make(chan op, 1)}
 	id := e.nextID.Add(1)
 	f.id = id
@@ -349,17 +371,11 @@ func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error
 	e.fibers.Store(id, f)
 	t.inflight.Add(1)
 
-	ev["id"] = id
+	var deadline float64
 	if dl, ok := ctx.Deadline(); ok {
-		ev["deadline"] = float64(dl.UnixNano()) / 1e9
+		deadline = float64(dl.UnixNano()) / 1e9
 	}
-	b, err := json.Marshal(ev)
-	if err != nil {
-		t.sendMu.RUnlock()
-		e.forget(id, c, f)
-		release()
-		return nil, err
-	}
+	b := ev.AppendWire(make([]byte, 0, 512), id, deadline)
 	select {
 	case t.inbox <- event{data: b, call: c}:
 		t.sendMu.RUnlock()
@@ -367,7 +383,7 @@ func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error
 		t.sendMu.RUnlock()
 		e.forget(id, c, f)
 		release()
-		return nil, ctx.Err()
+		return nil, nil, ctx.Err()
 	}
 	for {
 		select {
@@ -376,9 +392,9 @@ func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error
 			e.fibers.Delete(id)
 			cancel()
 			if r == nil {
-				return nil, ErrThreadStopped
+				return nil, nil, ErrThreadStopped
 			}
-			return r, nil
+			return r.meta, r.body, nil
 		case o := <-f.ops:
 			e.runOp(f, o)
 		case <-ctx.Done():
@@ -406,7 +422,7 @@ func (e *Engine) Dispatch(ctx context.Context, ev map[string]any) ([]byte, error
 					}
 				}
 			}()
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		}
 	}
 }
@@ -599,11 +615,11 @@ func (e *Engine) runOffload(ctx context.Context, payload string) (string, error)
 		return "", errors.New("no offload threads")
 	}
 	t := acquire(e.offload)
-	c := &call{thread: t, resp: make(chan []byte, 1)}
+	c := &call{thread: t, resp: make(chan *reply, 1)}
 	id := e.nextID.Add(1)
 	e.calls.Store(id, c)
 	t.inflight.Add(1)
-	b, _ := json.Marshal(map[string]any{"type": "offload", "id": id, "payload": payload})
+	b := wire.Encode(map[string]any{"type": "offload", "id": id, "payload": payload})
 	select {
 	case t.inbox <- event{data: b, call: c}:
 		t.sendMu.RUnlock()
@@ -622,7 +638,7 @@ func (e *Engine) runOffload(ctx context.Context, payload string) (string, error)
 		var out struct {
 			Payload string `json:"payload"`
 		}
-		if err := json.Unmarshal(r, &out); err != nil {
+		if err := json.Unmarshal(r.meta, &out); err != nil {
 			return "", err
 		}
 		return out.Payload, nil
@@ -660,12 +676,7 @@ func acquire(ts []atomic.Pointer[thread]) *thread {
 }
 
 func (e *Engine) post(t *thread, ev any) {
-	b, err := json.Marshal(ev)
-	if err != nil {
-		e.log.Error("encode event", "err", err)
-		return
-	}
-	t.inbox <- event{data: b}
+	t.inbox <- event{data: wire.Encode(ev)}
 }
 
 func ctxError(ctx context.Context) string {
@@ -835,8 +846,11 @@ func goStopTLS(fd C.int, timeoutSec C.double, errOut **C.char) C.int {
 	return C.int(nfd)
 }
 
+// goNextEvent returns the thread's next event (internal/wire) in C memory,
+// which the caller frees, and its length in n.
+//
 //export goNextEvent
-func goNextEvent(tid C.int) *C.char {
+func goNextEvent(tid C.int, n *C.int) unsafe.Pointer {
 	t := engine.table[int(tid)].Load()
 	t.busySince.Store(0)
 	ev := <-t.inbox
@@ -846,11 +860,12 @@ func goNextEvent(tid C.int) *C.char {
 		ev.call.started.Store(true)
 		t.served.Add(1)
 	}
-	return C.CString(string(ev.data))
+	*n = C.int(len(ev.data))
+	return C.CBytes(ev.data)
 }
 
 //export goRespond
-func goRespond(id C.longlong, data *C.char, n C.int) {
+func goRespond(id C.longlong, data *C.char, n C.int, body *C.char, bn C.int) {
 	e := engine
 	v, ok := e.calls.LoadAndDelete(int64(id))
 	if !ok {
@@ -858,7 +873,11 @@ func goRespond(id C.longlong, data *C.char, n C.int) {
 	}
 	c := v.(*call)
 	c.thread.inflight.Add(-1)
-	c.resp <- C.GoBytes(unsafe.Pointer(data), n)
+	r := &reply{meta: C.GoBytes(unsafe.Pointer(data), n)}
+	if bn > 0 {
+		r.body = C.GoBytes(unsafe.Pointer(body), bn)
+	}
+	c.resp <- r
 }
 
 // goFiberOpen gives a new PHP fiber (from Cairo\async) its own goroutine,
@@ -951,4 +970,15 @@ func goFiberOp(id C.longlong, data *C.char, n C.int) C.longlong {
 	o.ID = opID
 	v.(*fiber).ops <- o
 	return C.longlong(opID)
+}
+
+// submit hands a decoded operation to fiber id's goroutine; see goFiberOp.
+func (e *Engine) submit(id int64, o op) C.longlong {
+	v, ok := e.fibers.Load(id)
+	if !ok {
+		return -1
+	}
+	o.ID = e.nextID.Add(1)
+	v.(*fiber).ops <- o
+	return C.longlong(o.ID)
 }

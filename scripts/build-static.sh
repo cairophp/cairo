@@ -147,7 +147,7 @@ export CGO_CFLAGS="$($PHP_CONFIG --includes) -I$DEPS/include -DCAIRO_STATIC_CURL
 # forth between libraries that need each other. ext/intl is C++.
 # Cairo's curl hook takes over two libcurl functions by renaming calls to
 # them (see internal/sapi/curl_hook.c).
-export CGO_LDFLAGS="-Wl,--wrap=curl_easy_perform -Wl,--wrap=curl_multi_wait -L$PREFIX/lib -L$DEPS/lib -Wl,--start-group -lphp $($PHP_CONFIG --libs) $(pkg-config --libs libcurl libzip) -Wl,--end-group -lstdc++ -lm"
+export CGO_LDFLAGS="-Wl,--wrap=curl_easy_perform -Wl,--wrap=curl_multi_wait -Wl,--wrap=curl_easy_cleanup -L$PREFIX/lib -L$DEPS/lib -Wl,--start-group -lphp $($PHP_CONFIG --libs) $(pkg-config --libs libcurl libzip) -Wl,--end-group -lstdc++ -lm"
 
 cd "$ROOT"
 go build -trimpath -tags netgo,osusergo \

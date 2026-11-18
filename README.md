@@ -181,6 +181,11 @@ public function Chat(ServerStream $stream, Cairo\Context $ctx): void
 }
 ```
 
+`send()` queues the reply for Go to write and returns without a fiber
+switch; once 64 replies are waiting, it waits for room. Queued replies reach
+the client before the call's status, and a write that failed (the client went
+away) is thrown by the next `send()`.
+
 Health checking (`grpc.health.v1`) and server reflection are built in, so
 `grpcurl -plaintext localhost:9000 list` works.
 
@@ -450,7 +455,11 @@ Text columns come back as strings and binary ones (BLOB, VARBINARY) as
 strings too, DATETIME and TIMESTAMP as RFC 3339 in UTC, DATE as `Y-m-d`, and
 DECIMAL as text. `SqlException::$sqlState` is MySQL's SQLSTATE, and
 `$detail` names the MySQL error number. Other go-sql-driver/mysql parameters
-(`tls`, `timeout`, `loc`, ...) go in the URL's query. `examples/sql/mysql.php`
+(`tls`, `timeout`, `loc`, ...) go in the URL's query. Parameters are
+interpolated into the query by the driver (`interpolateParams=true`), so a
+query is one round trip instead of three (prepare, execute, close); set
+`interpolateParams=false` in the URL for server-side prepared statements.
+`examples/sql/mysql.php`
 is the same example as `server.php` for MySQL. PDO MySQL keeps working too,
 through the hooked streams.
 
@@ -552,7 +561,10 @@ $db->with(fn (PDO $pdo) => $pdo->query('SELECT 1')); // borrowed for the callbac
 
 When all connections are in use, `get()` suspends the fiber until one comes
 back. Using one connection from two fibers at once throws instead of
-corrupting the protocol.
+corrupting the protocol. A connection is dropped instead of given back when
+the request was cancelled or past its deadline while holding it (a wait it was
+in may have cut a reply short), and, with `with()`, when the callback throws.
+After a connection error with `get()`, call `discard()`.
 
 ### Request state: Context values
 

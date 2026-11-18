@@ -531,14 +531,19 @@ namespace Cairo {
 
         /**
          * The current fiber's connection: the same one on every call in this
-         * fiber, returned to the pool when the fiber ends. A child task from
-         * async() gets its own.
+         * fiber, returned to the pool when the fiber ends (dropped if the
+         * request was cancelled; call discard() after a connection error). A
+         * child task from async() gets its own.
          */
         public function get(): mixed
         {
         }
 
-        /** Borrow a connection for $fn only, then return it. */
+        /**
+         * Borrow a connection for $fn only, then return it. When $fn throws,
+         * or the request was cancelled meanwhile, the connection is dropped
+         * instead: it may have been cut off in the middle of a reply.
+         */
         public function with(callable $fn): mixed
         {
         }
@@ -1629,8 +1634,11 @@ namespace Cairo\Sql {
          * plus the go-sql-driver/mysql parameters such as tls or timeout).
          *
          * Options: max_open (connections, 0 for no limit; default 10),
-         * max_idle (default 2), max_lifetime and max_idle_time (seconds).
-         * Connecting is lazy: a bad DSN shows on the first query.
+         * max_idle (default max_open, or 10 with no limit), max_lifetime and
+         * max_idle_time (seconds). Fewer idle than open connections means a
+         * reconnect for most queries under load; max_idle_time closes the
+         * ones a quiet pool does not need. Connecting is lazy: a bad DSN shows
+         * on the first query.
          *
          * @param array{max_open?: int, max_idle?: int, max_lifetime?: float, max_idle_time?: float} $options
          */

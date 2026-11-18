@@ -6,6 +6,7 @@
 // cairo_next_event() and runs every request in its own Fiber.
 
 #include <pthread.h>
+#include <limits.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,6 +34,8 @@
 
 #include "cairo.h"
 #include "pgsql.h"
+#include "wire.h"
+#include "waitops.h"
 #include "_cgo_export.h"
 
 // -1 is the boot thread (declare phase); 0..n-1 are worker threads.
@@ -48,6 +51,14 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_respond, 0, 0, 2)
 	ZEND_ARG_INFO(0, id)
 	ZEND_ARG_INFO(0, json)
+	ZEND_ARG_INFO(0, body)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_respond_http, 0, 0, 4)
+	ZEND_ARG_INFO(0, id)
+	ZEND_ARG_INFO(0, status)
+	ZEND_ARG_INFO(0, headers)
+	ZEND_ARG_INFO(0, body)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_fiber_open, 0, 0, 1)
@@ -88,27 +99,72 @@ PHP_FUNCTION(cairo_spec)
 	}
 }
 
-// cairo_next_event(): string (JSON). Blocks this PHP thread until Go has
-// work for it: a new request, a finished I/O operation, or shutdown.
+// cairo_next_event(): array. Blocks this PHP thread until Go has work for
+// it: a new request, a finished I/O operation, or shutdown. Go encodes the
+// event in internal/wire's format; wire.c turns it into the array.
 PHP_FUNCTION(cairo_next_event)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
-	char *s = goNextEvent(cairo_tid);
-	RETVAL_STRING(s);
-	free(s);
+	int len = 0;
+	char *buf = goNextEvent(cairo_tid, &len);
+	int ok = cairo_wire_decode(buf, len < 0 ? 0 : (size_t)len, return_value);
+	free(buf);
+	if (ok == FAILURE) {
+		zend_throw_exception(NULL, "cairo: malformed event from Go", 0);
+		RETURN_THROWS();
+	}
 }
 
-// cairo_respond(int $id, string $json): void
+// cairo_respond(int $id, string $json, string $body = ''): void. $json is
+// the answer's metadata; $body, an HTTP response's body, goes to Go as raw
+// bytes.
 PHP_FUNCTION(cairo_respond)
 {
 	zend_long id;
-	char *json;
-	size_t len;
-	ZEND_PARSE_PARAMETERS_START(2, 2)
+	char *json, *body = NULL;
+	size_t len, blen = 0;
+	ZEND_PARSE_PARAMETERS_START(2, 3)
 		Z_PARAM_LONG(id)
 		Z_PARAM_STRING(json, len)
+		Z_PARAM_OPTIONAL
+		Z_PARAM_STRING(body, blen)
 	ZEND_PARSE_PARAMETERS_END();
-	goRespond((long long)id, json, (int)len);
+	if (len > INT_MAX || blen > INT_MAX) {
+		zend_value_error("cairo_respond(): the answer is larger than 2 GB");
+		RETURN_THROWS();
+	}
+	goRespond((long long)id, json, (int)len, body, (int)blen);
+}
+
+// cairo_respond_http(int $id, int $status, array $headers, string $body):
+// void answers an HTTP request. The status and headers go to Go in
+// internal/wire's format (no JSON on either side), the body as raw bytes.
+PHP_FUNCTION(cairo_respond_http)
+{
+	zend_long id, status;
+	HashTable *headers;
+	char *body;
+	size_t blen;
+	ZEND_PARSE_PARAMETERS_START(4, 4)
+		Z_PARAM_LONG(id)
+		Z_PARAM_LONG(status)
+		Z_PARAM_ARRAY_HT(headers)
+		Z_PARAM_STRING(body, blen)
+	ZEND_PARSE_PARAMETERS_END();
+	if (blen > INT_MAX) {
+		zend_value_error("cairo_respond_http(): the body is larger than 2 GB");
+		RETURN_THROWS();
+	}
+	smart_str meta = {0};
+	if (cairo_wire_encode_response(status, headers, &meta) == FAILURE || ZSTR_LEN(meta.s) > INT_MAX) {
+		smart_str_free(&meta);
+		if (EG(exception) == NULL) {
+			zend_value_error("cairo_respond_http(): the headers are larger than 2 GB");
+		}
+		RETURN_THROWS();
+	}
+	goRespond((long long)id, ZSTR_VAL(meta.s), (int)ZSTR_LEN(meta.s), body, (int)blen);
+	smart_str_free(&meta);
 }
 
 // cairo_retire(string $reason): void. Asks Go to replace this request thread
@@ -261,6 +317,7 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_spec, arginfo_cairo_spec)
 	PHP_FE(cairo_next_event, arginfo_cairo_none)
 	PHP_FE(cairo_respond, arginfo_cairo_respond)
+	PHP_FE(cairo_respond_http, arginfo_cairo_respond_http)
 	PHP_FE(cairo_wake, arginfo_cairo_wake)
 	PHP_FE(cairo_stream_fd, arginfo_cairo_stream_fd)
 	PHP_FE(cairo_retire, arginfo_cairo_retire)
@@ -269,6 +326,9 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_context_open, arginfo_cairo_context_open)
 	PHP_FE(cairo_context_cancel, arginfo_cairo_fiber_close)
 	PHP_FE(cairo_fiber_op, arginfo_cairo_fiber_op)
+	PHP_FE(cairo_fiber_wait, arginfo_cairo_fiber_wait)
+	PHP_FE(cairo_fiber_waitset, arginfo_cairo_fiber_waitset)
+	PHP_FE(cairo_fiber_call, arginfo_cairo_fiber_call)
 	PHP_FE(cairo_go_call, arginfo_cairo_go_call)
 	PHP_FE(cairo_guard, arginfo_cairo_guard)
 	PHP_FE_END
@@ -1260,6 +1320,12 @@ PHP_FUNCTION(cairo_guard)
 			ZVAL_NULL(return_value);
 			cairo_throw_deadline();
 		}
+		if (st->guards == 0) {
+			// The guarded handler is over; the runtime may run the next
+			// request in this same fiber, which starts unstopped.
+			st->stopped = false;
+			st->unwound = false;
+		}
 	}
 }
 
@@ -1486,6 +1552,8 @@ static int run_file(const char *file)
 // cairo_boot starts PHP (module startup, then a request on this thread for
 // the declare phase) and runs the runtime script. php_ini is a php.ini path
 // (file or directory), or NULL to search the usual places.
+static void cairo_signals_onstack(void);
+
 int cairo_boot(const char *runtime_file, const char *php_ini)
 {
 	static char *argv[] = {"cairo", NULL};
@@ -1515,12 +1583,33 @@ int cairo_boot(const char *runtime_file, const char *php_ini)
 		php_module_shutdown();
 		return -1;
 	}
+	cairo_signals_onstack();
 	SG(headers_sent) = 1;
 	SG(request_info).no_headers = 1;
 	php_register_variable("PHP_SELF", "-", NULL);
 
 	cairo_tid = -1;
 	return run_file(runtime_file);
+}
+
+// PHP's signal layer (zend_signal) installs handlers without SA_ONSTACK
+// and passes signals it does not use on to the handler it replaced, which is
+// Go's. Go's handlers must run on the alternate signal stack and abort
+// otherwise; Go's CPU profiler (SIGPROF) hit that. Handlers keep their
+// function and only gain SA_ONSTACK. Signals are process-wide, so after the
+// first PHP request startup this changes nothing.
+static void cairo_signals_onstack(void)
+{
+	static const int sigs[] = {SIGPROF, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2, SIGALRM};
+	for (size_t i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) {
+		struct sigaction sa;
+		if (sigaction(sigs[i], NULL, &sa) != 0 || (sa.sa_flags & SA_ONSTACK)
+			|| sa.sa_handler == SIG_DFL || sa.sa_handler == SIG_IGN) {
+			continue;
+		}
+		sa.sa_flags |= SA_ONSTACK;
+		sigaction(sigs[i], &sa, NULL);
+	}
 }
 
 void cairo_shutdown(void)
@@ -1541,6 +1630,7 @@ int cairo_thread_run(int tid, const char *runtime_file)
 		ts_free_thread();
 		return -1;
 	}
+	cairo_signals_onstack();
 	cairo_interrupt_register();
 	int status = run_file(runtime_file);
 	cairo_interrupt_unregister();
@@ -1560,6 +1650,14 @@ struct cairo_thread_arg {
 static void *cairo_thread_main(void *p)
 {
 	struct cairo_thread_arg *arg = p;
+	// SIGPROF (Go's CPU profiler, a process-wide timer) goes to Go's own
+	// threads: Go's handler aborts when it lands on this C thread while it
+	// runs Go code from a callback. Cairo sets max_execution_time=0 and stops
+	// PHP at deadlines itself, so PHP has no use for it here.
+	sigset_t prof;
+	sigemptyset(&prof);
+	sigaddset(&prof, SIGPROF);
+	pthread_sigmask(SIG_BLOCK, &prof, NULL);
 	int status = cairo_thread_run(arg->tid, arg->file);
 	int tid = arg->tid;
 	free(arg->file);

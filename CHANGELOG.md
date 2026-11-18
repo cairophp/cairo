@@ -7,6 +7,40 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+### Performance
+
+- Request fibers are reused: a new fiber costs a stack mmap and, when freed, a
+  TLB shootdown on every CPU. Hello-world requests went from 23k to about 40k
+  per second on two cores.
+- Go gets one scheduler slot (`GOMAXPROCS`) per PHP thread on top of one per
+  CPU, so PHP threads calling into Go no longer queue behind net/http.
+  `GOMAXPROCS` in the environment still wins.
+- Go's garbage collector runs at `GOGC=400` unless `GOGC` is set: its live
+  heap is small, so the default collected every few hundred requests (about
+  10% more requests per second for about 12 MiB more memory).
+- Events from Go to PHP (requests, I/O results) use a small binary format
+  that C decodes straight into PHP arrays, instead of JSON text and
+  `json_decode()`; request and response bodies cross as raw bytes instead of
+  base64. Hello-world requests about 10% faster, a 64 KiB echo about 4x.
+- Hooked `curl_exec()` keeps its connections alive between calls on one
+  handle (each call used to open a new one): about 2x the requests per second.
+- gRPC `ServerStream::send()` queues the reply without a fiber switch.
+- Hooked socket waits (PDO MySQL, streams, curl) reach Go without JSON, and
+  the poller keeps a socket in epoll between waits: about 9% more MySQL
+  queries per second.
+- `Cairo\Sql` on MySQL interpolates parameters by default
+  (`interpolateParams=true`): one round trip per query instead of three,
+  about 35% more queries per second.
+
+### Fixed
+
+- `Cairo\Pool` drops a connection whose request was cancelled while holding
+  it, and `with()` drops it when the callback throws, instead of handing a
+  broken connection to the next request.
+- `Cairo\Sql` keeps `max_open` idle connections by default (was 2, which
+  reconnected for most queries under load).
+- A request cancelled by its client no longer logs a stack trace.
+
 ## [0.1.0] - 2026-11-17
 
 The first release: one static binary that serves HTTP and gRPC declared in

@@ -23,7 +23,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mohamed-samir907/cairo/internal/spec"
+	"github.com/cairophp/cairo/internal/spec"
 )
 
 // HTTP wraps h with the declared middleware, first declared outermost.

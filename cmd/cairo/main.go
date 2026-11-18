@@ -16,10 +16,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mohamed-samir907/cairo/internal/codegen"
-	"github.com/mohamed-samir907/cairo/internal/grpcserver"
-	"github.com/mohamed-samir907/cairo/internal/httpserver"
-	"github.com/mohamed-samir907/cairo/internal/sapi"
+	"github.com/cairophp/cairo/internal/codegen"
+	"github.com/cairophp/cairo/internal/grpcserver"
+	"github.com/cairophp/cairo/internal/httpserver"
+	"github.com/cairophp/cairo/internal/sapi"
 )
 
 // version is set at build time: -ldflags "-X main.version=v0.1.0".

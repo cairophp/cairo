@@ -36,9 +36,9 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/mohamed-samir907/cairo/internal/spec"
-	"github.com/mohamed-samir907/cairo/internal/wire"
-	"github.com/mohamed-samir907/cairo/php"
+	"github.com/cairophp/cairo/internal/spec"
+	"github.com/cairophp/cairo/internal/wire"
+	"github.com/cairophp/cairo/php"
 )
 
 // inboxSize bounds how many events can queue for one PHP thread before the

@@ -348,7 +348,7 @@ Cairo is a server: per-request code runs millions of times.
 
 When you write or review PHP that runs on Cairo, rather than Cairo itself:
 
-- Install the stubs (`mohamed-samir907/cairo` as a dev dependency) so the
+- Install the stubs (`cairophp/cairo` as a dev dependency) so the
   `Cairo\` API is visible to you and to PHPStan. Never `require` the stubs.
 - Handlers are `fn (Request $req, Context $ctx): Response` for HTTP and the
   methods of the interface `cairo gen` writes for gRPC. Keep request state on

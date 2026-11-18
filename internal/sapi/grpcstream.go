@@ -17,7 +17,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"github.com/mohamed-samir907/cairo/internal/grpcserver"
+	"github.com/cairophp/cairo/internal/grpcserver"
 )
 
 // Streaming gRPC from PHP. Server side: Cairo\Grpc\ServerStream reads and

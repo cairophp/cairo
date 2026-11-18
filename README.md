@@ -42,12 +42,12 @@ cairo serve server.php
 Cairo ships as one static binary for Linux on amd64 and arm64, with PHP 8.5,
 opcache and the extensions built in. Nothing else is needed at run time, not even
 libc, so it also runs in `FROM scratch` images. Download it from the
-[releases page](https://github.com/mohamed-samir907/cairo/releases) and check
+[releases page](https://github.com/cairophp/cairo/releases) and check
 it against `SHA256SUMS`:
 
 ```sh
-curl -fsSLO https://github.com/mohamed-samir907/cairo/releases/download/v0.1.0/cairo-linux-amd64
-curl -fsSLO https://github.com/mohamed-samir907/cairo/releases/download/v0.1.0/SHA256SUMS
+curl -fsSLO https://github.com/cairophp/cairo/releases/download/v0.1.0/cairo-linux-amd64
+curl -fsSLO https://github.com/cairophp/cairo/releases/download/v0.1.0/SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS
 install -m 755 cairo-linux-amd64 /usr/local/bin/cairo
 cairo version
@@ -731,13 +731,13 @@ repository and require it as a dev dependency:
 
 ```json
 {
-    "repositories": [{"type": "vcs", "url": "https://github.com/mohamed-samir907/cairo"}],
-    "require-dev": {"mohamed-samir907/cairo": "dev-main"}
+    "repositories": [{"type": "vcs", "url": "https://github.com/cairophp/cairo"}],
+    "require-dev": {"cairophp/cairo": "dev-main"}
 }
 ```
 
 PhpStorm and Intelephense index it from `vendor/`. For PHPStan, include
-`vendor/mohamed-samir907/cairo/stubs/phpstan.neon` (phpstan/extension-installer
+`vendor/cairophp/cairo/stubs/phpstan.neon` (phpstan/extension-installer
 does that for you). For Psalm, list `stubs/cairo.php` under `<stubs>`. The
 package has no autoload entry on purpose: never `require` the stubs, since
 Cairo already declares these classes.

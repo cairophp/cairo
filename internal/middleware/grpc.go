@@ -12,7 +12,7 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
-	"github.com/mohamed-samir907/cairo/internal/spec"
+	"github.com/cairophp/cairo/internal/spec"
 )
 
 // GRPC returns the stream interceptors for the declared middleware, first

@@ -1,4 +1,4 @@
-module github.com/mohamed-samir907/cairo
+module github.com/cairophp/cairo
 
 go 1.24.7
 

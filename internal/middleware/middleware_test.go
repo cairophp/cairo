@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mohamed-samir907/cairo/internal/spec"
+	"github.com/cairophp/cairo/internal/spec"
 )
 
 func mw(name string, opts any) spec.Middleware {

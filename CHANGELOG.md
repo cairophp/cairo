@@ -7,11 +7,27 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-19
+
+### Added
+
+- `App::slowRequests($seconds)`: log every request slower than that, with
+  where its time went (SQL, HTTP, sockets, sleeps, waits, PHP), measured in
+  Go with no code in the app (#16).
+- `App::repeatedQueries()`: logs a warning when one request runs the same
+  statement (by shape, without its literals) N times or more, through PDO
+  with any driver or `Cairo\Sql`. Off by default (#17).
+- `App::heavyRoutes($seconds)`: warn, once a minute per route, about a
+  route that runs PHP for longer than that without yielding, so it can move
+  the work to `offload()`. Measured in Go with no code in the app (#19).
+- `Cairo\Sql\Db::open()` option `acquire_timeout`: a `Cairo\PoolTimeout`
+  when no connection becomes free in time (#12).
+
 ### Changed
 
 - A new request no longer goes to a PHP thread that has been running one
   fiber for 5 ms or more without pausing (a CPU loop, an unhooked blocking
-  call), while another thread is free of that.
+  call), while another thread is free of that (#14).
 
 ### Fixed
 
@@ -19,21 +35,7 @@ change the PHP API; patch versions do not.
   reaches the next request on that connection. `BEGIN`, `START TRANSACTION`,
   `SET autocommit`, `LOCK` and `XA` on `Db` throw a `SqlException` (use
   `transaction()`), a PostgreSQL connection that still comes back in a
-  transaction is closed, and `mysql://` URLs refuse `multiStatements`.
-
-### Added
-
-- `App::heavyRoutes($seconds)`: warn, once a minute per route, about a
-  route that runs PHP for longer than that without yielding, so it can move
-  the work to `offload()`. Measured in Go with no code in the app.
-- `App::slowRequests($seconds)`: log every request slower than that, with
-  where its time went (SQL, HTTP, sockets, sleeps, waits, PHP), measured in
-  Go with no code in the app.
-- `Cairo\Sql\Db::open()` option `acquire_timeout`: a `Cairo\PoolTimeout`
-  when no connection becomes free in time.
-- `App::repeatedQueries()`: logs a warning when one request runs the same
-  statement (by shape, without its literals) N times or more, through PDO
-  with any driver or `Cairo\Sql`. Off by default.
+  transaction is closed, and `mysql://` URLs refuse `multiStatements` (#12).
 
 ## [0.3.0] - 2026-11-19
 
@@ -221,7 +223,8 @@ PHP, with many requests per PHP thread as fibers.
 - `Cairo\Sql` returns timestamps in UTC instead of the server's time zone
   (#40).
 
-[Unreleased]: https://github.com/cairophp/cairo/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/cairophp/cairo/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/cairophp/cairo/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/cairophp/cairo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/cairophp/cairo/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/cairophp/cairo/compare/v0.1.0...v0.1.1

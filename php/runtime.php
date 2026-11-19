@@ -28,6 +28,9 @@ namespace Cairo {
         private float $heavyRoutes = 0.0;
         private int $maxInFlight = 0;
         private int $repeatedQueries = 0;
+        private bool $detectLeaks = false;
+        /** @var list<string> "Class::$property" the leak detector skips */
+        private array $leaksIgnored = [];
         private int $hooks = Hook::ALL;
         private string $concurrency = 'fibers';
         /** @var list<object|callable> */
@@ -126,6 +129,41 @@ namespace Cairo {
         public function repeatedQueriesAt(): int
         {
             return $this->repeatedQueries;
+        }
+
+        /**
+         * Development aid: log the static properties that hold request state
+         * but are not request-local (see Cairo\RequestLocal), so one request
+         * could read another's value:
+         *
+         *     level=WARN msg="static changed by a request" route="GET /orders" static=App\Tenant::$current
+         *
+         * When a request ends, every static property of the app's classes is
+         * compared with its value at the previous request's end, a few
+         * levels into arrays and objects. A static that is set once and then
+         * kept (a lazy cache) is not reported; one that changes again on a
+         * later request is. Registered statics and Cairo's own are skipped,
+         * and so are those in $ignore: caches that grow but hold no request's
+         * state, such as 'Illuminate\Support\Str::$snakeCache'. Each static
+         * is logged at most once a minute. Keep it off in production: it
+         * reads every static on every request, about 3 ms on a Laravel app.
+         *
+         * @param list<string> $ignore "Class::$property"
+         */
+        public function detectLeaks(bool $on = true, array $ignore = []): static
+        {
+            $this->detectLeaks = $on;
+            $this->leaksIgnored = $ignore;
+            return $this;
+        }
+
+        /**
+         * @internal
+         * @return ?list<string> the statics to skip, or null when the detector is off
+         */
+        public function leaksIgnored(): ?array
+        {
+            return $this->detectLeaks ? $this->leaksIgnored : null;
         }
 
         /**
@@ -2977,6 +3015,8 @@ namespace Cairo\Internal {
 
         /** App::repeatedQueries() is on: PDO and Cairo\Sql report their statements */
         private static bool $watchQueries = false;
+        /** App::detectLeaks() is on */
+        private readonly bool $watchLeaks;
 
         public function __construct(private readonly App $app)
         {
@@ -2986,6 +3026,11 @@ namespace Cairo\Internal {
             self::$instance = $this;
             self::$watchQueries = $app->repeatedQueriesAt() > 0;
             \cairo_watch_queries(self::$watchQueries);
+            $ignored = $app->leaksIgnored();
+            $this->watchLeaks = $ignored !== null;
+            if ($ignored !== null) {
+                Leaks::start($ignored);
+            }
         }
 
         /** @internal */
@@ -3218,6 +3263,9 @@ namespace Cairo\Internal {
                     \cairo_local_end($context->requestId);
                     if (self::$watchQueries) {
                         Queries::end($context->requestId, $this->routeOf($event), $this->app->repeatedQueriesAt());
+                    }
+                    if ($this->watchLeaks) {
+                        Leaks::check($this->routeOf($event));
                     }
                     $this->active--;
                     $this->served++;
@@ -3897,7 +3945,7 @@ namespace Cairo\Internal {
         spl_autoload_register(static function (string $class): void {
             $file = [
                 'Cairo\\Cache' => 'cache.php', 'Cairo\\Pool' => 'pool.php', 'Cairo\\PoolTimeout' => 'pool.php',
-                'Cairo\\Internal\\Queries' => 'queries.php', 'Cairo\\RequestLocal' => 'request_local.php',
+                'Cairo\\Internal\\Queries' => 'queries.php', 'Cairo\\Internal\\Leaks' => 'leaks.php', 'Cairo\\RequestLocal' => 'request_local.php',
             ][$class] ?? null;
             if ($file !== null) {
                 require_once __DIR__ . '/' . $file;

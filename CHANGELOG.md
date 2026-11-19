@@ -16,6 +16,9 @@ change the PHP API; patch versions do not.
 - `$http->publicDir($dir)`: serve a document root (Laravel's `public/`) from
   Go, with every path that is not a file going to the routes. PHP files and
   hidden files are never served.
+- `App::detectLeaks()`: a development aid that logs the static properties a
+  request changed but that are not request-local, so one request could read
+  another's value. Caches that only gain keys are not reported.
 
 ### Changed
 

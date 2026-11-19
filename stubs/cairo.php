@@ -70,6 +70,37 @@ namespace Cairo {
         }
 
         /**
+         * Development aid: log the static properties that hold request state
+         * but are not request-local (see Cairo\RequestLocal), so one request
+         * could read another's value:
+         *
+         *     level=WARN msg="static changed by a request" route="GET /orders" static=App\Tenant::$current
+         *
+         * When a request ends, every static property of the app's classes is
+         * compared with its value at the previous request's end, a few
+         * levels into arrays and objects. A static that is set once and then
+         * kept (a lazy cache) is not reported; one that changes again on a
+         * later request is. Registered statics and Cairo's own are skipped,
+         * and so are those in $ignore: caches that grow but hold no request's
+         * state, such as 'Illuminate\Support\Str::$snakeCache'. Each static
+         * is logged at most once a minute. Keep it off in production: it
+         * reads every static on every request, about 3 ms on a Laravel app.
+         *
+         * @param list<string> $ignore "Class::$property"
+         */
+        public function detectLeaks(bool $on = true, array $ignore = []): static
+        {
+        }
+
+        /**
+         * @internal
+         * @return ?list<string> the statics to skip, or null when the detector is off
+         */
+        public function leaksIgnored(): ?array
+        {
+        }
+
+        /**
          * Log every request that takes longer than $seconds, with where its
          * time went, measured in Go with no code in the app:
          *
@@ -1874,6 +1905,14 @@ namespace Cairo {
     {
         /** Give each of $class's static $properties one value per request. */
         public static function register(string $class, string ...$properties): void
+        {
+        }
+
+        /**
+         * @internal for the leak detector
+         * @return array<string, true>
+         */
+        public static function registered(): array
         {
         }
     }

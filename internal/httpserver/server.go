@@ -54,7 +54,14 @@ func New(decl spec.HTTPServer, php Dispatcher, log *slog.Logger) (*Server, error
 		prefix := "/" + strings.Trim(s.Prefix, "/") + "/"
 		mux.Handle("GET "+prefix, http.StripPrefix(prefix, http.FileServer(http.Dir(s.Dir))))
 	}
-	handler, err := middleware.HTTP(mux, decl.Middleware, log)
+	var routes http.Handler = mux
+	if decl.PublicDir != "" {
+		var err error
+		if routes, err = publicFiles(decl.PublicDir, mux); err != nil {
+			return nil, err
+		}
+	}
+	handler, err := middleware.HTTP(routes, decl.Middleware, log)
 	if err != nil {
 		return nil, err
 	}

@@ -787,6 +787,17 @@ namespace Cairo\Http {
         {
         }
 
+        /**
+         * Serve the files under $dir at their own paths, as a web server's
+         * document root does (Laravel's public/), and hand every other request
+         * to the routes. Go serves the files; no PHP runs. PHP sources and
+         * hidden files (.env, .git) are never served, and paths cannot leave
+         * $dir, symlinks included.
+         */
+        public function publicDir(string $dir): static
+        {
+        }
+
         /** Add Go-side middleware; see Cairo\Middleware. */
         public function use(\Cairo\Middleware $middleware): static
         {

@@ -38,7 +38,10 @@ type HTTPServer struct {
 	WriteTimeout float64      `json:"write_timeout"`
 	Routes       []Route      `json:"routes"`
 	Static       []StaticPath `json:"static"`
-	Middleware   []Middleware `json:"middleware"`
+	// PublicDir is $http->publicDir(): files served at their own paths,
+	// with everything else going to the routes ("" when not set).
+	PublicDir  string       `json:"public_dir"`
+	Middleware []Middleware `json:"middleware"`
 }
 
 // Middleware is one `$server->use(Middleware::...)`: Go runs it before PHP.

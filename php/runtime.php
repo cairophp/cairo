@@ -1279,6 +1279,7 @@ namespace Cairo\Http {
         private array $routes = [];
         /** @var list<array{prefix:string,dir:string}> */
         private array $static = [];
+        private string $publicDir = '';
         private float $readTimeout = 0;
         private float $writeTimeout = 0;
         /** @var list<\Cairo\Middleware> */
@@ -1380,6 +1381,22 @@ namespace Cairo\Http {
             return $this;
         }
 
+        /**
+         * Serve the files under $dir at their own paths, as a web server's
+         * document root does (Laravel's public/), and hand every other request
+         * to the routes. Go serves the files; no PHP runs. PHP sources and
+         * hidden files (.env, .git) are never served, and paths cannot leave
+         * $dir, symlinks included.
+         */
+        public function publicDir(string $dir): static
+        {
+            if (!is_dir($dir)) {
+                throw new \InvalidArgumentException("publicDir: {$dir} is not a directory");
+            }
+            $this->publicDir = $dir;
+            return $this;
+        }
+
         /** Add Go-side middleware; see Cairo\Middleware. */
         public function use(\Cairo\Middleware $middleware): static
         {
@@ -1403,6 +1420,7 @@ namespace Cairo\Http {
                 'write_timeout' => $this->writeTimeout,
                 'routes' => $this->routes,
                 'static' => $this->static,
+                'public_dir' => $this->publicDir,
                 'middleware' => array_map(static fn ($m) => $m->spec(), $this->middleware),
             ];
         }

@@ -7,6 +7,19 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+### Fixed
+
+- `Cairo\Sql`: a transaction opened with plain SQL on a pool no longer
+  reaches the next request on that connection. `BEGIN`, `START TRANSACTION`,
+  `SET autocommit`, `LOCK` and `XA` on `Db` throw a `SqlException` (use
+  `transaction()`), a PostgreSQL connection that still comes back in a
+  transaction is closed, and `mysql://` URLs refuse `multiStatements`.
+
+### Added
+
+- `Cairo\Sql\Db::open()` option `acquire_timeout`: a `Cairo\PoolTimeout`
+  when no connection becomes free in time.
+
 ## [0.3.0] - 2026-11-19
 
 Connection pools done well: bounded waits, a reset before reuse, connection

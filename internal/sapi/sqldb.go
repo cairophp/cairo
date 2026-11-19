@@ -16,8 +16,9 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // Cairo\Sql: PHP queries through Go's database/sql (pgx for PostgreSQL,
@@ -44,11 +45,12 @@ func init() {
 
 type sqlRequest struct {
 	// sql.open
-	DSN         string  `json:"dsn"`
-	MaxOpen     int     `json:"max_open"`
-	MaxIdle     int     `json:"max_idle"`
-	MaxLifetime float64 `json:"max_lifetime"`  // seconds
-	MaxIdleTime float64 `json:"max_idle_time"` // seconds
+	DSN            string  `json:"dsn"`
+	MaxOpen        int     `json:"max_open"`
+	MaxIdle        int     `json:"max_idle"`
+	MaxLifetime    float64 `json:"max_lifetime"`    // seconds
+	MaxIdleTime    float64 `json:"max_idle_time"`   // seconds
+	AcquireTimeout float64 `json:"acquire_timeout"` // seconds; 0: until the request ends
 	// sql.query, sql.begin, sql.stats
 	Pool      int64             `json:"pool"`
 	Tx        int64             `json:"tx"`
@@ -87,6 +89,8 @@ func sqlOp(fn func(context.Context, sqlRequest) (any, error)) goOp {
 					out["sqlstate"] = string(me.SQLState[:])
 				}
 				out["detail"] = fmt.Sprintf("MySQL error %d", me.Number)
+			case errors.Is(err, errSqlPoolTimeout):
+				out["pool_timeout"] = true
 			}
 			return out, nil
 		}
@@ -98,18 +102,21 @@ type sqlPoolKey struct {
 	dsn                      string
 	maxOpen, maxIdle         int
 	maxLifetime, maxIdleTime float64
+	wait                     float64
 }
 
 // sqlDB is a pool and the database behind it.
 type sqlDB struct {
 	*sql.DB
 	mysql bool
+	wait  time.Duration // acquire_timeout
 }
 
 // sqlTx is a transaction and the database behind it.
 type sqlTx struct {
 	*sql.Tx
 	mysql bool
+	conn  *sql.Conn // with acquire_timeout: closed when the transaction ends
 }
 
 var (
@@ -134,13 +141,13 @@ func sqlOpen(_ context.Context, req sqlRequest) (any, error) {
 	default:
 		return nil, fmt.Errorf("Cairo\\Sql needs a postgres:// or mysql:// URL, or a PostgreSQL key=value DSN")
 	}
-	key := sqlPoolKey{req.DSN, req.MaxOpen, req.MaxIdle, req.MaxLifetime, req.MaxIdleTime}
+	key := sqlPoolKey{req.DSN, req.MaxOpen, req.MaxIdle, req.MaxLifetime, req.MaxIdleTime, req.AcquireTimeout}
 	sqlMu.Lock()
 	defer sqlMu.Unlock()
 	if id, ok := sqlPools[key]; ok {
 		return id, nil
 	}
-	db, err := sql.Open(driver, dsn)
+	db, err := sqlConnect(driver, dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -156,8 +163,19 @@ func sqlOpen(_ context.Context, req sqlRequest) (any, error) {
 	}
 	id := sqlNextID.Add(1)
 	sqlPools[key] = id
-	sqlByID[id] = sqlDB{db, driver == "mysql"}
+	sqlByID[id] = sqlDB{db, driver == "mysql", time.Duration(req.AcquireTimeout * float64(time.Second))}
 	return id, nil
+}
+
+func sqlConnect(driver, dsn string) (*sql.DB, error) {
+	if driver == "mysql" {
+		return sql.Open(driver, dsn)
+	}
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	return stdlib.OpenDB(*cfg, stdlib.OptionResetSession(pgResetSession)), nil
 }
 
 // mysqlDSN turns mysql://user:pass@host:port/db?param=value into the
@@ -193,6 +211,10 @@ func mysqlDSN(raw string) (string, error) {
 		}
 		cfg = parsed
 	}
+	if cfg.MultiStatements {
+		// "SELECT 1; BEGIN" would open a transaction the pool cannot see.
+		return "", errors.New("multiStatements is not supported: run one statement per query")
+	}
 	if !q.Has("interpolateParams") {
 		// One round trip per query instead of three (prepare, execute,
 		// close). The driver escapes for the connection's charset and
@@ -216,24 +238,49 @@ type sqlRunner interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
-// sqlTarget is the pool or transaction a statement runs on, and whether it
-// is MySQL.
-func sqlTarget(req sqlRequest) (sqlRunner, bool, error) {
+var errSqlPoolTimeout = errors.New("no connection became free")
+
+// conn takes a connection from the pool, waiting at most acquire_timeout.
+// Close gives it back.
+func (db sqlDB) conn(ctx context.Context) (*sql.Conn, error) {
+	wctx, cancel := context.WithTimeout(ctx, db.wait)
+	defer cancel()
+	c, err := db.Conn(wctx)
+	if err != nil && ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+		return nil, fmt.Errorf("%w in %s: all %d are in use", errSqlPoolTimeout, db.wait, db.Stats().MaxOpenConnections)
+	}
+	return c, err
+}
+
+// sqlTarget is the pool, pool connection or transaction a statement runs
+// on, whether it is MySQL, and what gives a pool connection back.
+func sqlTarget(ctx context.Context, req sqlRequest) (sqlRunner, bool, func(), error) {
 	if req.Tx != 0 {
 		if tx, ok := sqlTxs.Load(req.Tx); ok {
-			return tx.(sqlTx).Tx, tx.(sqlTx).mysql, nil
+			return tx.(sqlTx).Tx, tx.(sqlTx).mysql, func() {}, nil
 		}
-		return nil, false, errors.New("the transaction has ended")
+		return nil, false, nil, errors.New("the transaction has ended")
+	}
+	if sqlLeavesState(req.SQL) {
+		return nil, false, nil, errSessionStatement
 	}
 	db, err := sqlPool(req.Pool)
-	return db.DB, db.mysql, err
+	if err != nil || db.wait == 0 {
+		return db.DB, db.mysql, func() {}, err
+	}
+	c, err := db.conn(ctx)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	return c, db.mysql, func() { _ = c.Close() }, nil
 }
 
 func sqlQuery(ctx context.Context, req sqlRequest) (any, error) {
-	target, isMySQL, err := sqlTarget(req)
+	target, isMySQL, release, err := sqlTarget(ctx, req)
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	args := make([]any, len(req.Args))
 	for i, raw := range req.Args {
 		if args[i], err = sqlArg(raw, isMySQL); err != nil {
@@ -382,17 +429,36 @@ func sqlBegin(ctx context.Context, req sqlRequest) (any, error) {
 	}
 	// Bound to the fiber that began it: if that fiber ends (or its request's
 	// deadline passes) without commit or rollback, database/sql rolls back.
-	tx, err := db.BeginTx(ctx, opts)
+	t := sqlTx{mysql: db.mysql}
+	if db.wait > 0 {
+		if t.conn, err = db.conn(ctx); err != nil {
+			return nil, err
+		}
+		t.Tx, err = t.conn.BeginTx(ctx, opts)
+	} else {
+		t.Tx, err = db.BeginTx(ctx, opts)
+	}
 	if err != nil {
+		t.close()
 		return nil, err
 	}
 	id := sqlNextID.Add(1)
-	sqlTxs.Store(id, sqlTx{tx, db.mysql})
+	sqlTxs.Store(id, t)
 	go func() {
 		<-ctx.Done()
-		sqlTxs.Delete(id)
+		if v, ok := sqlTxs.LoadAndDelete(id); ok {
+			v.(sqlTx).close() // waits for database/sql's rollback
+		}
 	}()
 	return id, nil
+}
+
+// close gives back the pool connection of a transaction begun with
+// acquire_timeout, once the transaction has ended.
+func (t sqlTx) close() {
+	if t.conn != nil {
+		_ = t.conn.Close()
+	}
 }
 
 func sqlEnd(_ context.Context, req sqlRequest) (any, error) {
@@ -400,10 +466,12 @@ func sqlEnd(_ context.Context, req sqlRequest) (any, error) {
 	if !ok {
 		return nil, errors.New("the transaction has ended")
 	}
+	t := v.(sqlTx)
+	defer t.close()
 	if req.Commit {
-		return true, v.(sqlTx).Commit()
+		return true, t.Commit()
 	}
-	return true, v.(sqlTx).Rollback()
+	return true, t.Rollback()
 }
 
 func sqlStats(_ context.Context, req sqlRequest) (any, error) {

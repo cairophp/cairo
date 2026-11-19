@@ -2683,10 +2683,16 @@ namespace Cairo\Sql {
          * max_idle (default max_open, or 10 with no limit), max_lifetime and
          * max_idle_time (seconds). Fewer idle than open connections means a
          * reconnect for most queries under load; max_idle_time closes the
-         * ones a quiet pool does not need. Connecting is lazy: a bad DSN shows
-         * on the first query.
+         * ones a quiet pool does not need. acquire_timeout (seconds) bounds
+         * the wait for a free connection with a Cairo\PoolTimeout; without
+         * it a query waits until its request ends. Connecting is lazy: a bad
+         * DSN shows on the first query.
          *
-         * @param array{max_open?: int, max_idle?: int, max_lifetime?: float, max_idle_time?: float} $options
+         * Statements that would leave a transaction or a lock on a pooled
+         * connection (BEGIN, START TRANSACTION, SET autocommit, LOCK, XA)
+         * throw a SqlException: use transaction() instead.
+         *
+         * @param array{max_open?: int, max_idle?: int, max_lifetime?: float, max_idle_time?: float, acquire_timeout?: float} $options
          */
         public static function open(string $dsn, array $options = []): self
         {
@@ -2697,6 +2703,7 @@ namespace Cairo\Sql {
                 'max_idle' => (int) ($options['max_idle'] ?? ($maxOpen > 0 ? $maxOpen : 10)),
                 'max_lifetime' => (float) ($options['max_lifetime'] ?? 0),
                 'max_idle_time' => (float) ($options['max_idle_time'] ?? 0),
+                'acquire_timeout' => (float) ($options['acquire_timeout'] ?? 0),
             ]);
             return new self((int) $pool);
         }
@@ -2743,6 +2750,9 @@ namespace Cairo\Sql {
         public static function call(string $op, array $payload): mixed
         {
             $res = Go::call($op, $payload);
+            if (is_array($res) && isset($res['pool_timeout'])) {
+                throw new \Cairo\PoolTimeout((string) $res['error']);
+            }
             if (is_array($res) && isset($res['error'])) {
                 throw new SqlException((string) $res['error'], $res['sqlstate'] ?? null, $res['detail'] ?? null);
             }

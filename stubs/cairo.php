@@ -1608,10 +1608,16 @@ namespace Cairo\Sql {
          * max_idle (default max_open, or 10 with no limit), max_lifetime and
          * max_idle_time (seconds). Fewer idle than open connections means a
          * reconnect for most queries under load; max_idle_time closes the
-         * ones a quiet pool does not need. Connecting is lazy: a bad DSN shows
-         * on the first query.
+         * ones a quiet pool does not need. acquire_timeout (seconds) bounds
+         * the wait for a free connection with a Cairo\PoolTimeout; without
+         * it a query waits until its request ends. Connecting is lazy: a bad
+         * DSN shows on the first query.
          *
-         * @param array{max_open?: int, max_idle?: int, max_lifetime?: float, max_idle_time?: float} $options
+         * Statements that would leave a transaction or a lock on a pooled
+         * connection (BEGIN, START TRANSACTION, SET autocommit, LOCK, XA)
+         * throw a SqlException: use transaction() instead.
+         *
+         * @param array{max_open?: int, max_idle?: int, max_lifetime?: float, max_idle_time?: float, acquire_timeout?: float} $options
          */
         public static function open(string $dsn, array $options = []): self
         {
@@ -1691,7 +1697,7 @@ namespace Cairo {
 }
 
 namespace Cairo {
-    /** Cairo\Pool had no free connection within its acquireTimeout. */
+    /** Cairo\Pool or Cairo\Sql\Db had no free connection within its acquire timeout. */
     final class PoolTimeout extends \RuntimeException
     {
     }

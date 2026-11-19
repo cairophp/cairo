@@ -48,6 +48,28 @@ namespace Cairo {
         }
 
         /**
+         * Log a warning when one request runs the same statement $times
+         * times or more: the N+1 pattern, a query in a loop where one query
+         * with a join or IN (...) would do.
+         *
+         *     level=WARN msg="repeated query" route="GET /orders" count=50 query="SELECT * FROM items WHERE order_id = ?"
+         *
+         * It counts every statement run through PDO (any driver) and
+         * Cairo\Sql. Statements with the same shape count as one: string and
+         * number literals and IN (...) lists are replaced by ?. Parameters
+         * are never logged. Each route and statement is logged at most once
+         * a minute. 0, the default, turns the detector off.
+         */
+        public function repeatedQueries(int $times = 10): static
+        {
+        }
+
+        /** @internal */
+        public function repeatedQueriesAt(): int
+        {
+        }
+
+        /**
          * Backpressure: at most $n requests in flight per request thread (0,
          * the default, means no cap). Further requests wait in Go, which costs
          * a goroutine, not PHP memory, until one finishes or their context
@@ -116,7 +138,12 @@ namespace Cairo {
         }
 
         /** @internal */
-        public function register(mixed $handler): int
+        public function register(mixed $handler, string $route = ''): int
+        {
+        }
+
+        /** @internal the route of handler $id, as logs name it */
+        public function routeName(int $id): string
         {
         }
 

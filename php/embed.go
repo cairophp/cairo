@@ -24,3 +24,8 @@ var Cache []byte
 //
 //go:embed pool.php
 var Pool []byte
+
+// Queries is php/queries.php: the repeated query detector, loaded on first use.
+//
+//go:embed queries.php
+var Queries []byte

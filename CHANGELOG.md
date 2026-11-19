@@ -19,6 +19,9 @@ change the PHP API; patch versions do not.
 
 - `Cairo\Sql\Db::open()` option `acquire_timeout`: a `Cairo\PoolTimeout`
   when no connection becomes free in time.
+- `App::repeatedQueries()`: logs a warning when one request runs the same
+  statement (by shape, without its literals) N times or more, through PDO
+  with any driver or `Cairo\Sql`. Off by default.
 
 ## [0.3.0] - 2026-11-19
 

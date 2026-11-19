@@ -25,8 +25,14 @@ namespace Cairo\Internal {
             '/\s+/' => ' ',
         ];
 
+        /** Statements whose shape is remembered on this thread, and how long they may be. */
+        private const MAX_CACHED = 512;
+        private const MAX_CACHED_SQL = 1024;
+
         /** @var array<int, array<string, int>> request id => shape => times run */
         private static array $seen = [];
+        /** @var array<string, string> statement => shape: a statement usually runs many times */
+        private static array $shapes = [];
 
         /** Counts $sql for the request of the running fiber. */
         public static function seen(string $sql): void
@@ -35,7 +41,7 @@ namespace Cairo\Internal {
             if ($id === 0) {
                 return;   // not in a request
             }
-            $shape = self::shape($sql);
+            $shape = self::$shapes[$sql] ?? self::remember($sql);
             if ($shape === '') {
                 return;
             }
@@ -59,6 +65,18 @@ namespace Cairo\Internal {
             if ($repeated !== []) {
                 Go::callNow('sql.repeated', ['route' => $route, 'queries' => $repeated]);
             }
+        }
+
+        private static function remember(string $sql): string
+        {
+            $shape = self::shape($sql);
+            if (strlen($sql) <= self::MAX_CACHED_SQL) {
+                if (count(self::$shapes) >= self::MAX_CACHED) {
+                    self::$shapes = [];
+                }
+                self::$shapes[$sql] = $shape;
+            }
+            return $shape;
         }
 
         /** $sql without its literals, or '' when they cannot be told apart. */

@@ -3750,11 +3750,11 @@ namespace Cairo\Internal {
             if (!self::on(\Cairo\Hook::CONNECT)) {
                 return null;
             }
-            $op = ['op' => 'dial', 'network' => $network, 'address' => $address, 'timeout' => $timeout];
+            $dial = ['network' => $network, 'address' => $address, 'timeout' => $timeout];
             if ($network === 'tls') {
-                $op['tls'] = $tls;
+                $dial['tls'] = $tls;
             }
-            $result = Scheduler::instance()->op($op);
+            $result = Scheduler::instance()->call('dial', json_encode($dial, JSON_THROW_ON_ERROR));
             return isset($result['fd']) ? (int) $result['fd'] : (string) ($result['err'] ?? 'connect failed');
         }
 
@@ -3770,7 +3770,8 @@ namespace Cairo\Internal {
             if (!self::on(\Cairo\Hook::CONNECT)) {
                 return null;
             }
-            $result = Scheduler::instance()->op(['op' => 'starttls', 'fd' => $fd, 'host' => $host, 'timeout' => $timeout, 'tls' => $tls]);
+            $request = ['fd' => $fd, 'host' => $host, 'timeout' => $timeout, 'tls' => $tls];
+            $result = Scheduler::instance()->call('starttls', json_encode($request, JSON_THROW_ON_ERROR));
             return isset($result['fd']) ? (int) $result['fd'] : (string) ($result['err'] ?? 'TLS handshake failed');
         }
 
@@ -3779,7 +3780,8 @@ namespace Cairo\Internal {
             if (!self::on(\Cairo\Hook::CONNECT)) {
                 return null;
             }
-            $result = Scheduler::instance()->op(['op' => 'stoptls', 'fd' => $fd, 'timeout' => $timeout]);
+            $request = ['fd' => $fd, 'timeout' => $timeout];
+            $result = Scheduler::instance()->call('stoptls', json_encode($request, JSON_THROW_ON_ERROR));
             return isset($result['fd']) ? (int) $result['fd'] : (string) ($result['err'] ?? 'TLS shutdown failed');
         }
 
@@ -3835,7 +3837,7 @@ namespace Cairo\Internal {
             if (ip2long($host) !== false) {
                 return [$host];
             }
-            return (array) Scheduler::instance()->op(['op' => 'lookup', 'host' => $host]);
+            return (array) Scheduler::instance()->call('lookup', json_encode(['host' => $host], JSON_THROW_ON_ERROR));
         }
 
         /** Hooks run only in fibers Cairo started on a request thread. */

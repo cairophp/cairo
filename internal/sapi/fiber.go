@@ -1,9 +1,5 @@
 package sapi
 
-/*
-#include <stdlib.h>
-#include "pgsql.h"
-*/
 import "C"
 
 import (
@@ -27,21 +23,19 @@ type fiber struct {
 	timing *reqTiming    // its request's waits, with App::slowRequests() on
 }
 
-// op is an operation a fiber asked Go to perform while it is suspended.
+// op is an operation a fiber asked Go to perform while it is suspended. The
+// engine's own operations (sleep, park, wait, waitset, offload) use the
+// fields; every other one is looked up by name and gets the payload.
 type op struct {
-	ID      int64       `json:"-"`
-	Op      string      `json:"op"`
-	Seconds float64     `json:"seconds"`
-	Payload string      `json:"payload"`
-	Fd      int         `json:"fd"`
-	Write   bool        `json:"write"`
-	Timeout float64     `json:"timeout"` // seconds; < 0 means none
-	Network string      `json:"network"`
-	Address string      `json:"address"`
-	Host    string      `json:"host"`
-	Read    []int       `json:"read"`
-	WriteFD []int       `json:"write_fds"`
-	TLS     *tlsOptions `json:"tls"`
+	ID      int64   `json:"-"`
+	Op      string  `json:"op"`
+	Seconds float64 `json:"seconds"`
+	Payload string  `json:"payload"`
+	Fd      int     `json:"fd"`
+	Write   bool    `json:"write"`
+	Timeout float64 `json:"timeout"` // seconds; < 0 means none
+	Read    []int   `json:"read"`
+	WriteFD []int   `json:"write_fds"`
 }
 
 // runOp performs one fiber operation on the fiber's goroutine, then wakes the
@@ -116,91 +110,15 @@ func (e *Engine) runOp(f *fiber, o op) {
 		default:
 			ev["error"] = err.Error()
 		}
-	case "dial":
-		// A hooked connect: DNS and connect run here, on the fiber's goroutine.
-		timeout := time.Duration(0)
-		if o.Timeout > 0 {
-			timeout = time.Duration(o.Timeout * float64(time.Second))
-		}
-		var fd int
-		var err error
-		if o.Network == "tls" && o.TLS != nil {
-			fd, err = dialTLS(f.ctx, o.Address, timeout, *o.TLS)
-		} else {
-			fd, err = dialFD(f.ctx, o.Network, o.Address, timeout)
-		}
-		switch {
-		case err == nil:
-			ev["result"] = map[string]any{"fd": fd}
-		case f.ctx.Err() != nil:
-			ev["error"] = ctxError(f.ctx)
-		default:
-			ev["result"] = map[string]any{"err": err.Error()}
-		}
-	case "starttls":
-		// stream_socket_enable_crypto(): the handshake runs here.
-		timeout := time.Duration(0)
-		if o.Timeout > 0 {
-			timeout = time.Duration(o.Timeout * float64(time.Second))
-		}
-		var opts tlsOptions
-		if o.TLS != nil {
-			opts = *o.TLS
-		}
-		fd, err := startTLS(f.ctx, o.Fd, o.Host, timeout, opts)
-		switch {
-		case err == nil:
-			ev["result"] = map[string]any{"fd": fd}
-		case f.ctx.Err() != nil:
-			ev["error"] = ctxError(f.ctx)
-		default:
-			ev["result"] = map[string]any{"err": err.Error()}
-		}
-	case "stoptls":
-		// stream_socket_enable_crypto($s, false): the TLS shutdown runs here.
-		timeout := time.Duration(0)
-		if o.Timeout > 0 {
-			timeout = time.Duration(o.Timeout * float64(time.Second))
-		}
-		fd, err := stopTLS(f.ctx, o.Fd, timeout)
-		switch {
-		case err == nil:
-			ev["result"] = map[string]any{"fd": fd}
-		case f.ctx.Err() != nil:
-			ev["error"] = ctxError(f.ctx)
-		default:
-			ev["result"] = map[string]any{"err": err.Error()}
-		}
-	case "pg":
-		// A PDO pgsql call: runs here, on the fiber's goroutine, so the
-		// request's deadline cancels the query.
-		req, err := pgRequestFrom([]byte(o.Payload))
-		if err != nil {
-			ev["error"] = err.Error()
-			break
-		}
-		resp := pgDo(f.ctx, req)
-		if f.ctx.Err() != nil {
-			if id, ok := resp["result"].(int64); ok {
-				if r := goPgTake(C.longlong(id)); r != nil {
-					C.cairo_pg_result_free(r)
-				}
-			}
-			ev["error"] = ctxError(f.ctx)
-			break
-		}
-		ev["result"] = resp
-	case "lookup":
-		ips, err := lookupIPv4(f.ctx, o.Host)
-		switch {
-		case err == nil:
-			ev["result"] = ips
-		case f.ctx.Err() != nil:
-			ev["error"] = ctxError(f.ctx)
-		default:
-			ev["result"] = []string{}
-		}
 	default:
+		if h, ok := fiberOps[o.Op]; ok {
+			if res, errText := h(f.ctx, []byte(o.Payload)); errText != "" {
+				ev["error"] = errText
+			} else {
+				ev["result"] = res
+			}
+			break
+		}
 		h, ok := goOps[o.Op]
 		if !ok {
 			ev["error"] = "unknown operation " + o.Op

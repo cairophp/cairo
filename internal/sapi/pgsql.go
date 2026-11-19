@@ -448,6 +448,27 @@ func pgRequestFrom(data []byte) (pgRequest, error) {
 	return req, err
 }
 
+// The "pg" fiber operation: one call of the PDO driver on the fiber's
+// goroutine, so the request's deadline cancels the query.
+func init() {
+	registerFiberOp("pg", func(ctx context.Context, payload []byte) (any, string) {
+		req, err := pgRequestFrom(payload)
+		if err != nil {
+			return nil, err.Error()
+		}
+		resp := pgDo(ctx, req)
+		if ctx.Err() != nil {
+			if id, ok := resp["result"].(int64); ok {
+				if r := goPgTake(C.longlong(id)); r != nil {
+					C.cairo_pg_result_free(r)
+				}
+			}
+			return nil, ctxError(ctx)
+		}
+		return resp, ""
+	})
+}
+
 // goPgSync runs a request on the calling PHP thread (outside a Cairo fiber,
 // or with hooks off). Returns the JSON response; the caller frees it.
 //

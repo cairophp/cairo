@@ -27,6 +27,21 @@ func registerOp(name string, fn goOp) {
 	goOps[name] = fn
 }
 
+// fiberOp is an operation that only a fiber can ask for: what PHP's hooked
+// functions (connect, TLS, DNS, PDO pgsql) do on the fiber's goroutine while
+// the fiber is suspended. It returns what the fiber wakes up with: a result,
+// or the text of an error. Unlike a goOp it decides itself what the end of
+// the context means, because a socket that did connect must still reach PHP,
+// which owns it from then on.
+type fiberOp func(ctx context.Context, payload []byte) (result any, errText string)
+
+var fiberOps = map[string]fiberOp{}
+
+// registerFiberOp adds a fiber operation; call it from init().
+func registerFiberOp(name string, fn fiberOp) {
+	fiberOps[name] = fn
+}
+
 // goCall runs an operation on the calling PHP thread. Returns JSON
 // {"result": ...} or {"error": "..."}; the caller frees it.
 //

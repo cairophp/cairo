@@ -151,9 +151,9 @@ static const zif_handler hook_handlers[HOOK_COUNT] = {
 	cairo_hook_is_uploaded_file, cairo_hook_move_uploaded_file,
 };
 
-// Installs the hooks; module startup calls it once, before any worker
-// thread copies the function table.
-void cairo_hook_functions(void)
+// Installs the hooks at module startup, before any worker thread copies the
+// function table.
+static void cairo_hook_functions(void)
 {
 	for (int i = 0; i < HOOK_COUNT; i++) {
 		zend_function *fn = zend_hash_str_find_ptr(CG(function_table), hook_names[i], strlen(hook_names[i]));
@@ -163,3 +163,5 @@ void cairo_hook_functions(void)
 		}
 	}
 }
+
+const cairo_extension cairo_function_hooks = {.startup = cairo_hook_functions};

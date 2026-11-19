@@ -448,9 +448,11 @@ func pgRequestFrom(data []byte) (pgRequest, error) {
 	return req, err
 }
 
-// The "pg" fiber operation: one call of the PDO driver on the fiber's
-// goroutine, so the request's deadline cancels the query.
+// The driver joins the SAPI module, and the "pg" fiber operation is one call
+// of the driver on the fiber's goroutine, so the request's deadline cancels
+// the query.
 func init() {
+	registerC(&C.cairo_pdo_pgsql)
 	registerFiberOp("pg", func(ctx context.Context, payload []byte) (any, string) {
 		req, err := pgRequestFrom(payload)
 		if err != nil {

@@ -33,11 +33,9 @@
 #include <ext/standard/php_fopen_wrappers.h>
 
 #include "cairo.h"
-#include "hooks.h"
-#include "pgsql.h"
+#include "extension.h"
 #include "wire.h"
 #include "waitops.h"
-#include "pdo_watch.h"
 #include "fiber_local.h"
 #include "_cgo_export.h"
 
@@ -341,7 +339,6 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_fiber_call, arginfo_cairo_fiber_call)
 	PHP_FE(cairo_go_call, arginfo_cairo_go_call)
 	PHP_FE(cairo_guard, arginfo_cairo_guard)
-	PHP_FE(cairo_watch_queries, arginfo_cairo_watch_queries)
 	PHP_FE(cairo_local_register, arginfo_cairo_local_register)
 	PHP_FE(cairo_local_bind, arginfo_cairo_local_bind)
 	PHP_FE(cairo_local_end, arginfo_cairo_local_end)
@@ -600,17 +597,16 @@ PHP_FUNCTION(cairo_guard)
 	}
 }
 
-// Module startup: install the hooks once, before any worker thread copies
-// the function table.
+// Module startup: the extensions install their hooks here, once, before any
+// worker thread copies the function table.
 static void cairo_opcache_disguise(void);
 
 static PHP_MINIT_FUNCTION(cairo)
 {
 	cairo_opcache_disguise();
-	cairo_hook_functions();
-	cairo_hook_sockets();
-	cairo_register_pdo_pgsql();
-	cairo_watch_pdo();
+	if (cairo_extensions_startup() == FAILURE) {
+		return FAILURE;
+	}
 	cairo_fiber_local_startup();
 	cairo_fiber_slot = zend_get_resource_handle("cairo");
 	if (cairo_fiber_slot >= 0) {
@@ -902,7 +898,7 @@ int cairo_thread_run(int tid, const char *runtime_file)
 	int status = run_file(runtime_file);
 	cairo_interrupt_unregister();
 	php_request_shutdown(NULL);
-	cairo_curl_thread_end();   // after the request's curl handles were closed
+	cairo_extensions_thread_end();   // after the request closed what it held
 	ts_free_thread();
 	return status;
 }

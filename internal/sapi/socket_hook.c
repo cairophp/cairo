@@ -582,7 +582,7 @@ static php_stream *cairo_socket_factory(const char *proto, size_t protolen,
 	return stream;
 }
 
-void cairo_hook_sockets(void)
+static void cairo_hook_sockets(void)
 {
 	php_stream_xport_register("tcp", cairo_socket_factory);
 	php_stream_xport_register("unix", cairo_socket_factory);
@@ -604,3 +604,5 @@ void cairo_hook_sockets(void)
 		php_register_url_stream_wrapper("https", &php_stream_http_wrapper);
 	}
 }
+
+const cairo_extension cairo_socket_hooks = {.startup = cairo_hook_sockets};

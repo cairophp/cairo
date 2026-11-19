@@ -1,8 +1,10 @@
 #ifndef CAIRO_HOOKS_H
 #define CAIRO_HOOKS_H
 
-// The runtime hooks; module startup installs them once.
-void cairo_hook_functions(void);   // function_hook.c
-void cairo_hook_sockets(void);     // socket_hook.c
+#include "extension.h"
+
+// The runtime hooks; hookops.go adds them to the SAPI module.
+extern const cairo_extension cairo_function_hooks;   // function_hook.c
+extern const cairo_extension cairo_socket_hooks;     // socket_hook.c
 
 #endif

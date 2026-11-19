@@ -15,8 +15,12 @@ static zif_handler cairo_orig_query = NULL;
 static zif_handler cairo_orig_exec = NULL;
 static zif_handler cairo_orig_execute = NULL;
 
+ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_watch_queries, 0, 0, 1)
+	ZEND_ARG_INFO(0, on)
+ZEND_END_ARG_INFO()
+
 // cairo_watch_queries(bool $on): void
-PHP_FUNCTION(cairo_watch_queries)
+static PHP_FUNCTION(cairo_watch_queries)
 {
 	bool on;
 	ZEND_PARSE_PARAMETERS_START(1, 1)
@@ -108,7 +112,8 @@ static zif_handler cairo_find_method(const char *class_lc, size_t class_len, con
 	return fn != NULL && fn->type == ZEND_INTERNAL_FUNCTION ? fn->internal_function.handler : NULL;
 }
 
-void cairo_watch_pdo(void)
+// Wraps the PDO methods, at module startup.
+static void cairo_watch_pdo(void)
 {
 	cairo_orig_query = cairo_find_method("pdo", 3, "query", 5);
 	cairo_orig_exec = cairo_find_method("pdo", 3, "exec", 4);
@@ -120,3 +125,10 @@ void cairo_watch_pdo(void)
 	cairo_wrap_method("exec", 4, cairo_orig_exec, cairo_pdo_exec);
 	cairo_wrap_method("execute", 7, cairo_orig_execute, cairo_pdo_execute);
 }
+
+static const zend_function_entry cairo_pdo_watch_functions[] = {
+	PHP_FE(cairo_watch_queries, arginfo_cairo_watch_queries)
+	PHP_FE_END
+};
+
+const cairo_extension cairo_pdo_watch = {.startup = cairo_watch_pdo, .functions = cairo_pdo_watch_functions};

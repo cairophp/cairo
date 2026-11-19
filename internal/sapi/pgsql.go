@@ -30,8 +30,16 @@ import (
 
 type pgConn struct {
 	mu     sync.Mutex
-	conn   *pgconn.PgConn
+	conn   *pgconn.PgConn // nil while a shared-pool handle holds none
 	notify *pgNotifyQueue
+
+	// A handle on a pool shared by all threads (pgshared.go): the request
+	// its connection is bound to, and how to stop the give-back.
+	shared    *pgShared
+	boundTo   context.Context
+	unbind    func()
+	gen       int64
+	releasing atomic.Bool // the give-back holds mu, not another fiber
 }
 
 // pgNotifyQueue holds LISTEN/NOTIFY messages that arrived during any
@@ -97,9 +105,16 @@ func pgDo(ctx context.Context, req pgRequest) map[string]any {
 		if v, ok := pgConns.LoadAndDelete(req.Conn); ok {
 			pc := v.(*pgConn)
 			pc.mu.Lock()
-			cctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			_ = pc.conn.Close(cctx)
-			cancel()
+			if pc.shared != nil {
+				if pc.unbind != nil {
+					pc.unbind()
+				}
+				pgDetach(pc)
+			} else {
+				cctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				_ = pc.conn.Close(cctx)
+				cancel()
+			}
 			pc.mu.Unlock()
 		}
 		return map[string]any{"ok": true}
@@ -110,9 +125,22 @@ func pgDo(ctx context.Context, req pgRequest) map[string]any {
 	}
 	pc := v.(*pgConn)
 	if !pc.mu.TryLock() {
-		return pgFail("HY000", "the connection is busy with another query (use one PDO per fiber, e.g. through Cairo\\Pool)")
+		if !pc.releasing.Load() {
+			return pgFail("HY000", "the connection is busy with another query (use one PDO per fiber, e.g. through Cairo\\Pool)")
+		}
+		// The last request's give-back may still hold it for a moment.
+		pc.mu.Lock()
 	}
 	defer pc.mu.Unlock()
+	if pc.shared != nil {
+		if req.Kind == "notify" {
+			return pgFail("HY000", "LISTEN needs a connection of its own: drop cairo_pool from the DSN")
+		}
+		if err := pgAttach(ctx, pc); err != nil {
+			return pgError(err)
+		}
+		defer pgAfterOp(ctx, pc)
+	}
 	if pc.conn.IsClosed() {
 		return pgFail("08006", "server closed the connection")
 	}
@@ -201,7 +229,11 @@ func pgDoOn(ctx context.Context, pc *pgConn, req pgRequest) map[string]any {
 }
 
 func pgConnect(ctx context.Context, req pgRequest) map[string]any {
-	cfg, err := pgconn.ParseConfig(pgDSN(req.DSN))
+	dsn, shared, err := pgSharedOption(req.DSN)
+	if err != nil {
+		return pgFail("08006", err.Error())
+	}
+	cfg, err := pgconn.ParseConfig(pgDSN(dsn))
 	if err != nil {
 		return pgFail("08006", err.Error())
 	}
@@ -213,6 +245,9 @@ func pgConnect(ctx context.Context, req pgRequest) map[string]any {
 	}
 	if req.Timeout > 0 {
 		cfg.ConnectTimeout = time.Duration(req.Timeout * float64(time.Second))
+	}
+	if shared > 0 {
+		return pgConnectShared(ctx, cfg, dsn+"\x00"+req.User+"\x00"+req.Password, shared)
 	}
 	queue := &pgNotifyQueue{}
 	cfg.OnNotification = func(_ *pgconn.PgConn, n *pgconn.Notification) { queue.push(n) }

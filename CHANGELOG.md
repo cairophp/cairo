@@ -13,6 +13,9 @@ change the PHP API; patch versions do not.
   connection becomes free in time, and a waiting request leaves the queue
   the moment it is cancelled), `maxLifetime` and `maxIdleTime` (retire old
   connections), and `reset` (run on every connection before it is reused).
+- `cairo_pool=N` in a `pgsql:` DSN: PDO objects on every PHP thread share N
+  server connections. Each borrows one for the request that uses it; a
+  transaction left open is rolled back before the connection is reused.
 
 ### Changed
 

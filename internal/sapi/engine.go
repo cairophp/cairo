@@ -68,8 +68,10 @@ type Engine struct {
 	// nil when there is no cap.
 	slots chan struct{}
 
-	// slowAfter is App::slowRequests() (0: off).
-	slowAfter time.Duration
+	// slowAfter is App::slowRequests() and heavyAfter App::heavyRoutes()
+	// (0: off). Either one times each request (reqTiming).
+	slowAfter  time.Duration
+	heavyAfter time.Duration
 
 	nextID atomic.Int64
 	calls  sync.Map // call id -> *call   (a request or an offload job awaiting PHP's answer)
@@ -267,6 +269,7 @@ func Start(opts Options) (*Engine, error) {
 	}
 	e.log.Info("php threads started", "request_threads", nw, "offload_threads", no)
 	e.slowAfter = time.Duration(e.spec.SlowRequests * float64(time.Second))
+	e.heavyAfter = time.Duration(e.spec.HeavyRoutes * float64(time.Second))
 	if e.spec.DetectBlocking > 0 {
 		go e.detectBlocking(time.Duration(e.spec.DetectBlocking * float64(time.Second)))
 	}
@@ -360,7 +363,7 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 // fiber (with the context's error) until PHP finishes.
 func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte, err error) {
 	var timing *reqTiming
-	if e.slowAfter > 0 {
+	if e.slowAfter > 0 || e.heavyAfter > 0 {
 		timing = &reqTiming{start: time.Now()}
 	}
 	release := func() {}
@@ -408,7 +411,7 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 				return nil, nil, ErrThreadStopped
 			}
 			if timing != nil {
-				e.logSlow(ev, timing, "")
+				e.logTiming(ev, timing, "")
 			}
 			return r.meta, r.body, nil
 		case o := <-f.ops:
@@ -439,7 +442,7 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 				}
 			}()
 			if timing != nil {
-				e.logSlow(ev, timing, ctxError(ctx))
+				e.logTiming(ev, timing, ctxError(ctx))
 			}
 			return nil, nil, ctx.Err()
 		}

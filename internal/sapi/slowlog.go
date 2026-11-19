@@ -134,7 +134,7 @@ type routeNamer interface {
 func (e *Engine) logSlow(ev wire.Event, t *reqTiming, end string) {
 	now := time.Now()
 	total := now.Sub(t.start)
-	if total < e.slowAfter {
+	if e.slowAfter == 0 || total < e.slowAfter {
 		return
 	}
 	attrs := make([]any, 0, 2*(numWaitKinds+4))

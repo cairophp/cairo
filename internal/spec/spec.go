@@ -18,6 +18,9 @@ type Spec struct {
 	// SlowRequests is App::slowRequests(): log a request that takes longer
 	// than this many seconds, with where its time went (0: off).
 	SlowRequests float64 `json:"slow_requests"`
+	// HeavyRoutes is App::heavyRoutes(): warn about a route that ran PHP
+	// for longer than this many seconds without yielding (0: off).
+	HeavyRoutes float64 `json:"heavy_routes"`
 	// MaxInFlight caps the requests each PHP request thread holds at once
 	// (0: no cap). Requests over it wait in Go until one finishes.
 	MaxInFlight int          `json:"max_in_flight"`
@@ -94,7 +97,7 @@ func (s *Spec) Validate() error {
 	if len(s.HTTP) == 0 && len(s.GRPC) == 0 {
 		return fmt.Errorf("server.php declared no servers: call $app->http(...) or $app->grpc(...)")
 	}
-	if s.Threads < 0 || s.OffloadThreads < 0 || s.DetectBlocking < 0 || s.SlowRequests < 0 || s.MaxInFlight < 0 {
+	if s.Threads < 0 || s.OffloadThreads < 0 || s.DetectBlocking < 0 || s.SlowRequests < 0 || s.HeavyRoutes < 0 || s.MaxInFlight < 0 {
 		return fmt.Errorf("threads must be 'auto' or a positive number")
 	}
 	listens := map[string]bool{}

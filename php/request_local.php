@@ -27,12 +27,26 @@ namespace Cairo {
      */
     final class RequestLocal
     {
+        /** @var array<string, true> "Class::$property" of each registered static, by its declaring class */
+        private static array $registered = [];
+
         /** Give each of $class's static $properties one value per request. */
         public static function register(string $class, string ...$properties): void
         {
             foreach ($properties as $property) {
                 \cairo_local_register($class, $property);
+                $declaring = (new \ReflectionProperty($class, $property))->getDeclaringClass()->getName();
+                self::$registered[$declaring . '::$' . $property] = true;
             }
+        }
+
+        /**
+         * @internal for the leak detector
+         * @return array<string, true>
+         */
+        public static function registered(): array
+        {
+            return self::$registered;
         }
     }
 }

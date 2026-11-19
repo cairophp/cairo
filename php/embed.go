@@ -34,3 +34,8 @@ var RequestLocal []byte
 //
 //go:embed queries.php
 var Queries []byte
+
+// Leaks is php/leaks.php: the leak detector, loaded on first use.
+//
+//go:embed leaks.php
+var Leaks []byte

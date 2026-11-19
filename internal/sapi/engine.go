@@ -67,6 +67,9 @@ type Engine struct {
 	// slots caps requests in flight (App::maxInFlight() per request thread);
 	// nil when there is no cap.
 	slots chan struct{}
+	// idle holds the request threads free to take a request, in isolated
+	// mode; nil in fiber mode.
+	idle idleSlots
 
 	// slowAfter is App::slowRequests() and heavyAfter App::heavyRoutes()
 	// (0: off). Either one times each request (reqTiming).
@@ -245,6 +248,9 @@ func Start(opts Options) (*Engine, error) {
 	if e.spec.MaxInFlight > 0 {
 		e.slots = make(chan struct{}, e.spec.MaxInFlight*nw)
 	}
+	if e.spec.Isolated {
+		e.idle = newIdleSlots(nw)
+	}
 	e.workers = make([]atomic.Pointer[thread], nw)
 	e.offload = make([]atomic.Pointer[thread], no)
 	var all []*thread
@@ -377,8 +383,11 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 			return nil, nil, ctx.Err()
 		}
 	}
+	t, release, err := e.pickWorker(ctx, release)
+	if err != nil {
+		return nil, nil, err
+	}
 	ctx, cancel := context.WithCancel(ctx)
-	t := acquire(e.workers)
 	c := &call{thread: t, resp: make(chan *reply, 1)}
 	f := &fiber{ctx: ctx, cancel: cancel, thread: t, ops: make(chan op, 1), timing: timing}
 	id := e.nextID.Add(1)

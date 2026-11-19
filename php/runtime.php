@@ -321,7 +321,7 @@ namespace Cairo {
         /** @internal */
         public function spec(): array
         {
-            $spec = ['threads' => $this->threads, 'offload_threads' => $this->offloadThreads, 'detect_blocking' => $this->detectBlocking, 'slow_requests' => $this->slowRequests, 'heavy_routes' => $this->isolated() ? 0.0 : $this->heavyRoutes, 'max_in_flight' => $this->maxInFlight, 'http' => [], 'grpc' => []];
+            $spec = ['threads' => $this->threads, 'offload_threads' => $this->offloadThreads, 'detect_blocking' => $this->detectBlocking, 'slow_requests' => $this->slowRequests, 'heavy_routes' => $this->isolated() ? 0.0 : $this->heavyRoutes, 'max_in_flight' => $this->maxInFlight, 'isolated' => $this->isolated(), 'http' => [], 'grpc' => []];
             foreach ($this->servers as $server) {
                 if ($server instanceof Http\Server) {
                     $spec['http'][] = $server->spec();

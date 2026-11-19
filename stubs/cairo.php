@@ -91,6 +91,23 @@ namespace Cairo {
         }
 
         /**
+         * Log a warning for each route that runs PHP for longer than $seconds
+         * without yielding (a CPU loop, a big json_encode, image work), since
+         * every other request on its thread waits meanwhile:
+         *
+         *     level=WARN msg="heavy route: move its CPU work to offload()" route="POST /report" longest_run_ms=212
+         *
+         * Move that work to Cairo\offload(), which runs it on another thread.
+         * Measured in Go with no code in the app, like slowRequests(), and
+         * logged at most once a minute per route. Isolated mode, where
+         * blocking calls are expected and would count as PHP, is not
+         * reported. 0 (the default) turns it off.
+         */
+        public function heavyRoutes(float $seconds = 0.05): static
+        {
+        }
+
+        /**
          * Backpressure: at most $n requests in flight per request thread (0,
          * the default, means no cap). Further requests wait in Go, which costs
          * a goroutine, not PHP memory, until one finishes or their context

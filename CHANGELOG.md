@@ -23,6 +23,9 @@ change the PHP API; patch versions do not.
 
 ### Added
 
+- `App::heavyRoutes($seconds)`: warn, once a minute per route, about a
+  route that runs PHP for longer than that without yielding, so it can move
+  the work to `offload()`. Measured in Go with no code in the app.
 - `App::slowRequests($seconds)`: log every request slower than that, with
   where its time went (SQL, HTTP, sockets, sleeps, waits, PHP), measured in
   Go with no code in the app.

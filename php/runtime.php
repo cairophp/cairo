@@ -25,6 +25,7 @@ namespace Cairo {
         private int $maxMemory = 0;
         private float $detectBlocking = 0.0;
         private float $slowRequests = 0.0;
+        private float $heavyRoutes = 0.0;
         private int $maxInFlight = 0;
         private int $repeatedQueries = 0;
         private int $hooks = Hook::ALL;
@@ -150,6 +151,28 @@ namespace Cairo {
                 throw new \InvalidArgumentException('slowRequests must be 0 or more');
             }
             $this->slowRequests = $seconds;
+            return $this;
+        }
+
+        /**
+         * Log a warning for each route that runs PHP for longer than $seconds
+         * without yielding (a CPU loop, a big json_encode, image work), since
+         * every other request on its thread waits meanwhile:
+         *
+         *     level=WARN msg="heavy route: move its CPU work to offload()" route="POST /report" longest_run_ms=212
+         *
+         * Move that work to Cairo\offload(), which runs it on another thread.
+         * Measured in Go with no code in the app, like slowRequests(), and
+         * logged at most once a minute per route. Isolated mode, where
+         * blocking calls are expected and would count as PHP, is not
+         * reported. 0 (the default) turns it off.
+         */
+        public function heavyRoutes(float $seconds = 0.05): static
+        {
+            if ($seconds < 0) {
+                throw new \InvalidArgumentException('heavyRoutes must be 0 or more');
+            }
+            $this->heavyRoutes = $seconds;
             return $this;
         }
 
@@ -298,7 +321,7 @@ namespace Cairo {
         /** @internal */
         public function spec(): array
         {
-            $spec = ['threads' => $this->threads, 'offload_threads' => $this->offloadThreads, 'detect_blocking' => $this->detectBlocking, 'slow_requests' => $this->slowRequests, 'max_in_flight' => $this->maxInFlight, 'http' => [], 'grpc' => []];
+            $spec = ['threads' => $this->threads, 'offload_threads' => $this->offloadThreads, 'detect_blocking' => $this->detectBlocking, 'slow_requests' => $this->slowRequests, 'heavy_routes' => $this->isolated() ? 0.0 : $this->heavyRoutes, 'max_in_flight' => $this->maxInFlight, 'http' => [], 'grpc' => []];
             foreach ($this->servers as $server) {
                 if ($server instanceof Http\Server) {
                     $spec['http'][] = $server->spec();

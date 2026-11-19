@@ -1663,6 +1663,12 @@ namespace Cairo\Http {
      *   follow_redirects bool, or the most redirects to follow (default 5)
      *   verify           bool, or a CA bundle path (default true)
      *   cert             client certificate PEM path, or [cert, key]
+     *   coalesce         bool: identical GET and HEAD requests in flight at
+     *                    the same moment, from any thread, share one upstream
+     *                    call (default false). Identical means the same URL,
+     *                    headers (so the same Authorization and Cookie), TLS
+     *                    options, redirects and timeout. Turn it on only for
+     *                    hosts whose answer depends on nothing else.
      *
      * Responses of any status are returned; transport failures throw
      * ClientException (ClientTimeoutException for the timeout option).
@@ -1756,6 +1762,7 @@ namespace Cairo\Http {
                 'body' => base64_encode($body),
                 'timeout' => (float) ($o['timeout'] ?? 30),
                 'redirects' => $follow === true ? 5 : (int) $follow,
+                'coalesce' => (bool) ($o['coalesce'] ?? false),
                 'tls' => [
                     'verify' => $verify !== false,
                     'cafile' => is_string($verify) ? $verify : '',

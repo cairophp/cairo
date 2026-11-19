@@ -29,6 +29,9 @@ func init() {
 		if err := json.Unmarshal(payload, &req); err != nil {
 			return nil, err
 		}
+		if req.Coalesce && httpCanCoalesce(req) {
+			return httpCoalesced(ctx, req), nil
+		}
 		return httpDo(ctx, req), nil
 	})
 }
@@ -41,6 +44,7 @@ type httpClientRequest struct {
 	Timeout   float64             `json:"timeout"`   // seconds, 0 for none
 	Redirects int                 `json:"redirects"` // how many to follow
 	TLS       httpClientTLS       `json:"tls"`
+	Coalesce  bool                `json:"coalesce"` // share identical GETs in flight
 }
 
 type httpClientTLS struct {

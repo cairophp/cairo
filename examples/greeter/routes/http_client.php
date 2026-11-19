@@ -25,6 +25,14 @@ return function ($http): void {
         return Response::json(['status' => $res->status, 'body' => $res->body, 'protocol' => $res->protocol]);
     });
 
+    // coalesce: identical GETs in flight at once share one upstream call.
+    // ?auth= sets the Authorization header, which is part of what must match.
+    $http->get('/client/coalesce', function (Request $req): Response {
+        $client = new Client(['timeout' => 10, 'coalesce' => true]);
+        $res = $client->get((string) $req->query('url'), ['headers' => ['Authorization' => (string) $req->query('auth')]]);
+        return Response::text($res->body);
+    });
+
     // Exercises the options against an echo server at ?base=.
     $http->get('/client/features', function (Request $req): Response {
         $client = new Client([

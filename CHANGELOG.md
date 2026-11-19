@@ -17,6 +17,8 @@ change the PHP API; patch versions do not.
 
 ### Added
 
+- `Cairo\Http\Client` option `coalesce`: identical GET and HEAD requests in
+  flight at the same moment, from any thread, share one upstream call.
 - `Cairo\Sql\Db::open()` option `acquire_timeout`: a `Cairo\PoolTimeout`
   when no connection becomes free in time.
 

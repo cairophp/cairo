@@ -5,14 +5,14 @@
  * Cairo\Internal left out, for IDEs and static analysers. The runtime itself
  * is built into the cairo binary.
  *
- *   php scripts/stubs.php php/runtime.php php/cache.php php/pool.php > stubs/cairo.php
+ *   php scripts/stubs.php php/runtime.php php/cache.php php/pool.php php/request_local.php > stubs/cairo.php
  *
  * Needs ext-tokenizer. test/stubs_test.go fails when the file is stale.
  */
 
 declare(strict_types=1);
 
-$sources = array_slice($argv, 1) ?: [__DIR__ . '/../php/runtime.php', __DIR__ . '/../php/cache.php', __DIR__ . '/../php/pool.php'];
+$sources = array_slice($argv, 1) ?: [__DIR__ . '/../php/runtime.php', __DIR__ . '/../php/cache.php', __DIR__ . '/../php/pool.php', __DIR__ . '/../php/request_local.php'];
 
 final class Stubs
 {

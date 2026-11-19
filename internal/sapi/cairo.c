@@ -37,6 +37,7 @@
 #include "wire.h"
 #include "waitops.h"
 #include "pdo_watch.h"
+#include "fiber_local.h"
 #include "_cgo_export.h"
 
 // -1 is the boot thread (declare phase); 0..n-1 are worker threads.
@@ -340,6 +341,9 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_go_call, arginfo_cairo_go_call)
 	PHP_FE(cairo_guard, arginfo_cairo_guard)
 	PHP_FE(cairo_watch_queries, arginfo_cairo_watch_queries)
+	PHP_FE(cairo_local_register, arginfo_cairo_local_register)
+	PHP_FE(cairo_local_bind, arginfo_cairo_local_bind)
+	PHP_FE(cairo_local_end, arginfo_cairo_local_end)
 	PHP_FE_END
 };
 
@@ -1355,6 +1359,7 @@ static PHP_MINIT_FUNCTION(cairo)
 	cairo_hook_sockets();
 	cairo_register_pdo_pgsql();
 	cairo_watch_pdo();
+	cairo_fiber_local_startup();
 	cairo_fiber_slot = zend_get_resource_handle("cairo");
 	if (cairo_fiber_slot >= 0) {
 		zend_observer_fiber_switch_register(cairo_fiber_switch);

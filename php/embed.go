@@ -25,6 +25,11 @@ var Cache []byte
 //go:embed pool.php
 var Pool []byte
 
+// RequestLocal is php/request_local.php: Cairo\RequestLocal, loaded on first use.
+//
+//go:embed request_local.php
+var RequestLocal []byte
+
 // Queries is php/queries.php: the repeated query detector, loaded on first use.
 //
 //go:embed queries.php

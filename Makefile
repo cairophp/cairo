@@ -29,4 +29,4 @@ static:
 
 # Regenerate stubs/cairo.php (Cairo's PHP API for IDEs) from php/runtime.php.
 stubs:
-	php scripts/stubs.php php/runtime.php php/cache.php php/pool.php > stubs/cairo.php
+	php scripts/stubs.php php/runtime.php php/cache.php php/pool.php php/request_local.php > stubs/cairo.php

@@ -68,6 +68,9 @@ type Engine struct {
 	// nil when there is no cap.
 	slots chan struct{}
 
+	// slowAfter is App::slowRequests() (0: off).
+	slowAfter time.Duration
+
 	nextID atomic.Int64
 	calls  sync.Map // call id -> *call   (a request or an offload job awaiting PHP's answer)
 	fibers sync.Map // fiber id -> *fiber (the goroutine that serves a PHP fiber)
@@ -98,6 +101,9 @@ type thread struct {
 	// (unix ns; 0 while it waits for one), and whether that stretch was reported.
 	busySince atomic.Int64
 	reported  atomic.Bool
+	// The request whose fiber this thread resumed last (slowlog.go); only
+	// the thread itself uses it, in goNextEvent.
+	running *reqTiming
 
 	// Supervision (see supervise.go).
 	sendMu   sync.RWMutex // held for reading while a request is queued; retire takes it to set retired
@@ -111,8 +117,9 @@ type thread struct {
 // event is one message for a PHP thread. call is set for a request or an
 // offload job, so Go knows when PHP has taken it.
 type event struct {
-	data []byte
-	call *call
+	data   []byte
+	call   *call
+	timing *reqTiming // the request it resumes, with App::slowRequests() on
 }
 
 // call is one unit of work sent to a PHP thread, waiting for cairo_respond().
@@ -138,6 +145,7 @@ type fiber struct {
 	thread *thread
 	ops    chan op
 	closed chan struct{} // child fibers only: closed by cairo_fiber_close
+	timing *reqTiming    // its request's waits, with App::slowRequests() on
 }
 
 // op is an operation a fiber asked Go to perform while it is suspended.
@@ -258,6 +266,7 @@ func Start(opts Options) (*Engine, error) {
 		}
 	}
 	e.log.Info("php threads started", "request_threads", nw, "offload_threads", no)
+	e.slowAfter = time.Duration(e.spec.SlowRequests * float64(time.Second))
 	if e.spec.DetectBlocking > 0 {
 		go e.detectBlocking(time.Duration(e.spec.DetectBlocking * float64(time.Second)))
 	}
@@ -350,6 +359,10 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 // Dispatch returns ctx.Err() and a helper goroutine keeps answering the
 // fiber (with the context's error) until PHP finishes.
 func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte, err error) {
+	var timing *reqTiming
+	if e.slowAfter > 0 {
+		timing = &reqTiming{start: time.Now()}
+	}
 	release := func() {}
 	if e.slots != nil {
 		// Backpressure: wait here, in Go, for a free slot.
@@ -364,7 +377,7 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 	ctx, cancel := context.WithCancel(ctx)
 	t := acquire(e.workers)
 	c := &call{thread: t, resp: make(chan *reply, 1)}
-	f := &fiber{ctx: ctx, cancel: cancel, thread: t, ops: make(chan op, 1)}
+	f := &fiber{ctx: ctx, cancel: cancel, thread: t, ops: make(chan op, 1), timing: timing}
 	id := e.nextID.Add(1)
 	f.id = id
 	e.calls.Store(id, c)
@@ -377,7 +390,7 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 	}
 	b := ev.AppendWire(make([]byte, 0, 512), id, deadline)
 	select {
-	case t.inbox <- event{data: b, call: c}:
+	case t.inbox <- event{data: b, call: c, timing: timing}:
 		t.sendMu.RUnlock()
 	case <-ctx.Done():
 		t.sendMu.RUnlock()
@@ -393,6 +406,9 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 			cancel()
 			if r == nil {
 				return nil, nil, ErrThreadStopped
+			}
+			if timing != nil {
+				e.logSlow(ev, timing, "")
 			}
 			return r.meta, r.body, nil
 		case o := <-f.ops:
@@ -422,6 +438,9 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 					}
 				}
 			}()
+			if timing != nil {
+				e.logSlow(ev, timing, ctxError(ctx))
+			}
 			return nil, nil, ctx.Err()
 		}
 	}
@@ -441,6 +460,10 @@ func (e *Engine) forget(id int64, c *call, f *fiber) {
 // runOp performs one fiber operation on the fiber's goroutine, then wakes the
 // fiber on its PHP thread with the result.
 func (e *Engine) runOp(f *fiber, o op) {
+	var began time.Time
+	if f.timing != nil {
+		began = f.timing.begin()
+	}
 	ev := map[string]any{"type": "io", "io": o.ID}
 	switch o.Op {
 	case "sleep":
@@ -606,7 +629,10 @@ func (e *Engine) runOp(f *fiber, o op) {
 			ev["result"] = res
 		}
 	}
-	e.post(f.thread, ev)
+	if f.timing != nil {
+		f.timing.end(opKind(o.Op), began)
+	}
+	f.thread.inbox <- event{data: wire.Encode(ev), timing: f.timing}
 }
 
 // runOffload sends a job to the offload pool and waits for its result.
@@ -648,15 +674,30 @@ func (e *Engine) runOffload(ctx context.Context, payload string) (string, error)
 	}
 }
 
-// leastBusy returns the thread with the fewest calls in flight.
+// stuckAfter is how long a thread's PHP may run without coming back for an
+// event before dispatch passes it over: it is running one fiber that does
+// not pause (a CPU loop, an unhooked blocking call), and everything queued
+// there waits for it.
+const stuckAfter = 5 * time.Millisecond
+
+// leastBusy returns the thread with the fewest calls in flight, among those
+// not stuck in one fiber; when every thread is stuck, among all of them.
 func leastBusy(ts []atomic.Pointer[thread]) *thread {
-	best := ts[0].Load()
-	min := best.inflight.Load()
-	for i := 1; i < len(ts); i++ {
+	stuck := time.Now().UnixNano() - int64(stuckAfter)
+	var best, free *thread
+	var min, freeMin int64
+	for i := range ts {
 		t := ts[i].Load()
-		if n := t.inflight.Load(); n < min {
+		n := t.inflight.Load()
+		if best == nil || n < min {
 			best, min = t, n
 		}
+		if since := t.busySince.Load(); (since == 0 || since > stuck) && (free == nil || n < freeMin) {
+			free, freeMin = t, n
+		}
+	}
+	if free != nil {
+		return free
 	}
 	return best
 }
@@ -854,8 +895,12 @@ func goStopTLS(fd C.int, timeoutSec C.double, errOut **C.char) C.int {
 //export goNextEvent
 func goNextEvent(tid C.int, n *C.int) unsafe.Pointer {
 	t := engine.table[int(tid)].Load()
+	if t.running != nil {
+		t.running.ran(time.Duration(time.Now().UnixNano() - t.busySince.Load()))
+	}
 	t.busySince.Store(0)
 	ev := <-t.inbox
+	t.running = ev.timing
 	t.reported.Store(false)
 	t.busySince.Store(time.Now().UnixNano())
 	if ev.call != nil {
@@ -911,8 +956,9 @@ func goContextCancel(id C.longlong) {
 
 func (e *Engine) openFiber(tid int, parent int64, timeout float64) C.longlong {
 	pctx := context.Background()
+	var timing *reqTiming
 	if v, ok := e.fibers.Load(parent); ok {
-		pctx = v.(*fiber).ctx
+		pctx, timing = v.(*fiber).ctx, v.(*fiber).timing
 	}
 	var ctx context.Context
 	var cancel context.CancelFunc
@@ -923,7 +969,7 @@ func (e *Engine) openFiber(tid int, parent int64, timeout float64) C.longlong {
 	}
 	f := &fiber{
 		id: e.nextID.Add(1), ctx: ctx, cancel: cancel, thread: e.table[int(tid)].Load(),
-		ops: make(chan op, 1), closed: make(chan struct{}),
+		ops: make(chan op, 1), closed: make(chan struct{}), timing: timing,
 	}
 	e.fibers.Store(f.id, f)
 	// The goroutine lives as long as the fiber, even after its context ends:

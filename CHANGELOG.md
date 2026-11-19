@@ -7,6 +7,12 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+### Changed
+
+- A new request no longer goes to a PHP thread that has been running one
+  fiber for 5 ms or more without pausing (a CPU loop, an unhooked blocking
+  call), while another thread is free of that.
+
 ### Fixed
 
 - `Cairo\Sql`: a transaction opened with plain SQL on a pool no longer
@@ -17,6 +23,9 @@ change the PHP API; patch versions do not.
 
 ### Added
 
+- `App::slowRequests($seconds)`: log every request slower than that, with
+  where its time went (SQL, HTTP, sockets, sleeps, waits, PHP), measured in
+  Go with no code in the app.
 - `Cairo\Sql\Db::open()` option `acquire_timeout`: a `Cairo\PoolTimeout`
   when no connection becomes free in time.
 - `App::repeatedQueries()`: logs a warning when one request runs the same

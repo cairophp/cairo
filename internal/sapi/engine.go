@@ -919,7 +919,13 @@ func goRespond(id C.longlong, data *C.char, n C.int, body *C.char, bn C.int) {
 		return
 	}
 	c := v.(*call)
-	c.thread.inflight.Add(-1)
+	t := c.thread
+	t.inflight.Add(-1)
+	// The slow log is written as soon as the answer arrives, before this
+	// stretch of PHP ends in goNextEvent: count it up to now.
+	if t.running != nil {
+		t.running.ran(time.Duration(time.Now().UnixNano() - t.busySince.Load()))
+	}
 	r := &reply{meta: C.GoBytes(unsafe.Pointer(data), n)}
 	if bn > 0 {
 		r.body = C.GoBytes(unsafe.Pointer(body), bn)

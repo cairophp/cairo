@@ -1424,10 +1424,12 @@ static const pdo_driver_t cairo_pdo_pgsql_driver = {
 };
 
 // Registers the driver unless PHP already has a pgsql one (pdo_pgsql).
-void cairo_register_pdo_pgsql(void)
+static void cairo_register_pdo_pgsql(void)
 {
 	if (zend_hash_str_exists(&module_registry, "pdo", 3)
 		&& !zend_hash_str_exists(&module_registry, "pdo_pgsql", 9)) {
 		php_pdo_register_driver(&cairo_pdo_pgsql_driver);
 	}
 }
+
+const cairo_extension cairo_pdo_pgsql = {.startup = cairo_register_pdo_pgsql};

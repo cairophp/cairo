@@ -1,5 +1,10 @@
 package sapi
 
+/*
+#include "pdo_watch.h"
+*/
+import "C"
+
 import (
 	"context"
 	"encoding/json"
@@ -41,6 +46,7 @@ func (l *repeatedLog) due(key string, now time.Time) bool {
 var repeated repeatedLog
 
 func init() {
+	registerC(&C.cairo_pdo_watch)
 	registerOp("sql.repeated", func(_ context.Context, payload []byte) (any, error) {
 		var req struct {
 			Route   string `json:"route"`

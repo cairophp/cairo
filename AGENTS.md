@@ -21,6 +21,7 @@ on I/O through Cairo, only its fiber suspends and Go does the waiting.
 | `internal/sapi/` | cgo: the embedded PHP (`cairo.c`, Cairo's own SAPI), PHP threads, fiber goroutines, offload pool, runtime hooks, and every Go op PHP can call |
 | `internal/sapi/engine.go`, `dispatch.go`, `fiber.go`, `offload.go`, `supervise.go` | The engine in Go: start and shutdown, a request's way to a PHP thread and the answer's way back, the goroutine side of a fiber, the offload pool, thread supervision |
 | `internal/sapi/goops.go` | The op registry: `registerOp("name", fn)` in Go, `Cairo\Internal\Go::call('name', $payload)` in PHP. Payloads go to Go as JSON; results come back as events. `registerFiberOp` is for what PHP's hooked functions ask for |
+| `internal/sapi/extension.go`, `extension.h`, `extension.c` | How an extension's C code joins the SAPI module: it defines a `cairo_extension` (what to run at module startup and when a PHP thread ends, the PHP functions it adds) and its Go file adds it with `registerC` from `init()` |
 | `internal/wire/` | The binary format of the events Go sends to PHP threads (requests, op results); `internal/sapi/wire.c` decodes it into PHP arrays. Bodies cross as raw bytes |
 | `php/runtime.php` | The whole PHP side: every `Cairo\` class and the fiber scheduler. Embedded in the binary |
 | `php/revolt.php` | `Cairo\Revolt\Driver`, loaded when `revolt/event-loop` is installed |
@@ -55,18 +56,21 @@ yes to either makes it core.
 
 Extensions depend on the core, never the reverse: core code does not name an
 extension. An extension reaches the core through Go operations (`registerOp`,
-`registerFiberOp`), a server that calls `Engine.Dispatch`, and its own
-embedded PHP file. Registration of C code with the SAPI module and engine
-hooks for the diagnostics are the two ways still to be built.
+`registerFiberOp`), a server that calls `Engine.Dispatch`, its own embedded
+PHP file, and a `cairo_extension` for its C code (`registerC`). Engine hooks
+for the diagnostics are the one way still to be built.
 
 The code is moving behind that line in steps that change no behaviour, and
 everything still shares `internal/sapi` and `php/`. Done: no extension
 operation is written into the engine (`dial`, `starttls`, `stoptls`,
-`lookup` and `pg` register themselves). Still mixed: `cairo.c` holds the SAPI
-and the hooks, `php/runtime.php` holds every namespace, the scheduler has
-`http()` and `grpc()` methods, `internal/spec` knows every extension's
-fields, and the diagnostics keep fields in the engine's structs. Do not add
-to those: a new feature goes on the extension side, in its own files.
+`lookup` and `pg` register themselves), and the SAPI module starts no
+extension by name (the hooks, the PDO pgsql driver, the query watcher and
+the curl hook add their C code with `registerC`). Still mixed: `cairo.c`
+has the HTTP answer and the blocking report, `php/runtime.php` holds every
+namespace, the scheduler has `http()` and `grpc()` methods, `internal/spec`
+knows every extension's fields, and the diagnostics keep fields in the
+engine's structs. Do not add to those: a new feature goes on the extension
+side, in its own files.
 
 ## Building and testing
 
@@ -214,7 +218,7 @@ one line and move on.
 - **One file, one concern**, named after it: `sqldb.go`, `grpcstream.go`,
   `tls_unix.go`. A new capability gets a new file, never a new section at the
   bottom of a big one.
-- **Existing oversized files** (`php/runtime.php`, `internal/sapi/cairo.c`,
+- **Existing oversized files** (`php/runtime.php`,
   `internal/sapi/pdo_pgsql.c`, `test/e2e_test.go`)
   must not grow by a whole feature. A new PHP subsystem goes in its own file
   under `php/`, embedded in `php/embed.go` and loaded like `revolt.php`, and

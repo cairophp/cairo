@@ -30,6 +30,10 @@ change the PHP API; patch versions do not.
   operations of the PHP hooks register through the op registry instead of
   being cases in the engine. First step of separating the core engine from
   the extensions; `AGENTS.md` describes the line.
+- Internal, no change in behaviour: the runtime hooks leave `cairo.c` for
+  `function_hook.c` and `socket_hook.c`, and the C code of the extensions
+  (hooks, PDO pgsql, the query watcher, curl) registers with the SAPI module
+  instead of being started by name. Second step of the same separation.
 
 ## [0.4.0] - 2026-11-19
 

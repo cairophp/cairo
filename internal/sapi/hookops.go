@@ -1,5 +1,8 @@
 package sapi
 
+/*
+#include "hooks.h"
+*/
 import "C"
 
 import (
@@ -15,6 +18,8 @@ import (
 // PHP thread calls goDialTLS, goStartTLS and goStopTLS below and waits.
 
 func init() {
+	registerC(&C.cairo_function_hooks)
+	registerC(&C.cairo_socket_hooks)
 	registerFiberOp("dial", opDial)
 	registerFiberOp("starttls", opStartTLS)
 	registerFiberOp("stoptls", opStopTLS)

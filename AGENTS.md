@@ -23,7 +23,8 @@ on I/O through Cairo, only its fiber suspends and Go does the waiting.
 | `internal/sapi/goops.go` | The op registry: `registerOp("name", fn)` in Go, `Cairo\Internal\Go::call('name', $payload)` in PHP. Payloads go to Go as JSON; results come back as events. `registerFiberOp` is for what PHP's hooked functions ask for |
 | `internal/sapi/extension.go`, `extension.h`, `extension.c` | How an extension's C code joins the SAPI module: it defines a `cairo_extension` (what to run at module startup and when a PHP thread ends, the PHP functions it adds) and its Go file adds it with `registerC` from `init()` |
 | `internal/wire/` | The binary format of the events Go sends to PHP threads (requests, op results); `internal/sapi/wire.c` decodes it into PHP arrays. Bodies cross as raw bytes |
-| `php/runtime.php` | The whole PHP side: every `Cairo\` class and the fiber scheduler. Embedded in the binary |
+| `php/` | The PHP side, one file per concern, embedded in the binary. Every PHP thread runs `runtime.php`, which loads the core's files (`app.php`, `context.php`, `channel.php`, `async.php`, `offload.php`, `scheduler.php`, `go.php`) and then the files of the extensions |
+| `internal/sapi/phpfiles.go` | How an extension's PHP file joins the runtime: `registerPHP("name.php")` from its Go file's `init()`, loaded at start, or on first use of the classes it names |
 | `php/revolt.php` | `Cairo\Revolt\Driver`, loaded when `revolt/event-loop` is installed |
 | `php/cache.php`, `php/pool.php` | `Cairo\Cache` and `Cairo\Pool`, each loaded on first use |
 | `internal/spec/` | The server declaration that `server.php` sends to Go |
@@ -31,7 +32,7 @@ on I/O through Cairo, only its fiber suspends and Go does the waiting.
 | `internal/middleware/` | Go middleware declared from PHP |
 | `internal/cachetag/` | Tags of cached responses: declared by routes in `httpserver`, purged from PHP through `sapi` |
 | `internal/codegen/` | `cairo gen`: PHP classes and clients from `.proto` files |
-| `stubs/` | Generated IDE stubs of `php/runtime.php`; `scripts/publish-stubs.sh` copies this directory to `cairophp/stubs`, the Composer package, on each release |
+| `stubs/` | Generated IDE stubs of the public API in `php/`; `scripts/publish-stubs.sh` copies this directory to `cairophp/stubs`, the Composer package, on each release |
 | `examples/` | Runnable apps. The end-to-end tests serve these, so they are also fixtures |
 | `test/` | End-to-end tests: they start the `cairo` binary on an example and talk to it over HTTP and gRPC |
 | `scripts/` | `build-php.sh` (ZTS PHP into /opt/php-zts), `build-static.sh` (the static binary), `stubs.php`, `publish-stubs.sh` |
@@ -57,20 +58,22 @@ yes to either makes it core.
 Extensions depend on the core, never the reverse: core code does not name an
 extension. An extension reaches the core through Go operations (`registerOp`,
 `registerFiberOp`), a server that calls `Engine.Dispatch`, its own embedded
-PHP file, and a `cairo_extension` for its C code (`registerC`). Engine hooks
-for the diagnostics are the one way still to be built.
+PHP file (`registerPHP`), and a `cairo_extension` for its C code
+(`registerC`). Engine hooks for the diagnostics are the one way still to be
+built.
 
 The code is moving behind that line in steps that change no behaviour, and
 everything still shares `internal/sapi` and `php/`. Done: no extension
 operation is written into the engine (`dial`, `starttls`, `stoptls`,
 `lookup` and `pg` register themselves), and the SAPI module starts no
 extension by name (the hooks, the PDO pgsql driver, the query watcher and
-the curl hook add their C code with `registerC`). Still mixed: `cairo.c`
-has the HTTP answer and the blocking report, `php/runtime.php` holds every
-namespace, the scheduler has `http()` and `grpc()` methods, `internal/spec`
-knows every extension's fields, and the diagnostics keep fields in the
-engine's structs. Do not add to those: a new feature goes on the extension
-side, in its own files.
+the curl hook add their C code with `registerC`), and `php/runtime.php`
+loads no extension's file by name (each one is added with `registerPHP`).
+Still mixed: `cairo.c` has the HTTP answer and the blocking report, the
+scheduler has `http()` and `grpc()` methods, `Cairo\App` and
+`internal/spec` know every extension's settings, and the diagnostics keep
+fields in the engine's structs and in the scheduler. Do not add to those: a
+new feature goes on the extension side, in its own files.
 
 ## Building and testing
 
@@ -122,7 +125,7 @@ PHP headers. `go vet ./...` only works where `make php` has run.
 
 ## Rules for changes
 
-- **Keep generated files fresh.** After changing `php/runtime.php`, run
+- **Keep generated files fresh.** After changing a file under `php/`, run
   `make stubs` (`TestStubsUpToDate` fails otherwise). After changing
   `internal/codegen`, regenerate `examples/greeter/gen` with
   `cairo gen --out examples/greeter/gen examples/greeter/proto/helloworld.proto`
@@ -218,12 +221,12 @@ one line and move on.
 - **One file, one concern**, named after it: `sqldb.go`, `grpcstream.go`,
   `tls_unix.go`. A new capability gets a new file, never a new section at the
   bottom of a big one.
-- **Existing oversized files** (`php/runtime.php`,
-  `internal/sapi/pdo_pgsql.c`, `test/e2e_test.go`)
+- **Existing oversized files** (`internal/sapi/pdo_pgsql.c`,
+  `php/revolt.php`, `test/e2e_test.go`)
   must not grow by a whole feature. A new PHP subsystem goes in its own file
-  under `php/`, embedded in `php/embed.go` and loaded like `revolt.php`, and
-  is added to `make stubs` and to `TestStubsUpToDate` (`scripts/stubs.php`
-  takes several files; `php/cache.php` is the model). New C goes in its own `.c` file with a
+  under `php/`, added to the runtime with `registerPHP` from its Go file and,
+  when it has public classes or functions, to the list in `scripts/stubs.php`
+  (`php/cache.php` with `internal/sapi/cachepurge.go` is the model). New C goes in its own `.c` file with a
   header; new end-to-end tests go in their own `test/<feature>_test.go`.
   When a change touches a big file, moving the part you touch into its own
   file is welcome, as a separate commit.
@@ -331,8 +334,8 @@ Cairo is a server: per-request code runs millions of times.
   or singletons. Use `Request`, `Context` values and constructor arguments.
 - **Exceptions** are specific classes (`SqlException`, `Grpc\Exception`),
   never bare `\Exception`; never swallow one silently.
-- The PHP floor is 8.1: do not use newer syntax in `php/runtime.php` or the
-  examples unless guarded by a version check.
+- The PHP floor is 8.1: do not use newer syntax in `php/` or the examples
+  unless guarded by a version check.
 
 ### C
 

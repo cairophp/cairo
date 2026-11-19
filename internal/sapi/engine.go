@@ -361,7 +361,7 @@ func goCairoInfo(tid C.int) *C.char {
 			mode = "offload"
 		}
 	}
-	b, _ := json.Marshal(map[string]any{"mode": mode, "server": e.serverFile, "thread": int(tid)})
+	b, _ := json.Marshal(map[string]any{"mode": mode, "server": e.serverFile, "thread": int(tid), "php": phpAtStart, "classes": phpOnUse})
 	return C.CString(string(b))
 }
 

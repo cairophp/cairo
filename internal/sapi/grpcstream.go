@@ -43,6 +43,7 @@ var (
 )
 
 func init() {
+	registerPHP("grpc.php")
 	ops := map[string]func(context.Context, grpcStreamRequest) map[string]any{
 		"grpc.server.recv":      grpcServerRecv,
 		"grpc.server.send":      grpcServerSend,

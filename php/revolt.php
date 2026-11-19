@@ -1,8 +1,8 @@
 <?php
 /**
  * Cairo's driver for Revolt (revolt/event-loop), the event loop under Amp v3
- * and ReactPHP's fiber adapters. runtime.php loads this file on first use of
- * a Cairo\Revolt\ class, once revolt/event-loop is installed:
+ * and ReactPHP's fiber adapters. Cairo loads this file on first use of a
+ * Cairo\Revolt\ class, and revolt/event-loop must be loadable by then:
  *
  *     Cairo\Revolt\Driver::install();   // in server.php, after vendor/autoload.php
  *
@@ -35,6 +35,12 @@ use Revolt\EventLoop\FiberLocal;
 use Revolt\EventLoop\InvalidCallbackError;
 use Revolt\EventLoop\UncaughtThrowable;
 use Revolt\EventLoop\UnsupportedFeatureException;
+
+// Driver implements Revolt's interface, so nothing here can be declared
+// without it.
+if (!interface_exists(EventLoop\Driver::class)) {
+    throw new \LogicException('Cairo\Revolt\Driver needs revolt/event-loop: composer require revolt/event-loop, and load vendor/autoload.php first');
+}
 
 /** @internal one Revolt callback */
 final class Callback

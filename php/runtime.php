@@ -2,9 +2,10 @@
 /**
  * Cairo runtime: where the PHP half of Cairo starts.
  *
- * Every PHP thread runs this file. It loads the files next to it, which hold
- * the Cairo\ classes and the fiber scheduler, and then the user's server.php,
- * which returns a Cairo\App describing the servers. On the boot thread that
+ * Every PHP thread runs this file. It loads the core's files next to it (the
+ * declaration, contexts, channels, tasks and the fiber scheduler), then the
+ * files the extensions registered, and then the user's server.php, which
+ * returns a Cairo\App describing the servers. On the boot thread that
  * description is sent to Go (the declare phase). On worker threads the file
  * then runs the fiber scheduler: each request runs in its own Fiber, and a
  * fiber that waits on Go-backed I/O is suspended so the thread can run others.
@@ -65,26 +66,19 @@ namespace Cairo\Internal {
 
     function main(): void
     {
+        // Go names the files of the extensions (registerPHP in internal/sapi):
+        // those to load now, and the classes whose first use loads the others.
+        $info = json_decode(\cairo_info(), true, 512, JSON_THROW_ON_ERROR);
+        foreach ($info['php'] as $file) {
+            require __DIR__ . '/' . $file;
+        }
         // What this directory has loaded by now is the runtime; server.php and
         // what loads after it, Cairo's files included, counts as the app.
         Runtime::$files = array_fill_keys(array_filter(get_included_files(), static fn (string $file): bool => dirname($file) === __DIR__), true);
-        $info = json_decode(\cairo_info(), true, 512, JSON_THROW_ON_ERROR);
-        // Cairo\Revolt\Driver implements Revolt's interface, so it can only be
-        // declared once revolt/event-loop is loadable: on first use.
-        spl_autoload_register(static function (string $class): void {
-            $file = [
-                'Cairo\\Cache' => 'cache.php', 'Cairo\\Pool' => 'pool.php', 'Cairo\\PoolTimeout' => 'pool.php',
-                'Cairo\\Internal\\Queries' => 'queries.php', 'Cairo\\Internal\\Leaks' => 'leaks.php', 'Cairo\\RequestLocal' => 'request_local.php',
-            ][$class] ?? null;
-            if ($file !== null) {
-                require_once __DIR__ . '/' . $file;
-                return;
-            }
-            if (str_starts_with($class, 'Cairo\\Revolt\\')) {
-                if (!interface_exists(\Revolt\EventLoop\Driver::class)) {
-                    throw new \LogicException("$class needs revolt/event-loop: composer require revolt/event-loop, and load vendor/autoload.php first");
-                }
-                require_once __DIR__ . '/revolt.php';
+        $onUse = $info['classes'] + ['Cairo\\RequestLocal' => 'request_local.php'];
+        spl_autoload_register(static function (string $class) use ($onUse): void {
+            if (isset($onUse[$class])) {
+                require_once __DIR__ . '/' . $onUse[$class];
             }
         });
         $app = (static fn (string $file): mixed => require $file)($info['server']);
@@ -108,16 +102,5 @@ namespace {
     require __DIR__ . '/offload.php';
     require __DIR__ . '/scheduler.php';
     require __DIR__ . '/go.php';
-    require __DIR__ . '/hooks.php';
-    require __DIR__ . '/middleware.php';
-    require __DIR__ . '/http.php';
-    require __DIR__ . '/form.php';
-    require __DIR__ . '/superglobals.php';
-    require __DIR__ . '/http_adapter.php';
-    require __DIR__ . '/http_client.php';
-    require __DIR__ . '/grpc.php';
-    require __DIR__ . '/grpc_client.php';
-    require __DIR__ . '/net.php';
-    require __DIR__ . '/sql.php';
     \Cairo\Internal\main();
 }

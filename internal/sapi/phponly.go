@@ -9,6 +9,7 @@ func init() {
 	registerPHP("form.php")
 	registerPHP("superglobals.php")
 	registerPHP("http_adapter.php")
+	registerPHP("http_answer.php")
 	registerPHP("pool.php", `Cairo\Pool`, `Cairo\PoolTimeout`)
 	registerPHP("revolt.php", `Cairo\Revolt\Driver`, `Cairo\Revolt\Suspension`, `Cairo\Revolt\Callback`, `Cairo\Revolt\Watch`)
 }

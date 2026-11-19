@@ -8,7 +8,7 @@ declare(strict_types=1);
 
 namespace Cairo\Internal {
 
-    /** Fills and clears PHP's superglobals for isolated-mode requests. */
+    /** Fills PHP's superglobals for isolated-mode requests. */
     final class Superglobals
     {
         public static function fill(array $event): void
@@ -70,12 +70,6 @@ namespace Cairo\Internal {
                 'server' => $server,
                 'files' => Form::superglobal($event['files'] ?? []),
             ];
-        }
-
-        public static function clear(): void
-        {
-            $_GET = $_POST = $_COOKIE = $_REQUEST = $_FILES = [];
-            $_SERVER = [];
         }
 
         /** @return array{string, string} */

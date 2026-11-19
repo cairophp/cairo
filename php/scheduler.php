@@ -11,14 +11,16 @@ namespace Cairo\Internal {
 
     use Cairo\App;
     use Cairo\Context;
-    use Cairo\Grpc;
-    use Cairo\Http;
 
     /** One per PHP thread: runs every request in its own fiber. */
     final class Scheduler
     {
         private static ?self $instance = null;
+        /** @var array<string, \Closure(self): \Closure> request type => what answerWith() was given for it */
+        private static array $makers = [];
 
+        /** @var array<string, \Closure> request type => what answers such a request on this thread */
+        private array $answers = [];
         /** @var array<int, \Fiber> I/O operation id => waiting fiber */
         private array $io = [];
         private \SplQueue $ready;
@@ -56,6 +58,9 @@ namespace Cairo\Internal {
             $this->later = new \SplQueue();
             $this->pending = new \SplQueue();
             self::$instance = $this;
+            foreach (self::$makers as $type => $make) {
+                $this->answers[$type] = $make($this);
+            }
             self::$watchQueries = $app->repeatedQueriesAt() > 0;
             \cairo_watch_queries(self::$watchQueries);
             $ignored = $app->leaksIgnored();
@@ -63,6 +68,19 @@ namespace Cairo\Internal {
             if ($ignored !== null) {
                 Leaks::start($ignored);
             }
+        }
+
+        /**
+         * @internal A server's PHP file says how its requests are answered.
+         * Every request thread calls $make once, with its scheduler, and gets
+         * what it will call with each event of that type, inside the request's
+         * fiber.
+         *
+         * @param \Closure(self): \Closure $make
+         */
+        public static function answerWith(string $type, \Closure $make): void
+        {
+            self::$makers[$type] = $make;
         }
 
         /** @internal */
@@ -217,20 +235,19 @@ namespace Cairo\Internal {
                         unset($this->io[$event['io']]);
                         $fiber?->resume($event);
                         break;
-                    case 'http':
-                    case 'grpc':
-                        if ($this->app->isolated() && $this->busy) {
-                            $this->pending->enqueue($event);
-                        } else {
-                            $this->start($event);
-                        }
-                        break;
                     case 'retire':
                         // Go queues no more requests here; finish the ones held.
                         $this->retiring = true;
                         break;
                     case 'shutdown':
                         return;
+                    default:
+                        // A request: its type names the server it came through.
+                        if ($this->app->isolated() && $this->busy) {
+                            $this->pending->enqueue($event);
+                        } else {
+                            $this->start($event);
+                        }
                 }
             }
         }
@@ -260,36 +277,35 @@ namespace Cairo\Internal {
 
         private function start(array $event): void
         {
+            $answer = $this->answers[$event['type']];
             if (!$this->app->isolated()) {
-                $this->spawn($event, $event['type'] === 'http' ? fn () => $this->http($event) : fn () => $this->grpc($event));
+                $this->spawn($event, $answer);
                 return;
             }
             $this->busy = true;
-            $this->spawn($event, function () use ($event): void {
+            $this->spawn($event, function (array $event) use ($answer): void {
                 try {
-                    if ($event['type'] === 'http') {
-                        Superglobals::fill($event);
-                        $this->http($event);
-                    } else {
-                        $this->grpc($event);
-                    }
+                    $answer($event);
                 } finally {
-                    Superglobals::clear();
+                    // The next request must not find this one's superglobals.
+                    $_GET = $_POST = $_COOKIE = $_REQUEST = $_FILES = [];
+                    $_SERVER = [];
                     $this->app->runResets();
                     $this->busy = false;
                 }
             });
         }
 
-        private function spawn(array $event, \Closure $fn): void
+        /** Run $answer($event) in a fiber of its own, as a request with its context. */
+        private function spawn(array $event, \Closure $answer): void
         {
             $id = (int) $event['id'];   // the request's root fiber is served by the request goroutine
             $context = new Context($id, $id, isset($event['deadline']) ? (float) $event['deadline'] : null);
             $context->setGoValues((array) ($event['values'] ?? []));
             $this->active++;
-            $this->startFiber(function () use ($fn, $context, $event): void {
+            $this->startFiber(function () use ($answer, $context, $event): void {
                 try {
-                    $fn();
+                    $answer($event);
                 } finally {
                     $context->finish();
                     \cairo_local_end($context->requestId);
@@ -350,7 +366,8 @@ namespace Cairo\Internal {
             gc_collect_cycles();
         }
 
-        private function resolve(int $id): mixed
+        /** @internal The handler registered as $id; a class given by name becomes an object, once per thread. */
+        public function resolve(int $id): mixed
         {
             if (array_key_exists($id, $this->resolved)) {
                 return $this->resolved[$id];
@@ -361,144 +378,7 @@ namespace Cairo\Internal {
             } elseif (is_string($handler) && class_exists($handler)) {
                 $handler = new $handler();
             }
-            if (is_object($handler) && !$handler instanceof \Closure) {
-                $handler = Http\Adapter::wrap($handler);
-            }
             return $this->resolved[$id] = $handler;
-        }
-
-        private function http(array $event): void
-        {
-            $isolated = $this->app->isolated();
-            Form::track($event['files'] ?? []);
-            try {
-                if ($isolated) {
-                    // Classic PHP style: echo and header() become the response.
-                    ob_start();
-                    header_remove();
-                    http_response_code(200);
-                }
-                try {
-                    $handler = $this->resolve((int) $event['route']);
-                    $response = \cairo_guard(static fn () => $handler(new Http\Request($event), Context::current()));
-                } finally {
-                    $output = $isolated ? (string) ob_get_clean() : '';
-                }
-                if ($isolated && $response === null) {
-                    $headers = self::sentHeaders();
-                    if (!isset(array_change_key_case($headers)['content-type'])) {
-                        $headers['Content-Type'] = ['text/html; charset=UTF-8'];   // PHP's default
-                    }
-                    $response = new Http\Response((int) (http_response_code() ?: 200), $headers, $output);
-                }
-                if (!$response instanceof Http\Response) {
-                    $response = is_string($response) ? Http\Response::text($response) : Http\Response::json($response);
-                }
-            } catch (Context\DeadlineExceeded) {
-                $response = Http\Response::text("Gateway Timeout\n", 504);
-            } catch (Context\Canceled) {
-                // The client went away; nobody reads this, and it is not an error.
-                $response = Http\Response::text("Client Closed Request\n", 499);
-            } catch (\Throwable $e) {
-                error_log('cairo: ' . $e);
-                $response = Http\Response::text("Internal Server Error\n", 500);
-            }
-            Context::current()->markAnswered();
-            Form::untrack($event['files'] ?? []);   // Go removes what is left once we respond
-            \cairo_respond_http((int) $event['id'], $response->status, $response->headers, $response->body);
-        }
-
-        /** @return array<string, list<string>> the headers set with header() */
-        private static function sentHeaders(): array
-        {
-            $out = [];
-            foreach (headers_list() as $line) {
-                [$name, $value] = array_pad(explode(':', $line, 2), 2, '');
-                $out[trim($name)][] = ltrim($value);
-            }
-            header_remove();
-            return $out;
-        }
-
-        /** @var array<string, ?string> "class::method" => request class, or null for arrays */
-        private array $requestClasses = [];
-
-        /**
-         * The generated message class a handler takes as its first argument
-         * (from cairo gen), or null when it takes the protojson array.
-         */
-        private function requestClass(object $service, string $method): ?string
-        {
-            $key = $service::class . '::' . $method;
-            if (array_key_exists($key, $this->requestClasses)) {
-                return $this->requestClasses[$key];
-            }
-            $class = null;
-            $params = (new \ReflectionMethod($service, $method))->getParameters();
-            $type = ($params[0] ?? null)?->getType();
-            if ($type instanceof \ReflectionNamedType && !$type->isBuiltin()) {
-                $name = $type->getName();
-                if (method_exists($name, 'fromArray')) {
-                    $class = $name;
-                }
-            }
-            return $this->requestClasses[$key] = $class;
-        }
-
-        /**
-         * A streaming method: server streaming handlers get (request, stream,
-         * ctx) and send their replies; client-streaming and bidirectional ones
-         * get (stream, ctx). A client-streaming handler returns its reply.
-         */
-        private function grpcStream(object $service, string $method, array $event, array $message): mixed
-        {
-            // Generated interfaces list each streaming method's message classes.
-            $const = $service::class . '::STREAMING';
-            [$in] = (defined($const) ? (constant($const)[$method] ?? null) : null) ?? [null, null];
-            $stream = new Grpc\ServerStream((int) $event['stream'], $in);
-            if (!empty($event['client_streaming'])) {
-                $result = $service->{$method}($stream, Context::current());
-            } else {
-                $class = $this->requestClass($service, $method) ?? $in;
-                $request = $class !== null ? $class::fromArray($message) : $message;
-                $result = $service->{$method}($request, $stream, Context::current());
-            }
-            return empty($event['server_streaming']) ? $result : null;
-        }
-
-        private function grpc(array $event): void
-        {
-            try {
-                $service = $this->resolve((int) $event['service']);
-                $method = (string) $event['method'];
-                if (!is_object($service) || !method_exists($service, $method)) {
-                    throw new Grpc\Exception(Grpc\Code::UNIMPLEMENTED, "method $method is not implemented");
-                }
-                $message = $event['message'] ?? [];
-                $result = \cairo_guard(function () use ($service, $method, $event, $message): mixed {
-                    if (isset($event['stream'])) {
-                        return $this->grpcStream($service, $method, $event, $message);
-                    }
-                    $class = $this->requestClass($service, $method);
-                    $request = $class !== null ? $class::fromArray($message) : $message;
-                    return $service->{$method}($request, Context::current());
-                });
-                if (is_object($result) && method_exists($result, 'toArray')) {
-                    $result = $result->toArray();   // a class generated by cairo gen
-                }
-                $out = ['ok' => true, 'message' => ($result === [] || $result === null) ? new \stdClass() : $result];
-            } catch (Grpc\Exception $e) {
-                $out = ['ok' => false, 'code' => $e->getCode(), 'message' => $e->getMessage()];
-            } catch (Context\DeadlineExceeded $e) {
-                $out = ['ok' => false, 'code' => Grpc\Code::DEADLINE_EXCEEDED, 'message' => $e->getMessage()];
-            } catch (Context\Canceled $e) {
-                $out = ['ok' => false, 'code' => Grpc\Code::CANCELLED, 'message' => $e->getMessage()];
-            } catch (\Throwable $e) {
-                error_log('cairo: ' . $e);
-                $out = ['ok' => false, 'code' => Grpc\Code::INTERNAL, 'message' => 'internal error'];
-            }
-            Context::current()->markAnswered();
-            \cairo_respond((int) $event['id'], json_encode($out, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
         }
     }
 }

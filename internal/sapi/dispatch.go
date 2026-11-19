@@ -45,10 +45,11 @@ type reply struct {
 // its metadata (JSON) and, for HTTP, the response body.
 //
 // The calling goroutine becomes the request's root fiber: until PHP answers,
-// it performs that fiber's I/O under ctx. ev carries a "type" ("http" or
-// "grpc"); Dispatch gives it the "id" and "deadline". If ctx ends first,
-// Dispatch returns ctx.Err() and a helper goroutine keeps answering the
-// fiber (with the context's error) until PHP finishes.
+// it performs that fiber's I/O under ctx. ev carries the "type" that the
+// server's PHP file answers (Scheduler::answerWith()); Dispatch gives it the
+// "id" and "deadline". If ctx ends first, Dispatch returns ctx.Err() and a
+// helper goroutine keeps answering the fiber (with the context's error)
+// until PHP finishes.
 func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte, err error) {
 	var timing *reqTiming
 	if e.slowAfter > 0 || e.heavyAfter > 0 {

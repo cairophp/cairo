@@ -23,9 +23,12 @@ type Spec struct {
 	HeavyRoutes float64 `json:"heavy_routes"`
 	// MaxInFlight caps the requests each PHP request thread holds at once
 	// (0: no cap). Requests over it wait in Go until one finishes.
-	MaxInFlight int          `json:"max_in_flight"`
-	HTTP        []HTTPServer `json:"http"`
-	GRPC        []GRPCServer `json:"grpc"`
+	MaxInFlight int `json:"max_in_flight"`
+	// Isolated is App::concurrency('isolated'): each request thread runs one
+	// request at a time.
+	Isolated bool         `json:"isolated"`
+	HTTP     []HTTPServer `json:"http"`
+	GRPC     []GRPCServer `json:"grpc"`
 }
 
 // HTTPServer is one `$app->http(':8080')` declaration.

@@ -7,6 +7,12 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+### Changed
+
+- Isolated mode: requests wait in Go in one first-in, first-out queue and go
+  to the next free thread, instead of queuing on a thread behind its slow
+  requests. Laravel (Octane) p99 at 256 connections: 2.1 s to 0.6 s.
+
 ## [0.4.0] - 2026-11-19
 
 ### Added

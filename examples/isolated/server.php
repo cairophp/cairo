@@ -52,6 +52,12 @@ $http->get('/legacy', function (): void {
     ]);
 });
 
+// Holds its thread for ?ms= milliseconds.
+$http->get('/hold', function (): void {
+    usleep(1000 * max(0, min(5000, (int) ($_GET['ms'] ?? 0))));
+    echo 'held';
+});
+
 $http->post('/form', function (): void {
     echo 'hello ' . ($_POST['name'] ?? '?') . ' (' . ($_COOKIE['session'] ?? 'no session') . ')';
 });

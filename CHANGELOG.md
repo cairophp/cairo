@@ -25,6 +25,11 @@ change the PHP API; patch versions do not.
 - Isolated mode: requests wait in Go in one first-in, first-out queue and go
   to the next free thread, instead of queuing on a thread behind its slow
   requests. Laravel (Octane) p99 at 256 connections: 2.1 s to 0.6 s.
+- Internal, no change in behaviour: the Go engine is split by concern
+  (`engine.go` into `dispatch.go`, `fiber.go`, `offload.go` and more), and the
+  operations of the PHP hooks register through the op registry instead of
+  being cases in the engine. First step of separating the core engine from
+  the extensions; `AGENTS.md` describes the line.
 
 ## [0.4.0] - 2026-11-19
 

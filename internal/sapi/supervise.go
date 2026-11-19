@@ -1,5 +1,7 @@
 package sapi
 
+import "C"
+
 import (
 	"errors"
 	"time"
@@ -199,4 +201,21 @@ func (e *Engine) report(err error) {
 	case e.threadErrs <- err:
 	default:
 	}
+}
+
+//export goThreadDone
+func goThreadDone(tid C.int, status C.int) {
+	e := engine
+	defer e.threadsWG.Done()
+	e.threadExited(e.table[int(tid)].Load(), int(status))
+}
+
+//export goThreadRetire
+func goThreadRetire(tid C.int, reason *C.char, n C.int) {
+	e := engine
+	t := e.table[int(tid)].Load()
+	why := C.GoStringN(reason, n)
+	// Not on this thread: putting the replacement in place can wait for
+	// senders that wait on this thread's inbox.
+	go e.retire(t, why)
 }

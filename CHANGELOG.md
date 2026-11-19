@@ -7,6 +7,12 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+### Changed
+
+- A new request no longer goes to a PHP thread that has been running one
+  fiber for 5 ms or more without pausing (a CPU loop, an unhooked blocking
+  call), while another thread is free of that.
+
 ### Fixed
 
 - `Cairo\Sql`: a transaction opened with plain SQL on a pool no longer

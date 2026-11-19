@@ -9,6 +9,10 @@ change the PHP API; patch versions do not.
 
 ### Added
 
+- `Cairo\RequestLocal::register($class, ...$properties)`: static
+  properties that keep one value per request, swapped in C when fibers of
+  different requests take turns on a thread. The first step to running
+  Laravel without isolated mode.
 - `$http->publicDir($dir)`: serve a document root (Laravel's `public/`) from
   Go, with every path that is not a file going to the routes. PHP files and
   hidden files are never served.

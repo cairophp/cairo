@@ -478,6 +478,7 @@ namespace Cairo {
         {
             self::$byFiber ??= new \WeakMap();
             self::$byFiber[$fiber] = $context;
+            \cairo_local_bind($fiber, $context->requestId);
         }
 
         public function deadline(): ?\DateTimeImmutable
@@ -3025,6 +3026,7 @@ namespace Cairo\Internal {
                 do {
                     $job();
                     unset($job);   // an idle fiber must not keep the last job's captures alive
+                    \cairo_local_bind(\Fiber::getCurrent(), 0);   // nor its request's statics
                     if (count($this->idle) >= self::IDLE_FIBERS) {
                         return;
                     }
@@ -3213,6 +3215,7 @@ namespace Cairo\Internal {
                     $fn();
                 } finally {
                     $context->finish();
+                    \cairo_local_end($context->requestId);
                     if (self::$watchQueries) {
                         Queries::end($context->requestId, $this->routeOf($event), $this->app->repeatedQueriesAt());
                     }
@@ -3894,7 +3897,7 @@ namespace Cairo\Internal {
         spl_autoload_register(static function (string $class): void {
             $file = [
                 'Cairo\\Cache' => 'cache.php', 'Cairo\\Pool' => 'pool.php', 'Cairo\\PoolTimeout' => 'pool.php',
-                'Cairo\\Internal\\Queries' => 'queries.php',
+                'Cairo\\Internal\\Queries' => 'queries.php', 'Cairo\\RequestLocal' => 'request_local.php',
             ][$class] ?? null;
             if ($file !== null) {
                 require_once __DIR__ . '/' . $file;

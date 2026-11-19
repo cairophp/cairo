@@ -7,6 +7,13 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+### Added
+
+- `Cairo\RequestLocal::register($class, ...$properties)`: static
+  properties that keep one value per request, swapped in C when fibers of
+  different requests take turns on a thread. The first step to running
+  Laravel without isolated mode.
+
 ## [0.4.0] - 2026-11-19
 
 ### Added

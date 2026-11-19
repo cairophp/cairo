@@ -740,7 +740,7 @@ func writeRuntime() (string, error) {
 		return "", err
 	}
 	// Next to it: loaded by runtime.php's autoloader on first use.
-	for name, code := range map[string][]byte{"revolt.php": php.Revolt, "cache.php": php.Cache, "pool.php": php.Pool, "queries.php": php.Queries} {
+	for name, code := range map[string][]byte{"revolt.php": php.Revolt, "cache.php": php.Cache, "pool.php": php.Pool, "queries.php": php.Queries, "request_local.php": php.RequestLocal} {
 		if err := os.WriteFile(filepath.Join(dir, name), code, 0o600); err != nil {
 			return "", err
 		}

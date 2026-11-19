@@ -91,6 +91,7 @@ func (s *Server) Shutdown(ctx context.Context) error { return s.srv.Shutdown(ctx
 // event is a request as PHP receives it (Cairo\Http\Request).
 type event struct {
 	route   int
+	name    string // "GET /users/{id}", for logs
 	method  string
 	path    string
 	query   string
@@ -106,6 +107,9 @@ type event struct {
 }
 
 // AppendWire encodes the request for PHP; the body goes as raw bytes.
+// RouteName is the route's method and pattern, for the slow request log.
+func (ev *event) RouteName() string { return ev.name }
+
 func (ev *event) AppendWire(b []byte, id int64, deadline float64) []byte {
 	n := 13
 	if deadline > 0 {
@@ -162,6 +166,7 @@ func routeHandler(r spec.Route, php Dispatcher, cache *responseCache, log *slog.
 	for _, m := range paramRe.FindAllStringSubmatch(r.Path, -1) {
 		names = append(names, m[1])
 	}
+	name := r.Method + " " + r.Path
 	var policy *cachePolicy
 	if r.Cache != nil {
 		policy = newCachePolicy(r.ID, *r.Cache)
@@ -171,6 +176,7 @@ func routeHandler(r spec.Route, php Dispatcher, cache *responseCache, log *slog.
 		if !ok {
 			return
 		}
+		ev.name = name
 		defer cleanup()
 		key, ok := policy.key(req)
 		if ok && req.Method == http.MethodHead {

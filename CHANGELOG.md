@@ -17,6 +17,9 @@ change the PHP API; patch versions do not.
 
 ### Added
 
+- `App::slowRequests($seconds)`: log every request slower than that, with
+  where its time went (SQL, HTTP, sockets, sleeps, waits, PHP), measured in
+  Go with no code in the app.
 - `Cairo\Sql\Db::open()` option `acquire_timeout`: a `Cairo\PoolTimeout`
   when no connection becomes free in time.
 

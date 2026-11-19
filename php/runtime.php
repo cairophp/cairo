@@ -24,6 +24,7 @@ namespace Cairo {
         private int $maxRequests = 0;
         private int $maxMemory = 0;
         private float $detectBlocking = 0.0;
+        private float $slowRequests = 0.0;
         private int $maxInFlight = 0;
         private int $hooks = Hook::ALL;
         private string $concurrency = 'fibers';
@@ -92,6 +93,32 @@ namespace Cairo {
                 throw new \InvalidArgumentException('detectBlocking must be 0 or more');
             }
             $this->detectBlocking = $seconds;
+            return $this;
+        }
+
+        /**
+         * Log every request that takes longer than $seconds, with where its
+         * time went, measured in Go with no code in the app:
+         *
+         *     slow request route="GET /orders/{id}" ms=1240 php_ms=40 longest_run_ms=12 sql="38 in 310ms" http="2 in 890ms"
+         *
+         * Kinds: sql (PDO pgsql, Cairo\Sql), http (Cairo\Http\Client, curl),
+         * socket (other hooked sockets: PDO MySQL, Redis, streams), connect
+         * (DNS, connect, TLS), sleep, wait (channels, select(), Cairo\Pool
+         * with acquireTimeout), offload and grpc. Waits of async() tasks run side by side, so the kinds can
+         * add up to more than the request. php_ms is the time when none of
+         * the request's fibers was waiting in Go: running PHP, or queued
+         * behind other requests on its thread. longest_run_ms is the longest
+         * stretch of PHP it ran without yielding, while every other request on
+         * its thread waited: move the work to offload() when it is high. 0
+         * (the default) turns it off.
+         */
+        public function slowRequests(float $seconds = 1.0): static
+        {
+            if ($seconds < 0) {
+                throw new \InvalidArgumentException('slowRequests must be 0 or more');
+            }
+            $this->slowRequests = $seconds;
             return $this;
         }
 
@@ -233,7 +260,7 @@ namespace Cairo {
         /** @internal */
         public function spec(): array
         {
-            $spec = ['threads' => $this->threads, 'offload_threads' => $this->offloadThreads, 'detect_blocking' => $this->detectBlocking, 'max_in_flight' => $this->maxInFlight, 'http' => [], 'grpc' => []];
+            $spec = ['threads' => $this->threads, 'offload_threads' => $this->offloadThreads, 'detect_blocking' => $this->detectBlocking, 'slow_requests' => $this->slowRequests, 'max_in_flight' => $this->maxInFlight, 'http' => [], 'grpc' => []];
             foreach ($this->servers as $server) {
                 if ($server instanceof Http\Server) {
                     $spec['http'][] = $server->spec();

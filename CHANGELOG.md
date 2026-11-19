@@ -7,6 +7,11 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-19
+
+Connection pools done well: bounded waits, a reset before reuse, connection
+lifetimes, and one PostgreSQL pool for all threads.
+
 ### Added
 
 - `Cairo\Pool` options: `acquireTimeout` (a `Cairo\PoolTimeout` when no
@@ -188,7 +193,8 @@ PHP, with many requests per PHP thread as fibers.
 - `Cairo\Sql` returns timestamps in UTC instead of the server's time zone
   (#40).
 
-[Unreleased]: https://github.com/cairophp/cairo/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/cairophp/cairo/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/cairophp/cairo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/cairophp/cairo/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/cairophp/cairo/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/cairophp/cairo/releases/tag/v0.1.0

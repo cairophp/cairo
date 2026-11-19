@@ -133,7 +133,7 @@ internal/httpserver/  net/http server built from the declaration
 internal/middleware/  Go middleware declared from PHP (HTTP and gRPC)
 internal/cachetag/    tags of cached responses, for Cairo\Cache::purge()
 internal/grpcserver/  grpc-go server, proto compilation, health, reflection
-php/runtime.php       the PHP side: Cairo\ classes and the fiber scheduler (embedded in the binary)
+php/                  the PHP side, one file per concern (embedded in the binary); runtime.php is what every PHP thread runs
 php/revolt.php        Cairo\Revolt\Driver, loaded when revolt/event-loop is installed
 php/cache.php         Cairo\Cache, loaded on first use
 php/pool.php          Cairo\Pool, loaded on first use

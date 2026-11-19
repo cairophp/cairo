@@ -34,6 +34,10 @@ change the PHP API; patch versions do not.
   `function_hook.c` and `socket_hook.c`, and the C code of the extensions
   (hooks, PDO pgsql, the query watcher, curl) registers with the SAPI module
   instead of being started by name. Second step of the same separation.
+- Internal, no change in behaviour: `php/runtime.php` is split into one file
+  per concern, and it loads the PHP files of the extensions from a list that
+  each extension adds itself to (`registerPHP`) instead of naming them. Third
+  step of the same separation.
 
 ## [0.4.0] - 2026-11-19
 

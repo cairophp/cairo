@@ -36,6 +36,7 @@ import (
 // string, MySQL a time.Time, since MySQL does not parse UTC offsets.
 
 func init() {
+	registerPHP("sql.php")
 	registerOp("sql.open", sqlOp(sqlOpen))
 	registerOp("sql.query", sqlOp(sqlQuery))
 	registerOp("sql.begin", sqlOp(sqlBegin))

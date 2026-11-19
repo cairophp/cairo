@@ -62,6 +62,7 @@ type netRequest struct {
 }
 
 func init() {
+	registerPHP("net.php")
 	ops := map[string]func(context.Context, netRequest) map[string]any{
 		"net.dial":         netDial,
 		"net.listen":       netListen,

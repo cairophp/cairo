@@ -24,6 +24,7 @@ import (
 // so the fiber suspends and the request's deadline cancels it.
 
 func init() {
+	registerPHP("http_client.php")
 	registerOp("http", func(ctx context.Context, payload []byte) (any, error) {
 		var req httpClientRequest
 		if err := json.Unmarshal(payload, &req); err != nil {

@@ -8,7 +8,7 @@ import (
 )
 
 // stubs/cairo.php, the IDE stubs shipped by the Composer package, is
-// generated from php/runtime.php and must be up to date. It must also load in
+// generated from the files in php/ and must be up to date. It must also load in
 // plain PHP, with no Cairo\Internal names in it.
 func TestStubsUpToDate(t *testing.T) {
 	php, err := exec.LookPath("php")
@@ -18,7 +18,7 @@ func TestStubsUpToDate(t *testing.T) {
 	if out, _ := exec.Command(php, "-r", "echo class_exists('PhpToken') ? 'y' : 'n';").Output(); string(out) != "y" {
 		t.Skip("the php CLI has no tokenizer")
 	}
-	want, err := exec.Command(php, "../scripts/stubs.php", "../php/runtime.php", "../php/cache.php", "../php/pool.php", "../php/request_local.php").Output()
+	want, err := exec.Command(php, "../scripts/stubs.php").Output()
 	if err != nil {
 		t.Fatalf("scripts/stubs.php: %v", err)
 	}

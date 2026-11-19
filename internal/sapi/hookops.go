@@ -18,6 +18,7 @@ import (
 // PHP thread calls goDialTLS, goStartTLS and goStopTLS below and waits.
 
 func init() {
+	registerPHP("hooks.php")
 	registerC(&C.cairo_function_hooks)
 	registerC(&C.cairo_socket_hooks)
 	registerFiberOp("dial", opDial)

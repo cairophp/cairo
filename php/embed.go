@@ -1,41 +1,11 @@
 // Package php holds the PHP side of the Cairo runtime, embedded in the binary.
 package php
 
-import _ "embed"
+import "embed"
 
-// Runtime is php/runtime.php: the Cairo\ classes, the fiber scheduler and
-// the entry point every PHP thread runs.
+// Files are the PHP files of the runtime. Every PHP thread runs runtime.php,
+// which loads the others: most of them at start, the rest on first use of a
+// class they declare.
 //
-//go:embed runtime.php
-var Runtime []byte
-
-// Revolt is php/revolt.php: Cairo\Revolt\Driver, loaded on first use when
-// revolt/event-loop is installed.
-//
-//go:embed revolt.php
-var Revolt []byte
-
-// Cache is php/cache.php: Cairo\Cache, loaded on first use.
-//
-//go:embed cache.php
-var Cache []byte
-
-// Pool is php/pool.php: Cairo\Pool, loaded on first use.
-//
-//go:embed pool.php
-var Pool []byte
-
-// RequestLocal is php/request_local.php: Cairo\RequestLocal, loaded on first use.
-//
-//go:embed request_local.php
-var RequestLocal []byte
-
-// Queries is php/queries.php: the repeated query detector, loaded on first use.
-//
-//go:embed queries.php
-var Queries []byte
-
-// Leaks is php/leaks.php: the leak detector, loaded on first use.
-//
-//go:embed leaks.php
-var Leaks []byte
+//go:embed *.php
+var Files embed.FS

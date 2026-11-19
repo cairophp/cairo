@@ -307,22 +307,27 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 	}
 }
 
+// writeRuntime puts the embedded PHP files in a directory of their own, since
+// PHP runs files, and returns the path of the one every PHP thread runs.
 func writeRuntime() (string, error) {
 	dir, err := os.MkdirTemp("", "cairo-runtime-")
 	if err != nil {
 		return "", err
 	}
-	f := filepath.Join(dir, "runtime.php")
-	if err := os.WriteFile(f, php.Runtime, 0o600); err != nil {
+	files, err := php.Files.ReadDir(".")
+	if err != nil {
 		return "", err
 	}
-	// Next to it: loaded by runtime.php's autoloader on first use.
-	for name, code := range map[string][]byte{"revolt.php": php.Revolt, "cache.php": php.Cache, "pool.php": php.Pool, "queries.php": php.Queries, "leaks.php": php.Leaks, "request_local.php": php.RequestLocal} {
-		if err := os.WriteFile(filepath.Join(dir, name), code, 0o600); err != nil {
+	for _, file := range files {
+		code, err := php.Files.ReadFile(file.Name())
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(dir, file.Name()), code, 0o600); err != nil {
 			return "", err
 		}
 	}
-	return f, nil
+	return filepath.Join(dir, "runtime.php"), nil
 }
 
 // goPHPLog receives PHP's log lines (errors, warnings, error_log()) from the

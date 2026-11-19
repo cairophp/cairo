@@ -153,6 +153,7 @@ type phpResult struct {
 
 // event is a call as PHP receives it.
 type event struct {
+	full            string // /pkg.Service/Method, for logs
 	Service         int
 	Method          string
 	Values          map[string]any
@@ -161,6 +162,9 @@ type event struct {
 	ClientStreaming bool
 	ServerStreaming bool
 }
+
+// RouteName is the full gRPC method, for the slow request log.
+func (ev *event) RouteName() string { return ev.full }
 
 func (ev *event) AppendWire(b []byte, id int64, deadline float64) []byte {
 	n := 4
@@ -204,6 +208,7 @@ func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 		return status.Errorf(codes.Unimplemented, "unknown method %s", full)
 	}
 	ev := &event{
+		full:    full,
 		Service: m.serviceID,
 		Method:  m.name,
 		Values:  middleware.Values(stream.Context()),

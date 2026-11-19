@@ -40,8 +40,8 @@ change the PHP API; patch versions do not.
   step of the same separation.
 - Internal, no change in behaviour: the fiber scheduler no longer knows HTTP
   or gRPC. Each server's PHP file registers what answers its requests
-  (`php/http_answer.php`, `php/grpc_answer.php`). Fourth step of the same
-  separation.
+  (`php/http_answer.php`, `php/grpc_answer.php`), and `cairo_respond_http()`
+  leaves `cairo.c` for `http_answer.c`. Fourth step of the same separation.
 
 ## [0.4.0] - 2026-11-19
 

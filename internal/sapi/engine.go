@@ -648,15 +648,30 @@ func (e *Engine) runOffload(ctx context.Context, payload string) (string, error)
 	}
 }
 
-// leastBusy returns the thread with the fewest calls in flight.
+// stuckAfter is how long a thread's PHP may run without coming back for an
+// event before dispatch passes it over: it is running one fiber that does
+// not pause (a CPU loop, an unhooked blocking call), and everything queued
+// there waits for it.
+const stuckAfter = 5 * time.Millisecond
+
+// leastBusy returns the thread with the fewest calls in flight, among those
+// not stuck in one fiber; when every thread is stuck, among all of them.
 func leastBusy(ts []atomic.Pointer[thread]) *thread {
-	best := ts[0].Load()
-	min := best.inflight.Load()
-	for i := 1; i < len(ts); i++ {
+	stuck := time.Now().UnixNano() - int64(stuckAfter)
+	var best, free *thread
+	var min, freeMin int64
+	for i := range ts {
 		t := ts[i].Load()
-		if n := t.inflight.Load(); n < min {
+		n := t.inflight.Load()
+		if best == nil || n < min {
 			best, min = t, n
 		}
+		if since := t.busySince.Load(); (since == 0 || since > stuck) && (free == nil || n < freeMin) {
+			free, freeMin = t, n
+		}
+	}
+	if free != nil {
+		return free
 	}
 	return best
 }

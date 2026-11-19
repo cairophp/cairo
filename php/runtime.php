@@ -26,12 +26,15 @@ namespace Cairo {
         private float $detectBlocking = 0.0;
         private float $slowRequests = 0.0;
         private int $maxInFlight = 0;
+        private int $repeatedQueries = 0;
         private int $hooks = Hook::ALL;
         private string $concurrency = 'fibers';
         /** @var list<object|callable> */
         private array $resets = [];
         /** @var list<mixed> handler id => handler */
         private array $handlers = [];
+        /** @var list<string> handler id => route ("GET /users/{id}", "helloworld.Greeter") */
+        private array $routes = [];
 
         /** Number of PHP threads: 'auto' (one per CPU core) or a number. */
         public function threads(int|string $threads): static
@@ -94,6 +97,34 @@ namespace Cairo {
             }
             $this->detectBlocking = $seconds;
             return $this;
+        }
+
+        /**
+         * Log a warning when one request runs the same statement $times
+         * times or more: the N+1 pattern, a query in a loop where one query
+         * with a join or IN (...) would do.
+         *
+         *     level=WARN msg="repeated query" route="GET /orders" count=50 query="SELECT * FROM items WHERE order_id = ?"
+         *
+         * It counts every statement run through PDO (any driver) and
+         * Cairo\Sql. Statements with the same shape count as one: string and
+         * number literals and IN (...) lists are replaced by ?. Parameters
+         * are never logged. Each route and statement is logged at most once
+         * a minute. 0, the default, turns the detector off.
+         */
+        public function repeatedQueries(int $times = 10): static
+        {
+            if ($times < 0 || $times === 1) {
+                throw new \InvalidArgumentException('repeatedQueries must be 0 (off) or 2 or more');
+            }
+            $this->repeatedQueries = $times;
+            return $this;
+        }
+
+        /** @internal */
+        public function repeatedQueriesAt(): int
+        {
+            return $this->repeatedQueries;
         }
 
         /**
@@ -245,10 +276,17 @@ namespace Cairo {
         }
 
         /** @internal */
-        public function register(mixed $handler): int
+        public function register(mixed $handler, string $route = ''): int
         {
             $this->handlers[] = $handler;
+            $this->routes[] = $route;
             return count($this->handlers) - 1;
+        }
+
+        /** @internal the route of handler $id, as logs name it */
+        public function routeName(int $id): string
+        {
+            return $this->routes[$id] ?? '';
         }
 
         /** @internal */
@@ -1258,7 +1296,7 @@ namespace Cairo\Http {
          */
         public function route(string $method, string $path, callable|array|object $handler): static
         {
-            $id = $this->app->register($handler);
+            $id = $this->app->register($handler, strtoupper($method) . ' ' . $path);
             $this->routes[] = ['id' => $id, 'method' => strtoupper($method), 'path' => $path];
             return $this;
         }
@@ -1899,7 +1937,7 @@ namespace Cairo\Grpc {
          */
         public function service(string $name, object|string $handler): static
         {
-            $id = $this->app->register($handler);
+            $id = $this->app->register($handler, $name);
             $this->services[] = ['id' => $id, 'name' => $name];
             return $this;
         }
@@ -2670,6 +2708,9 @@ namespace Cairo\Sql {
                     default => $p,
                 };
             }
+            if (\Cairo\Internal\Scheduler::watchingQueries()) {
+                \Cairo\Internal\Queries::seen($sql);
+            }
             return Db::call('sql.query', $this->target() + ['sql' => $sql, 'args' => $args, 'exec' => $exec]);
         }
 
@@ -2892,12 +2933,32 @@ namespace Cairo\Internal {
         private bool $retireAsked = false;
         private bool $retiring = false;
 
+        /** App::repeatedQueries() is on: PDO and Cairo\Sql report their statements */
+        private static bool $watchQueries = false;
+
         public function __construct(private readonly App $app)
         {
             $this->ready = new \SplQueue();
             $this->later = new \SplQueue();
             $this->pending = new \SplQueue();
             self::$instance = $this;
+            self::$watchQueries = $app->repeatedQueriesAt() > 0;
+            \cairo_watch_queries(self::$watchQueries);
+        }
+
+        /** @internal */
+        public static function watchingQueries(): bool
+        {
+            return self::$watchQueries;
+        }
+
+        /** @param array<string, mixed> $event */
+        private function routeOf(array $event): string
+        {
+            if ($event['type'] === 'http') {
+                return $this->app->routeName((int) $event['route']);
+            }
+            return $this->app->routeName((int) $event['service']) . '/' . (string) $event['method'];
         }
 
         public static function instance(): self
@@ -3106,11 +3167,14 @@ namespace Cairo\Internal {
             $context = new Context($id, $id, isset($event['deadline']) ? (float) $event['deadline'] : null);
             $context->setGoValues((array) ($event['values'] ?? []));
             $this->active++;
-            $this->startFiber(function () use ($fn, $context): void {
+            $this->startFiber(function () use ($fn, $context, $event): void {
                 try {
                     $fn();
                 } finally {
                     $context->finish();
+                    if (self::$watchQueries) {
+                        Queries::end($context->requestId, $this->routeOf($event), $this->app->repeatedQueriesAt());
+                    }
                     $this->active--;
                     $this->served++;
                     if ($context->err() !== null) {
@@ -3787,7 +3851,10 @@ namespace Cairo\Internal {
         // Cairo\Revolt\Driver implements Revolt's interface, so it can only be
         // declared once revolt/event-loop is loadable: on first use.
         spl_autoload_register(static function (string $class): void {
-            $file = ['Cairo\\Cache' => 'cache.php', 'Cairo\\Pool' => 'pool.php', 'Cairo\\PoolTimeout' => 'pool.php'][$class] ?? null;
+            $file = [
+                'Cairo\\Cache' => 'cache.php', 'Cairo\\Pool' => 'pool.php', 'Cairo\\PoolTimeout' => 'pool.php',
+                'Cairo\\Internal\\Queries' => 'queries.php',
+            ][$class] ?? null;
             if ($file !== null) {
                 require_once __DIR__ . '/' . $file;
                 return;

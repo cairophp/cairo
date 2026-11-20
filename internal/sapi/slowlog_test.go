@@ -23,10 +23,10 @@ func TestOpKind(t *testing.T) {
 func TestReqTimingOverlap(t *testing.T) {
 	r := &reqTiming{start: time.Now().Add(-100 * time.Millisecond)}
 	r.since = r.start
-	a := r.waitBegin()
-	b := r.waitBegin()
-	r.waitEnd("sleep", a)
-	r.waitEnd("sleep", b)
+	a := r.WaitBegin()
+	b := r.WaitBegin()
+	r.WaitEnd("sleep", a)
+	r.WaitEnd("sleep", b)
 	if n := r.count[waitSleep].Load(); n != 2 {
 		t.Fatalf("count = %d", n)
 	}

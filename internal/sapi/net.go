@@ -15,10 +15,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/cairophp/cairo/internal/core"
 )
 
 // Cairo\Net: connections, listeners and DNS from Go's net package. PHP holds
-// ids; the sockets live here. Each call is a Go operation (goops.go), so in a
+// ids; the sockets live here. Each call is a Go operation (core.RegisterOp), so in a
 // request fiber only the fiber waits, and the request's deadline interrupts
 // a blocked read, write or accept.
 
@@ -77,7 +79,7 @@ func init() {
 	}
 	for name, fn := range ops {
 		fn := fn
-		registerOp(name, func(ctx context.Context, payload []byte) (any, error) {
+		core.RegisterOp(name, func(ctx context.Context, payload []byte) (any, error) {
 			var req netRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err

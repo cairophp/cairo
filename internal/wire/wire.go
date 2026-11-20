@@ -1,5 +1,5 @@
 // Package wire encodes the events Go sends to PHP threads. C decodes them
-// straight into PHP arrays (internal/sapi/wire.c), so a request costs no
+// straight into PHP arrays (internal/core/wire.c), so a request costs no
 // JSON text, no json_decode() and no base64 for its body.
 //
 // A value is a one-byte tag and its payload, little-endian:
@@ -24,7 +24,7 @@ import (
 	"sort"
 )
 
-// Tags; keep in sync with internal/sapi/wire.h.
+// Tags; keep in sync with internal/core/wire.h.
 const (
 	TagNull   = 0
 	TagFalse  = 1

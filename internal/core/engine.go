@@ -1,5 +1,5 @@
-// Package sapi embeds a thread-safe (ZTS) PHP into the Go process and moves
-// work between Go and PHP threads.
+// Package core is Cairo's core engine: it embeds a thread-safe (ZTS) PHP
+// into the Go process and moves work between Go and PHP threads.
 //
 // The model, in one paragraph: every PHP Fiber has exactly one Go goroutine.
 // A request's root fiber belongs to the goroutine that accepted the request
@@ -9,11 +9,16 @@
 // one PHP thread can hold thousands of requests, each waiting on its own
 // goroutine. CPU-heavy work goes to a separate pool of PHP threads through
 // Cairo\offload(), so it never stalls the fibers on a request thread.
-package sapi
+//
+// Everything else is an extension: a server, a client, a database driver, a
+// hook, a diagnostic. An extension joins from its own package with the
+// Register functions and the exported methods of Engine. The core imports
+// none of them (boundary_test.go).
+package core
 
 /*
 #cgo CFLAGS: -D_GNU_SOURCE
-#cgo LDFLAGS: -lphp -lcurl
+#cgo LDFLAGS: -lphp
 #include <stdlib.h>
 #include "cairo.h"
 */
@@ -36,7 +41,6 @@ import (
 
 	"github.com/cairophp/cairo/internal/spec"
 	"github.com/cairophp/cairo/internal/wire"
-	"github.com/cairophp/cairo/php"
 )
 
 // inboxSize bounds how many events can queue for one PHP thread before the
@@ -70,9 +74,9 @@ type Engine struct {
 	// mode; nil in fiber mode.
 	idle idleSlots
 
-	// newProbe makes the probe of each request (probeRequests); nil when no
+	// newProbe makes the probe of each request (ProbeRequests); nil when no
 	// extension asked for one.
-	newProbe func() probe
+	newProbe func() Probe
 
 	nextID atomic.Int64
 	calls  sync.Map // call id -> *call   (a request or an offload job awaiting PHP's answer)
@@ -102,11 +106,11 @@ type thread struct {
 
 	// When the thread last took an event (unix ns; 0 while it waits for
 	// one): dispatch passes over a thread that has run PHP for too long
-	// (leastBusy), and extensions ask which threads are busy (eachBusyThread).
+	// (leastBusy), and extensions ask which threads are busy (EachBusyThread).
 	busySince atomic.Int64
 	// The probe of the request whose fiber this thread resumed last; only
 	// the thread itself uses it, in goNextEvent and goRespond.
-	running probe
+	running Probe
 
 	// Supervision (see supervise.go).
 	sendMu   sync.RWMutex // held for reading while a request is queued; retire takes it to set retired
@@ -247,6 +251,15 @@ func pick(override, declared int) int {
 // Errors reports a PHP thread that could not be restarted (see supervise.go).
 func (e *Engine) Errors() <-chan error { return e.threadErrs }
 
+// Spec is what server.php declared. An extension reads its own part of it
+// (Spec.Section) in its start function.
+func (e *Engine) Spec() *spec.Spec { return e.spec }
+
+// Logger is the logger the engine was started with (Options.Logger), for
+// what an extension logs. It is a function of the package because a Go
+// operation is given no engine; there is one engine per process.
+func Logger() *slog.Logger { return engine.log }
+
 func (e *Engine) bootThread() {
 	runtime.LockOSThread()
 	cfile := C.CString(e.runtimeFile)
@@ -282,9 +295,9 @@ func (e *Engine) startThread(t *thread) error {
 	return nil
 }
 
-// stopping is closed when Shutdown begins: an extension's goroutine that
+// Stopping is closed when Shutdown begins: an extension's goroutine that
 // lives as long as the engine ends on it.
-func (e *Engine) stopping() <-chan struct{} { return e.shutdownCh }
+func (e *Engine) Stopping() <-chan struct{} { return e.shutdownCh }
 
 // Shutdown stops the PHP threads after the work they hold, then shuts PHP
 // down. Callers should stop accepting requests first.
@@ -310,29 +323,6 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-// writeRuntime puts the embedded PHP files in a directory of their own, since
-// PHP runs files, and returns the path of the one every PHP thread runs.
-func writeRuntime() (string, error) {
-	dir, err := os.MkdirTemp("", "cairo-runtime-")
-	if err != nil {
-		return "", err
-	}
-	files, err := php.Files.ReadDir(".")
-	if err != nil {
-		return "", err
-	}
-	for _, file := range files {
-		code, err := php.Files.ReadFile(file.Name())
-		if err != nil {
-			return "", err
-		}
-		if err := os.WriteFile(filepath.Join(dir, file.Name()), code, 0o600); err != nil {
-			return "", err
-		}
-	}
-	return filepath.Join(dir, "runtime.php"), nil
 }
 
 // goPHPLog receives PHP's log lines (errors, warnings, error_log()) from the

@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/cairophp/cairo/internal/core"
 )
 
 // App::repeatedQueries(): php/queries.php counts each request's statements
@@ -49,7 +51,7 @@ func init() {
 	registerPHP("query_watch.php")
 	registerPHP("queries.php", `Cairo\Internal\Queries`)
 	registerC(&C.cairo_pdo_watch)
-	registerOp("sql.repeated", func(_ context.Context, payload []byte) (any, error) {
+	core.RegisterOp("sql.repeated", func(_ context.Context, payload []byte) (any, error) {
 		var req struct {
 			Route   string `json:"route"`
 			Queries []struct {
@@ -63,7 +65,7 @@ func init() {
 		now := time.Now()
 		for _, q := range req.Queries {
 			if repeated.due(req.Route+"\x00"+q.Query, now) {
-				engine.log.Warn("repeated query", "route", req.Route, "count", q.Count, "query", q.Query)
+				core.Logger().Warn("repeated query", "route", req.Route, "count", q.Count, "query", q.Query)
 			}
 		}
 		return nil, nil

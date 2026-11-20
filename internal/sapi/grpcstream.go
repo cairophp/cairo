@@ -17,6 +17,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
+	"github.com/cairophp/cairo/internal/core"
 	"github.com/cairophp/cairo/internal/grpcserver"
 )
 
@@ -57,7 +58,7 @@ func init() {
 	}
 	for name, fn := range ops {
 		fn := fn
-		registerOp(name, func(ctx context.Context, payload []byte) (any, error) {
+		core.RegisterOp(name, func(ctx context.Context, payload []byte) (any, error) {
 			var req grpcStreamRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err

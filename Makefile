@@ -27,6 +27,6 @@ php:
 static:
 	docker build -f Dockerfile.static --build-arg CAIRO_VERSION=$(VERSION) --output dist .
 
-# Regenerate stubs/cairo.php (Cairo's PHP API for IDEs) from the files in php/.
+# Regenerate stubs/cairo.php (Cairo's PHP API for IDEs) from the PHP files of the core and the extensions.
 stubs:
 	php scripts/stubs.php > stubs/cairo.php

@@ -1,4 +1,4 @@
-package sapi
+package core
 
 /*
 #include <stdlib.h>
@@ -23,7 +23,7 @@ import (
 type event struct {
 	data  []byte
 	call  *call
-	probe probe // of the request it resumes, when requests are probed
+	probe Probe // of the request it resumes, when requests are probed
 }
 
 // call is one unit of work sent to a PHP thread, waiting for cairo_respond().
@@ -51,7 +51,7 @@ type reply struct {
 // helper goroutine keeps answering the fiber (with the context's error)
 // until PHP finishes.
 func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte, err error) {
-	var p probe
+	var p Probe
 	if e.newProbe != nil {
 		p = e.newProbe()
 	}
@@ -103,7 +103,7 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 				return nil, nil, ErrThreadStopped
 			}
 			if p != nil {
-				p.done(ev, "")
+				p.Done(ev, "")
 			}
 			return r.meta, r.body, nil
 		case o := <-f.ops:
@@ -134,7 +134,7 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 				}
 			}()
 			if p != nil {
-				p.done(ev, ctxError(ctx))
+				p.Done(ev, CtxError(ctx))
 			}
 			return nil, nil, ctx.Err()
 		}
@@ -180,9 +180,9 @@ func leastBusy(ts []atomic.Pointer[thread]) *thread {
 	return best
 }
 
-// eachBusyThread calls fn for every request thread that is running PHP, with
+// EachBusyThread calls fn for every request thread that is running PHP, with
 // when it took the event it is running.
-func (e *Engine) eachBusyThread(fn func(tid int, since time.Time)) {
+func (e *Engine) EachBusyThread(fn func(tid int, since time.Time)) {
 	for i := range e.workers {
 		t := e.workers[i].Load()
 		if t == nil {
@@ -194,9 +194,9 @@ func (e *Engine) eachBusyThread(fn func(tid int, since time.Time)) {
 	}
 }
 
-// interruptThread has request thread tid run the interrupt of every
+// InterruptThread has request thread tid run the interrupt of every
 // extension (cairo_extension in extension.h) at its next safe point.
-func (e *Engine) interruptThread(tid int) {
+func (e *Engine) InterruptThread(tid int) {
 	C.cairo_vm_interrupt(C.int(tid))
 }
 
@@ -225,7 +225,7 @@ func (e *Engine) post(t *thread, ev any) {
 func goNextEvent(tid C.int, n *C.int) unsafe.Pointer {
 	t := engine.table[int(tid)].Load()
 	if t.running != nil {
-		t.running.ran(time.Duration(time.Now().UnixNano() - t.busySince.Load()))
+		t.running.Ran(time.Duration(time.Now().UnixNano() - t.busySince.Load()))
 	}
 	t.busySince.Store(0)
 	ev := <-t.inbox
@@ -252,11 +252,20 @@ func goRespond(id C.longlong, data *C.char, n C.int, body *C.char, bn C.int) {
 	// The request's probe is done as soon as the answer arrives, before
 	// this stretch of PHP ends in goNextEvent: report it up to now.
 	if t.running != nil {
-		t.running.ran(time.Duration(time.Now().UnixNano() - t.busySince.Load()))
+		t.running.Ran(time.Duration(time.Now().UnixNano() - t.busySince.Load()))
 	}
 	r := &reply{meta: C.GoBytes(unsafe.Pointer(data), n)}
 	if bn > 0 {
 		r.body = C.GoBytes(unsafe.Pointer(body), bn)
 	}
 	c.resp <- r
+}
+
+// Respond is goRespond for an extension whose C code answers the requests
+// of its server: cgo exports a Go function to the C code of its own package
+// only, so the extension exports one that calls this. meta (what the server
+// makes of the answer) and body are C memory, n and bn bytes long, copied
+// before Respond returns.
+func Respond(id int64, meta unsafe.Pointer, n int, body unsafe.Pointer, bn int) {
+	goRespond(C.longlong(id), (*C.char)(meta), C.int(n), (*C.char)(body), C.int(bn))
 }

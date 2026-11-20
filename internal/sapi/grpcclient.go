@@ -27,6 +27,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 
+	"github.com/cairophp/cairo/internal/core"
 	"github.com/cairophp/cairo/internal/grpcserver"
 )
 
@@ -38,7 +39,7 @@ import (
 
 func init() {
 	registerPHP("grpc_client.php")
-	registerOp("grpc.call", func(ctx context.Context, payload []byte) (any, error) {
+	core.RegisterOp("grpc.call", func(ctx context.Context, payload []byte) (any, error) {
 		var req grpcCallRequest
 		if err := json.Unmarshal(payload, &req); err != nil {
 			return nil, err

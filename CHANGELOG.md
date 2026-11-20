@@ -68,6 +68,13 @@ change the PHP API; patch versions do not.
   (`internal/sapi/wire.c`, `internal/wire`) for the HTTP server's
   (`internal/sapi/http_answer.c`, `internal/httpserver/answer.go`). Ninth
   step of the same separation.
+- Internal, no change in behaviour: the core engine has its own Go package,
+  `internal/core`, with its PHP files in `internal/core/php`. The extensions
+  stay in `internal/sapi` and `php/` and use only what the core exports
+  (`core.RegisterOp`, `RegisterPHP`, `RegisterC` and the rest; `AGENTS.md`
+  has the list), and a test fails when the core names an extension in Go, C
+  or PHP (`internal/core/boundary_test.go`). Tenth and last step of the same
+  separation.
 
 ## [0.4.0] - 2026-11-19
 

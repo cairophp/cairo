@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/cairophp/cairo/internal/core"
 )
 
 // Cairo\Http\Client sends its requests through Go's net/http: connection
@@ -25,7 +27,7 @@ import (
 
 func init() {
 	registerPHP("http_client.php")
-	registerOp("http", func(ctx context.Context, payload []byte) (any, error) {
+	core.RegisterOp("http", func(ctx context.Context, payload []byte) (any, error) {
 		var req httpClientRequest
 		if err := json.Unmarshal(payload, &req); err != nil {
 			return nil, err

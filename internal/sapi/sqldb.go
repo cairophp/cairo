@@ -19,6 +19,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/cairophp/cairo/internal/core"
 )
 
 // Cairo\Sql: PHP queries through Go's database/sql (pgx for PostgreSQL,
@@ -37,11 +39,11 @@ import (
 
 func init() {
 	registerPHP("sql.php")
-	registerOp("sql.open", sqlOp(sqlOpen))
-	registerOp("sql.query", sqlOp(sqlQuery))
-	registerOp("sql.begin", sqlOp(sqlBegin))
-	registerOp("sql.end", sqlOp(sqlEnd))
-	registerOp("sql.stats", sqlOp(sqlStats))
+	core.RegisterOp("sql.open", sqlOp(sqlOpen))
+	core.RegisterOp("sql.query", sqlOp(sqlQuery))
+	core.RegisterOp("sql.begin", sqlOp(sqlBegin))
+	core.RegisterOp("sql.end", sqlOp(sqlEnd))
+	core.RegisterOp("sql.stats", sqlOp(sqlStats))
 }
 
 type sqlRequest struct {
@@ -66,7 +68,7 @@ type sqlRequest struct {
 
 // sqlOp decodes the request and reports SQL failures inside the result, as
 // {"error", "sqlstate"}, so PHP can throw Cairo\Sql\SqlException.
-func sqlOp(fn func(context.Context, sqlRequest) (any, error)) goOp {
+func sqlOp(fn func(context.Context, sqlRequest) (any, error)) core.GoOp {
 	return func(ctx context.Context, payload []byte) (any, error) {
 		var req sqlRequest
 		if err := json.Unmarshal(payload, &req); err != nil {

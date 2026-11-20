@@ -17,9 +17,10 @@ import (
 	"time"
 
 	"github.com/cairophp/cairo/internal/codegen"
+	"github.com/cairophp/cairo/internal/core"
 	"github.com/cairophp/cairo/internal/grpcserver"
 	"github.com/cairophp/cairo/internal/httpserver"
-	"github.com/cairophp/cairo/internal/sapi"
+	_ "github.com/cairophp/cairo/internal/sapi" // the extensions: each joins the core from its init()
 	"github.com/cairophp/cairo/internal/spec"
 )
 
@@ -151,7 +152,7 @@ func serve(args []string) error {
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	var decls declarations
-	engine, err := sapi.Start(sapi.Options{ServerFile: file, Threads: *threads, OffloadThreads: *offloadThreads, PHPIni: *phpIni, Logger: log, Validate: decls.read})
+	engine, err := core.Start(core.Options{ServerFile: file, Threads: *threads, OffloadThreads: *offloadThreads, PHPIni: *phpIni, Logger: log, Validate: decls.read})
 	if err != nil {
 		return err
 	}

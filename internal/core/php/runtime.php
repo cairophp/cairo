@@ -40,7 +40,7 @@ namespace Cairo\Internal {
 
     function main(): void
     {
-        // Go names the files of the extensions (registerPHP in internal/sapi):
+        // Go names the files of the extensions (RegisterPHP in internal/core):
         // those to load now, and the classes whose first use loads the others.
         $info = json_decode(\cairo_info(), true, 512, JSON_THROW_ON_ERROR);
         foreach ($info['php'] as $file) {

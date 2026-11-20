@@ -1,7 +1,7 @@
 <?php
 /**
  * Cairo\Internal\Go: how PHP asks Go to run one of its registered
- * operations (see internal/sapi/goops.go).
+ * operations (see internal/core/goops.go).
  */
 
 declare(strict_types=1);
@@ -11,7 +11,7 @@ namespace Cairo\Internal {
     use Cairo\Context;
 
     /**
-     * Runs a Go operation (see internal/sapi/goops.go): in a Cairo fiber the
+     * Runs a Go operation (see internal/core/goops.go): in a Cairo fiber the
      * fiber suspends while the fiber's goroutine runs it; elsewhere the
      * thread waits for Go.
      */

@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/cairophp/cairo/internal/core"
+	"github.com/cairophp/cairo/internal/spec"
 	"github.com/cairophp/cairo/internal/wire"
 )
 
@@ -20,14 +22,22 @@ type timing struct {
 	log        *slog.Logger
 }
 
-func init() { registerStart(startTiming) }
+func init() {
+	core.RegisterStart(func(e *core.Engine) error { return startTiming(e, core.Logger()) })
+}
 
-func startTiming(e *Engine) error {
+// probed is what the request timing needs of the engine.
+type probed interface {
+	Spec() *spec.Spec
+	ProbeRequests(fn func() core.Probe)
+}
+
+func startTiming(e probed, log *slog.Logger) error {
 	var declared struct { // in seconds
 		SlowRequests float64 `json:"slow_requests"`
 		HeavyRoutes  float64 `json:"heavy_routes"`
 	}
-	if err := e.spec.Section("timing", &declared); err != nil {
+	if err := e.Spec().Section("timing", &declared); err != nil {
 		return err
 	}
 	if declared.SlowRequests < 0 || declared.HeavyRoutes < 0 {
@@ -36,16 +46,16 @@ func startTiming(e *Engine) error {
 	tm := &timing{
 		slowAfter:  time.Duration(declared.SlowRequests * float64(time.Second)),
 		heavyAfter: time.Duration(declared.HeavyRoutes * float64(time.Second)),
-		log:        e.log,
+		log:        log,
 	}
 	if tm.slowAfter > 0 || tm.heavyAfter > 0 {
-		e.probeRequests(func() probe { return &reqTiming{timing: tm, start: time.Now()} })
+		e.ProbeRequests(func() core.Probe { return &reqTiming{timing: tm, start: time.Now()} })
 	}
 	return nil
 }
 
-// done logs what the request's timing shows once it has ended.
-func (t *reqTiming) done(ev wire.Event, end string) {
+// Done logs what the request's timing shows once it has ended.
+func (t *reqTiming) Done(ev wire.Event, end string) {
 	t.timing.logSlow(ev, t, end)
 	t.timing.logHeavy(ev, t)
 }

@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"time"
 	"unsafe"
+
+	"github.com/cairophp/cairo/internal/core"
 )
 
 // What PHP's hooked functions (connect, TLS on and off, gethostbyname) ask Go
@@ -21,10 +23,10 @@ func init() {
 	registerPHP("hooks.php")
 	registerC(&C.cairo_function_hooks)
 	registerC(&C.cairo_socket_hooks)
-	registerFiberOp("dial", opDial)
-	registerFiberOp("starttls", opStartTLS)
-	registerFiberOp("stoptls", opStopTLS)
-	registerFiberOp("lookup", opLookup)
+	core.RegisterFiberOp("dial", opDial)
+	core.RegisterFiberOp("starttls", opStartTLS)
+	core.RegisterFiberOp("stoptls", opStopTLS)
+	core.RegisterFiberOp("lookup", opLookup)
 }
 
 // opDial is a hooked connect: DNS, the connect and, for TLS, the handshake.
@@ -100,7 +102,7 @@ func fdResult(ctx context.Context, fd int, err error) (any, string) {
 	case err == nil:
 		return map[string]any{"fd": fd}, ""
 	case ctx.Err() != nil:
-		return nil, ctxError(ctx)
+		return nil, core.CtxError(ctx)
 	default:
 		return map[string]any{"err": err.Error()}, ""
 	}
@@ -119,7 +121,7 @@ func opLookup(ctx context.Context, payload []byte) (any, string) {
 	case err == nil:
 		return ips, ""
 	case ctx.Err() != nil:
-		return nil, ctxError(ctx)
+		return nil, core.CtxError(ctx)
 	default:
 		return []string{}, ""
 	}

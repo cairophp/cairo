@@ -1,4 +1,4 @@
-package sapi
+package core
 
 import (
 	"context"

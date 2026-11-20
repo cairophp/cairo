@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/cairophp/cairo/internal/core"
 )
 
 // App::detectLeaks(): php/leaks.php compares the app's static properties
@@ -17,7 +19,7 @@ var leaks repeatedLog
 func init() {
 	registerPHP("leak_watch.php")
 	registerPHP("leaks.php", `Cairo\Internal\Leaks`)
-	registerOp("leaks.report", func(_ context.Context, payload []byte) (any, error) {
+	core.RegisterOp("leaks.report", func(_ context.Context, payload []byte) (any, error) {
 		var req struct {
 			Route   string   `json:"route"`
 			Statics []string `json:"statics"`
@@ -28,7 +30,7 @@ func init() {
 		now := time.Now()
 		for _, s := range req.Statics {
 			if leaks.due(s, now) {
-				engine.log.Warn("static changed by a request", "route", req.Route, "static", s)
+				core.Logger().Warn("static changed by a request", "route", req.Route, "static", s)
 			}
 		}
 		return nil, nil

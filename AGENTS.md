@@ -17,17 +17,19 @@ on I/O through Cairo, only its fiber suspends and Go does the waiting.
 
 | Path | What lives there |
 |------|------------------|
-| `cmd/cairo/` | The CLI: `serve`, `gen`, `version` |
-| `internal/sapi/` | cgo: the embedded PHP (`cairo.c`, Cairo's own SAPI), PHP threads, fiber goroutines, offload pool, runtime hooks, and every Go op PHP can call |
-| `internal/sapi/engine.go`, `dispatch.go`, `fiber.go`, `offload.go`, `supervise.go` | The engine in Go: start and shutdown, a request's way to a PHP thread and the answer's way back, the goroutine side of a fiber, the offload pool, thread supervision |
-| `internal/sapi/goops.go` | The op registry: `registerOp("name", fn)` in Go, `Cairo\Internal\Go::call('name', $payload)` in PHP. Payloads go to Go as JSON; results come back as events. `registerFiberOp` is for what PHP's hooked functions ask for |
-| `internal/sapi/extension.go`, `extension.h`, `extension.c` | How an extension's C code joins the SAPI module: it defines a `cairo_extension` (what to run at module startup, when a PHP thread ends and when a thread that the extension interrupted reaches a safe point, the PHP functions it adds) and its Go file adds it with `registerC` from `init()` |
-| `internal/wire/` | The binary format of the events Go sends to PHP threads (requests, op results); `internal/sapi/wire.c` decodes it into PHP arrays. Bodies cross as raw bytes |
-| `php/` | The PHP side, one file per concern, embedded in the binary. Every PHP thread runs `runtime.php`, which loads the core's files (`app.php`, `context.php`, `channel.php`, `async.php`, `offload.php`, `scheduler.php`, `go.php`) and then the files of the extensions |
-| `internal/sapi/phpfiles.go` | How an extension's PHP file joins the runtime: `registerPHP("name.php")` from its Go file's `init()`, loaded at start, or on first use of the classes it names |
-| `internal/sapi/onstart.go`, `probe.go` | What an extension runs when the engine starts (`registerStart`), and how it follows requests through the engine: `probeRequests` gives each request a `probe`, which is told of the waits of its fibers and of the stretches of PHP its thread ran. The engine measures nothing itself. `timing.go` is the one that asks: the request timing behind the slow log (`slowlog.go`) and the heavy routes (`heavy.go`) |
-| `internal/sapi/blocking.go`, `blocking.c`, `php/blocking.php` | The blocking detector, which watches threads instead of requests: it asks the engine which threads are running PHP (`eachBusyThread`) and interrupts one that has for too long (`interruptThread`), and that thread reports from the `interrupt` of the detector's `cairo_extension`. Its goroutine ends when the engine does (`stopping`) |
-| `php/http_answer.php`, `php/grpc_answer.php` | How a request of each server is answered. The scheduler knows no server: a server's PHP file gives it an `Answer` with `Scheduler::answerWith()`, which answers a request in the request's fiber and names its route for the logs. `internal/sapi/http_answer.c` has `cairo_respond_http()`, which sends an HTTP answer to Go. The form its status and headers cross in is the HTTP server's own: written there, read by `decodeAnswer` in `internal/httpserver/answer.go` |
+| `cmd/cairo/` | The CLI: `serve`, `gen`, `version`. Its blank import of `internal/sapi` is what links the extensions in |
+| `internal/core/` | The core engine. cgo: the embedded PHP (`cairo.c`, Cairo's own SAPI), PHP threads, fiber goroutines, the offload pool, what fibers wait on and the op registry. What it exports is all that an extension can use, and it names no extension: `boundary_test.go` fails when it does |
+| `internal/core/engine.go`, `dispatch.go`, `fiber.go`, `offload.go`, `supervise.go` | The engine in Go: start and shutdown, a request's way to a PHP thread and the answer's way back, the goroutine side of a fiber, the offload pool, thread supervision |
+| `internal/core/goops.go` | The op registry: `core.RegisterOp("name", fn)` in Go, `Cairo\Internal\Go::call('name', $payload)` in PHP. Payloads go to Go as JSON; results come back as events. `RegisterFiberOp` is for what PHP's hooked functions ask for |
+| `internal/core/extension.go`, `extension.h`, `extension.c` | How an extension's C code joins the SAPI module: it defines a `cairo_extension` (what to run at module startup, when a PHP thread ends and when a thread that the extension interrupted reaches a safe point, the PHP functions it adds) and its Go file adds it with `core.RegisterC` from `init()`. C types do not cross Go packages, so `internal/sapi` has a `registerC` that takes its own |
+| `internal/wire/` | The binary format of the events Go sends to PHP threads (requests, op results); `internal/core/wire.c` decodes it into PHP arrays. Bodies cross as raw bytes |
+| `internal/core/php/` | The core's PHP files, one per concern, embedded in the binary. Every PHP thread runs `runtime.php`, which loads the core's other files (`app.php`, `context.php`, `channel.php`, `async.php`, `offload.php`, `scheduler.php`, `go.php`; `request_local.php` on first use) and then the files of the extensions |
+| `internal/core/phpfiles.go` | How an extension's PHP file joins the runtime: `core.RegisterPHP(files, "name.php")` from its Go file's `init()` (`registerPHP("name.php")` in `internal/sapi`), loaded at start, or on first use of the classes it names. The engine writes the files of the core and of every extension into one directory when it starts, so a file name can be taken once |
+| `internal/core/onstart.go`, `probe.go` | What an extension runs when the engine starts (`RegisterStart`), and how it follows requests through the engine: `ProbeRequests` gives each request a `Probe`, which is told of the waits of its fibers and of the stretches of PHP its thread ran. The engine measures nothing itself. `internal/sapi/timing.go` is the one that asks: the request timing behind the slow log (`slowlog.go`) and the heavy routes (`heavy.go`) |
+| `internal/sapi/` | The extensions that are cgo or Go operations: the runtime hooks, the PDO pgsql driver, the clients, `Cairo\Sql`, the diagnostics, how an HTTP answer leaves PHP. Every file joins the core from its `init()` |
+| `php/` | The PHP files of the extensions, one per concern, embedded in the binary |
+| `internal/sapi/blocking.go`, `blocking.c`, `php/blocking.php` | The blocking detector, which watches threads instead of requests: it asks the engine which threads are running PHP (`EachBusyThread`) and interrupts one that has for too long (`InterruptThread`), and that thread reports from the `interrupt` of the detector's `cairo_extension`. Its goroutine ends when the engine does (`Stopping`) |
+| `php/http_answer.php`, `php/grpc_answer.php` | How a request of each server is answered. The scheduler knows no server: a server's PHP file gives it an `Answer` with `Scheduler::answerWith()`, which answers a request in the request's fiber and names its route for the logs. `internal/sapi/http_answer.c` has `cairo_respond_http()`, which sends an HTTP answer to Go (`core.Respond`). The form its status and headers cross in is the HTTP server's own: written there, read by `decodeAnswer` in `internal/httpserver/answer.go` |
 | `php/query_watch.php`, `php/leak_watch.php` | How a diagnostic joins the scheduler, which names none: `Scheduler::onStart()` runs it on each request thread that starts, and there it asks to be called after each request (`afterRequest()`) when the app turned it on. The detectors themselves (`queries.php`, `leaks.php`) load on first use |
 | `php/revolt.php` | `Cairo\Revolt\Driver`, loaded when `revolt/event-loop` is installed |
 | `php/cache.php`, `php/pool.php` | `Cairo\Cache` and `Cairo\Pool`, each loaded on first use |
@@ -36,19 +38,18 @@ on I/O through Cairo, only its fiber suspends and Go does the waiting.
 | `internal/middleware/` | Go middleware declared from PHP |
 | `internal/cachetag/` | Tags of cached responses: declared by routes in `httpserver`, purged from PHP through `sapi` |
 | `internal/codegen/` | `cairo gen`: PHP classes and clients from `.proto` files |
-| `stubs/` | Generated IDE stubs of the public API in `php/`; `scripts/publish-stubs.sh` copies this directory to `cairophp/stubs`, the Composer package, on each release |
+| `stubs/` | Generated IDE stubs of the public API in `internal/core/php/` and `php/`; `scripts/publish-stubs.sh` copies this directory to `cairophp/stubs`, the Composer package, on each release |
 | `examples/` | Runnable apps. The end-to-end tests serve these, so they are also fixtures |
 | `test/` | End-to-end tests: they start the `cairo` binary on an example and talk to it over HTTP and gRPC |
-| `scripts/` | `build-php.sh` (ZTS PHP into /opt/php-zts), `build-static.sh` (the static binary), `stubs.php`, `publish-stubs.sh` |
+| `scripts/` | `build-php.sh` (ZTS PHP into /opt/php-zts), `build-static.sh` (the static binary), `stubs.php`, `publish-stubs.sh`, `core-names.php` (what the core's PHP files name of the extensions, for the boundary test) |
 
 ## Core engine and extensions
 
-Cairo is being separated into a core engine and extensions. The core is what
-every request passes through, plus what needs the engine's private state:
-PHP threads, fibers, the scheduler's queues and the stack switches. An
-extension is anything `cairo serve` could boot and run a fiber without. By
-that rule the HTTP server is an extension too: the first one, always
-compiled in.
+Cairo is a core engine and extensions. The core is what every request
+passes through, plus what needs the engine's private state: PHP threads,
+fibers, the scheduler's queues and the stack switches. An extension is
+anything `cairo serve` could boot and run a fiber without. By that rule the
+HTTP server is an extension too: the first one, always compiled in.
 
 Two questions place a piece of code. Would a fiber fail to run without it?
 Does it reach into threads, fibers, the scheduler or the stack switches? A
@@ -59,18 +60,28 @@ yes to either makes it core.
 | Core | The SAPI and the PHP threads, their supervision, dispatch (fibers and isolated mode), the fiber scheduler and request-local state, the bridge (wire events, the op registry, the answer path), waiting (the poller, parked fibers, timers), deadlines and the hard stop, the concurrency API (`Context`, `Channel`, `select()`, `async()`, `await()`, `sleep()`, `offload()`, `RequestLocal`), the declaration and boot |
 | Extensions | Servers (HTTP, its response cache, middleware, gRPC), clients (`Http\Client`, `Grpc\Client`, `Cairo\Net`), databases (`Cairo\Sql`, the PDO pgsql driver, `Cairo\Pool`), PHP hooks (streams, sleep, DNS, TLS, curl), bridges (PSR adapters, Revolt), diagnostics (slow log, heavy routes, repeated queries, leaks, blocking), `cairo gen` |
 
+The core is `internal/core` (Go and C) with its PHP files in
+`internal/core/php`, and the two packages it imports, `internal/spec` and
+`internal/wire`. Everything else is an extension: `internal/sapi` (those that
+are cgo or Go operations) with their PHP files in `php/`, the servers in
+`internal/httpserver` and `internal/grpcserver`, `internal/middleware`,
+`internal/cachetag` and `internal/codegen`.
+
 Extensions depend on the core, never the reverse: core code does not name an
-extension. An extension reaches the core through Go operations (`registerOp`,
-`registerFiberOp`), a server that calls `Engine.Dispatch` and whose PHP file
-says how its requests are answered (`Scheduler::answerWith()`), its own
-part of the declaration (`Spec.Section`), its own embedded PHP file
-(`registerPHP`), a `cairo_extension` for its C code (`registerC`), a
-function that runs when the engine starts (`registerStart`) and a channel
-that closes when it stops (`stopping`), a probe that follows each request
-through the engine (`probeRequests`), the threads that are running PHP
-(`eachBusyThread`), which it can interrupt (`interruptThread`), and what a
-request thread runs when it starts and after each request
-(`Scheduler::onStart()`, `afterRequest()`).
+extension. An extension reaches the core through what `internal/core` exports
+and the scheduler's public methods: Go operations (`RegisterOp`,
+`RegisterFiberOp`, with `CtxError` for a wait that the request's context
+ended), a server that calls `Engine.Dispatch` and whose PHP file says how its
+requests are answered (`Scheduler::answerWith()`, and `Respond` for the bytes
+of an answer), its own part of the declaration (`Engine.Spec()`,
+`Spec.Section`), its own embedded PHP file (`RegisterPHP`), a
+`cairo_extension` for its C code (`RegisterC`), a function that runs when the
+engine starts (`RegisterStart`) and a channel that closes when it stops
+(`Engine.Stopping`), a probe that follows each request through the engine
+(`Engine.ProbeRequests`), the threads that are running PHP
+(`Engine.EachBusyThread`), which it can interrupt (`Engine.InterruptThread`),
+the engine's logger (`Logger`), and what a request thread runs when it starts
+and after each request (`Scheduler::onStart()`, `afterRequest()`).
 
 `Cairo\App` is the declaration's public face. `server.php` sees one class,
 so it has a method for every setting, an extension's included, and it is
@@ -80,28 +91,19 @@ and only the extension's Go package knows its shape. The settings of an
 extension go the same way (`slowRequests()` and `heavyRoutes()` under
 `timing`, `detectBlocking()` under `blocking`).
 
-The code is moving behind that line in steps that change no behaviour, and
-everything still shares `internal/sapi` and `php/`. Done: no extension
-operation is written into the engine (`dial`, `starttls`, `stoptls`,
-`lookup` and `pg` register themselves); the SAPI module starts no extension
-by name (the hooks, the PDO pgsql driver, the query watcher and the curl
-hook add their C code with `registerC`); `php/runtime.php` loads no
-extension's file by name (each one is added with `registerPHP`); the
-scheduler answers no request itself (the HTTP and gRPC servers register
-what does, and the HTTP answer left `cairo.c` for `http_answer.c`);
-`internal/spec` knows no server (the HTTP and gRPC packages read and check
-their own part of the declaration); the engine times no request (the slow
-log and the heavy routes get a probe for each request and read their own
-settings); the engine detects no blocking (the detector asks which threads
-are busy and keeps what it reported, its report left `cairo.c` for
-`blocking.c`, and its setting has its own part of the declaration); the
-scheduler starts no detector and names no route (the query and leak
-detectors hook into it, and each server's `Answer` names its routes); and
-the core's wire files hold no server's format (the HTTP answer's encoder
-left `wire.c` for `http_answer.c`, and its decoder left `internal/wire` for
-`internal/httpserver`). Still mixed, in one small place: `engine.go` links
-libcurl for the curl hook. Do not add to that: a new feature goes on the
-extension side, in its own files.
+`internal/core/boundary_test.go` holds the line from the core's side. The
+core's Go files import the standard library and each other. Its C code
+includes its own headers besides PHP's and the system's. Its PHP files name
+no class or function that an extension declares, except the three that
+`Cairo\App` needs for the paragraph above (`Http\Server`, `Grpc\Server` and
+`Hook`; `scripts/core-names.php` lists them). And `go test ./internal/core`
+links the core with no extension, so it cannot use a symbol of one either.
+What no test sees is a name inside a string, such as an operation's or a
+file's: keep those out of the core in review.
+
+A new feature goes on the extension side, in its own files. When it needs
+something of the engine that the list above does not have, export a small
+function from the core; do not move the feature in.
 
 ## Building and testing
 
@@ -148,13 +150,13 @@ Skipped tests are not passing tests: say which ones skipped when you report
 results. The frameworks and Revolt tests run `composer install` and need the
 network.
 
-Packages under `internal/sapi` and `cmd/cairo` do not compile without the
+`internal/core`, `internal/sapi` and `cmd/cairo` do not compile without the
 PHP headers. `go vet ./...` only works where `make php` has run.
 
 ## Rules for changes
 
-- **Keep generated files fresh.** After changing a file under `php/`, run
-  `make stubs` (`TestStubsUpToDate` fails otherwise). After changing
+- **Keep generated files fresh.** After changing a PHP file of the runtime
+  (`internal/core/php/` or `php/`), run `make stubs` (`TestStubsUpToDate` fails otherwise). After changing
   `internal/codegen`, regenerate `examples/greeter/gen` with
   `cairo gen --out examples/greeter/gen examples/greeter/proto/helloworld.proto`
   (`TestExampleIsFresh` fails otherwise).
@@ -221,7 +223,7 @@ one line and move on.
   points, interfaces with one implementation, or "for later" parameters. Add
   them when a second caller needs them.
 - **Reuse before you write.** Search first (`grep -rn`): `Stream::call`,
-  `sqlOp`, `registerOp`, the test helpers `freeAddr`, `waitFor` and
+  `sqlOp`, `core.RegisterOp`, the test helpers `freeAddr`, `waitFor` and
   `startSQLScript`, and the existing examples already solve most plumbing.
   Two copies of the same 10+ lines means extract a function; three means it
   was overdue.
@@ -362,13 +364,13 @@ Cairo is a server: per-request code runs millions of times.
   or singletons. Use `Request`, `Context` values and constructor arguments.
 - **Exceptions** are specific classes (`SqlException`, `Grpc\Exception`),
   never bare `\Exception`; never swallow one silently.
-- The PHP floor is 8.1: do not use newer syntax in `php/` or the examples
-  unless guarded by a version check.
+- The PHP floor is 8.1: do not use newer syntax in `internal/core/php/`,
+  `php/` or the examples unless guarded by a version check.
 
 ### C
 
 - Add no compiler warnings, and match the existing style in
-  `internal/sapi/*.c`.
+  `internal/core/*.c` and `internal/sapi/*.c`.
 - Use Zend's allocators (`emalloc`/`efree` for request memory,
   `pemalloc` for persistent) and `zend_string` APIs for PHP strings.
 - Every function that can fail returns a status the caller checks; no

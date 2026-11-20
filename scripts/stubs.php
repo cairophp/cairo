@@ -1,9 +1,9 @@
 <?php
 /**
- * Writes stubs/cairo.php from the files under php/ that declare Cairo's
- * public PHP API, with the function bodies, private members and
- * Cairo\Internal left out, for IDEs and static analysers. The runtime itself
- * is built into the cairo binary.
+ * Writes stubs/cairo.php from the files under internal/core/php/ (the core)
+ * and php/ (the extensions) that declare Cairo's public PHP API, with the
+ * function bodies, private members and Cairo\Internal left out, for IDEs and
+ * static analysers. The runtime itself is built into the cairo binary.
  *
  *   php scripts/stubs.php > stubs/cairo.php
  *
@@ -14,9 +14,10 @@ declare(strict_types=1);
 
 // The files with public classes or functions, in the order the stubs list
 // them. A new one goes here.
-$sources = array_slice($argv, 1) ?: array_map(static fn (string $name): string => __DIR__ . "/../php/$name.php", [
-    'app', 'context', 'channel', 'async', 'offload', 'hooks', 'middleware', 'http', 'http_adapter', 'http_client',
-    'grpc', 'grpc_client', 'net', 'sql', 'cache', 'pool', 'request_local',
+$sources = array_slice($argv, 1) ?: array_map(static fn (string $file): string => __DIR__ . "/../$file.php", [
+    'internal/core/php/app', 'internal/core/php/context', 'internal/core/php/channel', 'internal/core/php/async',
+    'internal/core/php/offload', 'php/hooks', 'php/middleware', 'php/http', 'php/http_adapter', 'php/http_client',
+    'php/grpc', 'php/grpc_client', 'php/net', 'php/sql', 'php/cache', 'php/pool', 'internal/core/php/request_local',
 ]);
 
 final class Stubs

@@ -27,12 +27,14 @@ type event struct {
 }
 
 // call is one unit of work sent to a PHP thread, waiting for cairo_respond().
-// resp receives nil when the thread died before answering.
+// resp receives the call's own reply, or nil when the thread died before
+// answering.
 type call struct {
 	id     int64
 	thread *thread
 	resp   chan *reply
 	fiber  *fiber // a request's root fiber; nil for an offload job
+	reply  reply
 }
 
 // reply is PHP's answer to a call: its metadata (JSON) and, for an HTTP
@@ -40,6 +42,45 @@ type call struct {
 type reply struct {
 	meta []byte
 	body []byte
+}
+
+// request is what Dispatch needs for one request and keeps for the next:
+// the call and the root fiber with their channels, and the event's buffer.
+type request struct {
+	call  call
+	fiber fiber
+	buf   []byte
+}
+
+var requests = sync.Pool{New: func() any {
+	r := &request{buf: make([]byte, 0, eventBuf)}
+	r.call.resp = make(chan *reply, 1)
+	r.call.fiber = &r.fiber
+	r.fiber.ops = make(chan op, 1)
+	return r
+}}
+
+// An event's buffer starts at eventBuf bytes, and one that a large request
+// grew past maxEventBuf is not kept.
+const (
+	eventBuf    = 512
+	maxEventBuf = 64 << 10
+)
+
+// free gives r back for another request. Nothing may hold it any more: its
+// event was never queued, or its thread answered the call, which drops the
+// call and the fiber from the thread's tables first.
+func (r *request) free() {
+	select {
+	case <-r.fiber.ops: // sent as PHP answered: its fiber ended with the request
+	default:
+	}
+	r.call.thread, r.call.reply = nil, reply{}
+	r.fiber = fiber{ops: r.fiber.ops}
+	if cap(r.buf) > maxEventBuf {
+		r.buf = make([]byte, 0, eventBuf)
+	}
+	requests.Put(r)
 }
 
 // Dispatch runs one request on a PHP request thread and returns PHP's answer:
@@ -73,37 +114,43 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	id := e.nextID.Add(1)
-	f := &fiber{id: id, ctx: ctx, cancel: cancel, thread: t, ops: make(chan op, 1), probe: p}
-	c := &call{id: id, thread: t, resp: make(chan *reply, 1), fiber: f}
+	r := requests.Get().(*request)
+	c, f := &r.call, &r.fiber
+	c.id, c.thread = id, t
+	*f = fiber{id: id, ctx: ctx, cancel: cancel, thread: t, ops: f.ops, probe: p}
 	t.inflight.Add(1)
 
 	var deadline float64
 	if dl, ok := ctx.Deadline(); ok {
 		deadline = float64(dl.UnixNano()) / 1e9
 	}
-	b := ev.AppendWire(make([]byte, 0, 512), id, deadline)
+	r.buf = ev.AppendWire(r.buf[:0], id, deadline)
 	select {
-	case t.inbox <- event{data: b, call: c, probe: p}:
+	case t.inbox <- event{data: r.buf, call: c, probe: p}:
 		t.sendMu.RUnlock()
 	case <-ctx.Done():
 		t.sendMu.RUnlock()
 		t.inflight.Add(-1)
 		cancel()
 		release()
+		r.free()
 		return nil, nil, ctx.Err()
 	}
 	for {
 		select {
-		case r := <-c.resp:
+		case answer := <-c.resp:
 			release()
 			cancel()
-			if r == nil {
+			if answer == nil {
+				r.free()
 				return nil, nil, ErrThreadStopped
 			}
+			meta, body = answer.meta, answer.body
+			r.free()
 			if p != nil {
 				p.Done(ev, "")
 			}
-			return r.meta, r.body, nil
+			return meta, body, nil
 		case o := <-f.ops:
 			e.runOp(f, o)
 		case <-ctx.Done():
@@ -122,6 +169,7 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 					select {
 					case <-c.resp:
 						release() // the slot is free once PHP is done with the request
+						r.free()
 						return
 					case o := <-f.ops:
 						e.runOp(f, o)
@@ -252,11 +300,11 @@ func goRespond(tid C.int, id C.longlong, data *C.char, n C.int, body *C.char, bn
 	if t.running != nil {
 		t.running.Ran(time.Duration(time.Now().UnixNano() - t.busySince.Load()))
 	}
-	r := &reply{meta: C.GoBytes(unsafe.Pointer(data), n)}
+	c.reply.meta = C.GoBytes(unsafe.Pointer(data), n)
 	if bn > 0 {
-		r.body = C.GoBytes(unsafe.Pointer(body), bn)
+		c.reply.body = C.GoBytes(unsafe.Pointer(body), bn)
 	}
-	c.resp <- r
+	c.resp <- &c.reply
 }
 
 // Respond is goRespond for an extension whose C code answers the requests

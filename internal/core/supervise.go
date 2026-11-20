@@ -128,10 +128,12 @@ func (e *Engine) threadExited(t *thread, status int) {
 // those still in its inbox, which no thread will take. It returns how many.
 func (e *Engine) failCalls(t *thread, queued bool) int {
 	n := len(t.calls)
-	for _, c := range t.calls {
+	for id, c := range t.calls {
+		// Out of the tables before the answer: Dispatch then reuses both.
+		delete(t.calls, id)
+		delete(t.fibers, id)
 		c.resp <- nil
 	}
-	clear(t.calls)
 	for queued {
 		select {
 		case ev := <-t.inbox:

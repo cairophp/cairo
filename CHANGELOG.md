@@ -92,6 +92,10 @@ change the PHP API; patch versions do not.
 - Performance: the engine keeps the calls a PHP thread took and the fibers
   that live on it in tables of that thread, which only the thread itself
   uses, in place of two maps shared and locked by all threads.
+- Performance: a request's bookkeeping in Go (its call, its root fiber,
+  their channels and the buffer of its event) is reused from one request to
+  the next instead of allocated for each: eight allocations and about 1 kB
+  less per request.
 
 ## [0.4.0] - 2026-11-19
 

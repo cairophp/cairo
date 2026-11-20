@@ -75,6 +75,11 @@ change the PHP API; patch versions do not.
   has the list), and a test fails when the core names an extension in Go, C
   or PHP (`internal/core/boundary_test.go`). Tenth and last step of the same
   separation.
+- Performance: Cairo's own C code is compiled with `-O2`. The build scripts
+  set `CGO_CFLAGS` to PHP's include paths, which dropped the optimization
+  that Go asks for by default, so every build had compiled that code
+  without any. A Go operation or a wait among 64 fibers is about 8% cheaper,
+  and the PostgreSQL benchmark route serves 3.6% more requests per second.
 
 ## [0.4.0] - 2026-11-19
 

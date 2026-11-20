@@ -17,7 +17,9 @@
 package core
 
 /*
-#cgo CFLAGS: -D_GNU_SOURCE
+// -O2 is here and not in CGO_CFLAGS: the build scripts set that variable to
+// PHP's include paths, which drops Go's default of -g -O2.
+#cgo CFLAGS: -D_GNU_SOURCE -O2
 #cgo LDFLAGS: -lphp
 #include <stdlib.h>
 #include "cairo.h"

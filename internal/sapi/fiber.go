@@ -20,7 +20,7 @@ type fiber struct {
 	thread *thread
 	ops    chan op
 	closed chan struct{} // child fibers only: closed by cairo_fiber_close
-	timing *reqTiming    // its request's waits, with App::slowRequests() on
+	probe  probe         // its request's, when requests are probed
 }
 
 // op is an operation a fiber asked Go to perform while it is suspended. The
@@ -42,8 +42,8 @@ type op struct {
 // fiber on its PHP thread with the result.
 func (e *Engine) runOp(f *fiber, o op) {
 	var began time.Time
-	if f.timing != nil {
-		began = f.timing.begin()
+	if f.probe != nil {
+		began = f.probe.waitBegin()
 	}
 	ev := map[string]any{"type": "io", "io": o.ID}
 	switch o.Op {
@@ -134,10 +134,10 @@ func (e *Engine) runOp(f *fiber, o op) {
 			ev["result"] = res
 		}
 	}
-	if f.timing != nil {
-		f.timing.end(opKind(o.Op), began)
+	if f.probe != nil {
+		f.probe.waitEnd(o.Op, began)
 	}
-	f.thread.inbox <- event{data: wire.Encode(ev), timing: f.timing}
+	f.thread.inbox <- event{data: wire.Encode(ev), probe: f.probe}
 }
 
 func ctxError(ctx context.Context) string {
@@ -176,9 +176,9 @@ func goContextCancel(id C.longlong) {
 
 func (e *Engine) openFiber(tid int, parent int64, timeout float64) C.longlong {
 	pctx := context.Background()
-	var timing *reqTiming
+	var p probe
 	if v, ok := e.fibers.Load(parent); ok {
-		pctx, timing = v.(*fiber).ctx, v.(*fiber).timing
+		pctx, p = v.(*fiber).ctx, v.(*fiber).probe
 	}
 	var ctx context.Context
 	var cancel context.CancelFunc
@@ -189,7 +189,7 @@ func (e *Engine) openFiber(tid int, parent int64, timeout float64) C.longlong {
 	}
 	f := &fiber{
 		id: e.nextID.Add(1), ctx: ctx, cancel: cancel, thread: e.table[int(tid)].Load(),
-		ops: make(chan op, 1), closed: make(chan struct{}), timing: timing,
+		ops: make(chan op, 1), closed: make(chan struct{}), probe: p,
 	}
 	e.fibers.Store(f.id, f)
 	// The goroutine lives as long as the fiber, even after its context ends:

@@ -13,15 +13,9 @@ import (
 
 var heavy repeatedLog // the same once-a-minute limit as repeated queries
 
-// logTiming logs what the request's timing shows once it has ended.
-func (e *Engine) logTiming(ev wire.Event, t *reqTiming, end string) {
-	e.logSlow(ev, t, end)
-	e.logHeavy(ev, t)
-}
-
-func (e *Engine) logHeavy(ev wire.Event, t *reqTiming) {
+func (tm *timing) logHeavy(ev wire.Event, t *reqTiming) {
 	run := time.Duration(t.longest.Load())
-	if e.heavyAfter == 0 || run < e.heavyAfter {
+	if tm.heavyAfter == 0 || run < tm.heavyAfter {
 		return
 	}
 	var route string
@@ -29,6 +23,6 @@ func (e *Engine) logHeavy(ev wire.Event, t *reqTiming) {
 		route = n.RouteName()
 	}
 	if heavy.due(route, time.Now()) {
-		e.log.Warn("heavy route: move its CPU work to offload()", "route", route, "longest_run_ms", run.Milliseconds())
+		tm.log.Warn("heavy route: move its CPU work to offload()", "route", route, "longest_run_ms", run.Milliseconds())
 	}
 }

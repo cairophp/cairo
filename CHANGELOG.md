@@ -47,6 +47,11 @@ change the PHP API; patch versions do not.
   check their own (`internal/httpserver/declaration.go`,
   `internal/grpcserver/declaration.go`), which `Cairo\App` sends under each
   one's name. Fifth step of the same separation.
+- Internal, no change in behaviour: the engine no longer times requests for
+  the slow log and the heavy routes. It tells a probe what a request waited
+  for and how long its thread ran PHP (`internal/sapi/probe.go`), and the
+  request timing asks for one when either report is on, with its settings in
+  its own part of the declaration. Sixth step of the same separation.
 
 ## [0.4.0] - 2026-11-19
 

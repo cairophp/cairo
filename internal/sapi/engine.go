@@ -71,10 +71,9 @@ type Engine struct {
 	// mode; nil in fiber mode.
 	idle idleSlots
 
-	// slowAfter is App::slowRequests() and heavyAfter App::heavyRoutes()
-	// (0: off). Either one times each request (reqTiming).
-	slowAfter  time.Duration
-	heavyAfter time.Duration
+	// newProbe makes the probe of each request (probeRequests); nil when no
+	// extension asked for one.
+	newProbe func() probe
 
 	nextID atomic.Int64
 	calls  sync.Map // call id -> *call   (a request or an offload job awaiting PHP's answer)
@@ -106,9 +105,9 @@ type thread struct {
 	// (unix ns; 0 while it waits for one), and whether that stretch was reported.
 	busySince atomic.Int64
 	reported  atomic.Bool
-	// The request whose fiber this thread resumed last (slowlog.go); only
-	// the thread itself uses it, in goNextEvent.
-	running *reqTiming
+	// The probe of the request whose fiber this thread resumed last; only
+	// the thread itself uses it, in goNextEvent and goRespond.
+	running probe
 
 	// Supervision (see supervise.go).
 	sendMu   sync.RWMutex // held for reading while a request is queued; retire takes it to set retired
@@ -228,8 +227,11 @@ func Start(opts Options) (*Engine, error) {
 		}
 	}
 	e.log.Info("php threads started", "request_threads", nw, "offload_threads", no)
-	e.slowAfter = time.Duration(e.spec.SlowRequests * float64(time.Second))
-	e.heavyAfter = time.Duration(e.spec.HeavyRoutes * float64(time.Second))
+	for _, start := range startFuncs {
+		if err := start(e); err != nil {
+			return nil, err
+		}
+	}
 	if e.spec.DetectBlocking > 0 {
 		go e.detectBlocking(time.Duration(e.spec.DetectBlocking * float64(time.Second)))
 	}

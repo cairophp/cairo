@@ -25,21 +25,7 @@ func TestSlowRequests(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	addr := freeAddr()
-	cmd := exec.Command(cairoBin, "serve", "../examples/slow/server.php", "--threads", "1", "--offload-threads", "1")
-	cmd.Env = append(os.Environ(), "CAIRO_HTTP="+addr)
-	var logs syncBuffer
-	cmd.Stdout, cmd.Stderr = os.Stderr, &logs
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = cmd.Process.Signal(os.Interrupt)
-		_ = cmd.Wait()
-	})
-	if err := waitFor(addr, 10*time.Second); err != nil {
-		t.Fatal(err)
-	}
+	addr, logs := startSlow(t)
 	for _, path := range []string{"/fast", "/report?" + url.Values{"url": {upstream.URL}}.Encode()} {
 		resp, err := http.Get("http://" + addr + path)
 		if err != nil {
@@ -49,20 +35,7 @@ func TestSlowRequests(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	var line string
-	deadline := time.Now().Add(2 * time.Second)
-	for line == "" && time.Now().Before(deadline) {
-		for _, l := range strings.Split(logs.String(), "\n") {
-			if strings.Contains(l, `msg="slow request"`) {
-				line = l
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if line == "" {
-		t.Fatalf("no slow request logged:\n%s", logs.String())
-	}
-	t.Log(line)
+	line := slowLine(t, logs)
 	if strings.Count(logs.String(), `msg="slow request"`) != 1 || strings.Contains(line, "/fast") {
 		t.Errorf("want exactly one slow request, for /report:\n%s", logs.String())
 	}
@@ -99,4 +72,68 @@ func TestSlowRequests(t *testing.T) {
 	if s := field("sleep"); !strings.HasPrefix(s, "4 in ") || number(strings.TrimPrefix(s, "4 in ")) < 390 {
 		t.Errorf("sleep = %q, want 4 in about 400ms", s)
 	}
+}
+
+// A request that ends without PHP's answer is logged too, with how it ended:
+// here the client gives up while /report still waits.
+func TestSlowRequestsEnded(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		fmt.Fprint(w, "ok")
+	}))
+	defer upstream.Close()
+
+	addr, logs := startSlow(t)
+	client := &http.Client{Timeout: 200 * time.Millisecond}
+	resp, err := client.Get("http://" + addr + "/report?" + url.Values{"url": {upstream.URL}}.Encode())
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("/report answered within 200ms; it should take about 280ms")
+	}
+	line := slowLine(t, logs)
+	if !strings.Contains(line, `route="GET /report"`) || !strings.Contains(line, " ended=canceled") {
+		t.Errorf("want GET /report with ended=canceled: %s", line)
+	}
+}
+
+// startSlow serves examples/slow on one request thread and returns its
+// address and what it logs.
+func startSlow(t *testing.T) (string, *syncBuffer) {
+	t.Helper()
+	addr := freeAddr()
+	cmd := exec.Command(cairoBin, "serve", "../examples/slow/server.php", "--threads", "1", "--offload-threads", "1")
+	cmd.Env = append(os.Environ(), "CAIRO_HTTP="+addr)
+	logs := &syncBuffer{}
+	cmd.Stdout, cmd.Stderr = os.Stderr, logs
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Signal(os.Interrupt)
+		_ = cmd.Wait()
+	})
+	if err := waitFor(addr, 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	return addr, logs
+}
+
+// slowLine waits for a line of the slow request log and returns the last one.
+func slowLine(t *testing.T, logs *syncBuffer) string {
+	t.Helper()
+	var line string
+	deadline := time.Now().Add(2 * time.Second)
+	for line == "" && time.Now().Before(deadline) {
+		for _, l := range strings.Split(logs.String(), "\n") {
+			if strings.Contains(l, `msg="slow request"`) {
+				line = l
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if line == "" {
+		t.Fatalf("no slow request logged:\n%s", logs.String())
+	}
+	t.Log(line)
+	return line
 }

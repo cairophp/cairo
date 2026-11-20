@@ -21,9 +21,9 @@ import (
 // event is one message for a PHP thread. call is set for a request or an
 // offload job, so Go knows when PHP has taken it.
 type event struct {
-	data   []byte
-	call   *call
-	timing *reqTiming // the request it resumes, with App::slowRequests() on
+	data  []byte
+	call  *call
+	probe probe // of the request it resumes, when requests are probed
 }
 
 // call is one unit of work sent to a PHP thread, waiting for cairo_respond().
@@ -51,9 +51,9 @@ type reply struct {
 // helper goroutine keeps answering the fiber (with the context's error)
 // until PHP finishes.
 func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte, err error) {
-	var timing *reqTiming
-	if e.slowAfter > 0 || e.heavyAfter > 0 {
-		timing = &reqTiming{start: time.Now()}
+	var p probe
+	if e.newProbe != nil {
+		p = e.newProbe()
 	}
 	release := func() {}
 	if e.slots != nil {
@@ -72,7 +72,7 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	c := &call{thread: t, resp: make(chan *reply, 1)}
-	f := &fiber{ctx: ctx, cancel: cancel, thread: t, ops: make(chan op, 1), timing: timing}
+	f := &fiber{ctx: ctx, cancel: cancel, thread: t, ops: make(chan op, 1), probe: p}
 	id := e.nextID.Add(1)
 	f.id = id
 	e.calls.Store(id, c)
@@ -85,7 +85,7 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 	}
 	b := ev.AppendWire(make([]byte, 0, 512), id, deadline)
 	select {
-	case t.inbox <- event{data: b, call: c, timing: timing}:
+	case t.inbox <- event{data: b, call: c, probe: p}:
 		t.sendMu.RUnlock()
 	case <-ctx.Done():
 		t.sendMu.RUnlock()
@@ -102,8 +102,8 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 			if r == nil {
 				return nil, nil, ErrThreadStopped
 			}
-			if timing != nil {
-				e.logTiming(ev, timing, "")
+			if p != nil {
+				p.done(ev, "")
 			}
 			return r.meta, r.body, nil
 		case o := <-f.ops:
@@ -133,8 +133,8 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 					}
 				}
 			}()
-			if timing != nil {
-				e.logTiming(ev, timing, ctxError(ctx))
+			if p != nil {
+				p.done(ev, ctxError(ctx))
 			}
 			return nil, nil, ctx.Err()
 		}
@@ -209,7 +209,7 @@ func goNextEvent(tid C.int, n *C.int) unsafe.Pointer {
 	}
 	t.busySince.Store(0)
 	ev := <-t.inbox
-	t.running = ev.timing
+	t.running = ev.probe
 	t.reported.Store(false)
 	t.busySince.Store(time.Now().UnixNano())
 	if ev.call != nil {
@@ -230,8 +230,8 @@ func goRespond(id C.longlong, data *C.char, n C.int, body *C.char, bn C.int) {
 	c := v.(*call)
 	t := c.thread
 	t.inflight.Add(-1)
-	// The slow log is written as soon as the answer arrives, before this
-	// stretch of PHP ends in goNextEvent: count it up to now.
+	// The request's probe is done as soon as the answer arrives, before
+	// this stretch of PHP ends in goNextEvent: report it up to now.
 	if t.running != nil {
 		t.running.ran(time.Duration(time.Now().UnixNano() - t.busySince.Load()))
 	}

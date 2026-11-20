@@ -11,9 +11,9 @@ import (
 )
 
 // App::slowRequests(): every wait of a request's fibers already runs in Go
-// (runOp), so Go adds up how long each kind of wait took and logs a request
-// over the threshold with that breakdown. Off, it costs one nil check per
-// operation.
+// (runOp), and the engine reports each one to the request's probe. That is
+// a reqTiming, which adds up how long each kind of wait took, and a request
+// over the threshold is logged with that breakdown.
 
 type waitKind uint8
 
@@ -59,11 +59,13 @@ func opKind(op string) waitKind {
 	return waitOther
 }
 
-// reqTiming is one request's waits, added by all its fibers at once.
+// reqTiming is one request's waits, added by all its fibers at once. It is
+// the request's probe in the engine.
 type reqTiming struct {
-	start time.Time
-	count [numWaitKinds]atomic.Int64
-	nanos [numWaitKinds]atomic.Int64
+	timing *timing // what reads it when the request is done
+	start  time.Time
+	count  [numWaitKinds]atomic.Int64
+	nanos  [numWaitKinds]atomic.Int64
 
 	// Time with at least one of the request's fibers waiting in Go. The
 	// rest is PHP: running, or queued behind other fibers on the thread.
@@ -88,8 +90,8 @@ func (t *reqTiming) ran(d time.Duration) {
 	}
 }
 
-// begin marks the start of a wait and returns its start time.
-func (t *reqTiming) begin() time.Time {
+// waitBegin marks the start of a wait and returns its start time.
+func (t *reqTiming) waitBegin() time.Time {
 	now := time.Now()
 	t.mu.Lock()
 	if t.waiting == 0 {
@@ -100,8 +102,9 @@ func (t *reqTiming) begin() time.Time {
 	return now
 }
 
-// end records one wait of kind k that began at start.
-func (t *reqTiming) end(k waitKind, start time.Time) {
+// waitEnd records one wait for the operation op that began at start.
+func (t *reqTiming) waitEnd(op string, start time.Time) {
+	k := opKind(op)
 	now := time.Now()
 	t.count[k].Add(1)
 	t.nanos[k].Add(int64(now.Sub(start)))
@@ -131,10 +134,10 @@ type routeNamer interface {
 // logSlow logs the request if it took longer than the threshold. end is
 // set when the request ended without PHP's answer: deadline_exceeded, or
 // canceled when the client went away.
-func (e *Engine) logSlow(ev wire.Event, t *reqTiming, end string) {
+func (tm *timing) logSlow(ev wire.Event, t *reqTiming, end string) {
 	now := time.Now()
 	total := now.Sub(t.start)
-	if e.slowAfter == 0 || total < e.slowAfter {
+	if tm.slowAfter == 0 || total < tm.slowAfter {
 		return
 	}
 	attrs := make([]any, 0, 2*(numWaitKinds+4))
@@ -152,5 +155,5 @@ func (e *Engine) logSlow(ev wire.Event, t *reqTiming, end string) {
 	if end != "" {
 		attrs = append(attrs, "ended", end)
 	}
-	e.log.Warn("slow request", attrs...)
+	tm.log.Warn("slow request", attrs...)
 }

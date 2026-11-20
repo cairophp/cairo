@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/cairophp/cairo/internal/core"
+	"github.com/cairophp/cairo/internal/wire"
 )
 
 // Cairo\Sql: PHP queries through Go's database/sql (pgx for PostgreSQL,
@@ -71,7 +72,7 @@ type sqlRequest struct {
 func sqlOp(fn func(context.Context, sqlRequest) (any, error)) core.GoOp {
 	return func(ctx context.Context, payload []byte) (any, error) {
 		var req sqlRequest
-		if err := json.Unmarshal(payload, &req); err != nil {
+		if err := wire.Unmarshal(payload, &req); err != nil {
 			return nil, err
 		}
 		res, err := fn(ctx, req)

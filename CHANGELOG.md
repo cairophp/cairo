@@ -105,6 +105,13 @@ change the PHP API; patch versions do not.
   instead of waking a thread that sleeps. A thread that holds 32 more
   requests than the least busy one, or that has run one fiber for long, is
   still passed over.
+- Performance: the arguments of a Go operation (`Cairo\Sql`, the HTTP, gRPC
+  and network clients, the cache purge) cross from PHP to Go in the binary
+  format that results already come back in, instead of as JSON text: no
+  `json_encode()` in PHP, and Go reads them about three times as fast. An
+  operation that runs on the PHP thread gets its result back the same way. A
+  string argument may now hold any bytes, where JSON refused text that was
+  not UTF-8.
 
 ## [0.4.0] - 2026-11-19
 

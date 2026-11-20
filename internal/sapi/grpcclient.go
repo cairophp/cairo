@@ -29,6 +29,7 @@ import (
 
 	"github.com/cairophp/cairo/internal/core"
 	"github.com/cairophp/cairo/internal/grpcserver"
+	"github.com/cairophp/cairo/internal/wire"
 )
 
 // Cairo\Grpc\Client: unary calls through grpc-go. Messages cross as
@@ -41,7 +42,7 @@ func init() {
 	registerPHP("grpc_client.php")
 	core.RegisterOp("grpc.call", func(ctx context.Context, payload []byte) (any, error) {
 		var req grpcCallRequest
-		if err := json.Unmarshal(payload, &req); err != nil {
+		if err := wire.Unmarshal(payload, &req); err != nil {
 			return nil, err
 		}
 		return grpcCall(ctx, req), nil

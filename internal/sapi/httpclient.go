@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"github.com/cairophp/cairo/internal/core"
+	"github.com/cairophp/cairo/internal/wire"
 )
 
 // Cairo\Http\Client sends its requests through Go's net/http: connection
@@ -29,7 +29,7 @@ func init() {
 	registerPHP("http_client.php")
 	core.RegisterOp("http", func(ctx context.Context, payload []byte) (any, error) {
 		var req httpClientRequest
-		if err := json.Unmarshal(payload, &req); err != nil {
+		if err := wire.Unmarshal(payload, &req); err != nil {
 			return nil, err
 		}
 		return httpDo(ctx, req), nil

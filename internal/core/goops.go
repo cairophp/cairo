@@ -7,17 +7,20 @@ import "C"
 
 import (
 	"context"
-	"encoding/json"
 	"unsafe"
+
+	"github.com/cairophp/cairo/internal/wire"
 )
 
 // GoOp is a Go operation that PHP APIs (Cairo\Http\Client, ...) call through
 // Cairo\Internal\Go::call(). Inside a request fiber it runs on the fiber's
 // goroutine with the request's context while the fiber is suspended;
 // elsewhere (the declare phase, offload threads) the PHP thread waits for it
-// with a background context. The payload is the JSON PHP sent; the result is
-// marshalled back to PHP. An error is raised in PHP as a RuntimeException,
-// so operations report expected failures inside their result instead.
+// with a background context. The payload is the array PHP passed, in
+// internal/wire's form: wire.Unmarshal reads it as encoding/json would its
+// JSON. The result goes back to PHP the same way. An error is raised in PHP
+// as a RuntimeException, so operations report expected failures inside
+// their result instead.
 type GoOp func(ctx context.Context, payload []byte) (any, error)
 
 var goOps = map[string]GoOp{}
@@ -42,22 +45,20 @@ func RegisterFiberOp(name string, fn FiberOp) {
 	fiberOps[name] = fn
 }
 
-// goCall runs an operation on the calling PHP thread. Returns JSON
-// {"result": ...} or {"error": "..."}; the caller frees it.
+// goCall runs an operation on the calling PHP thread. Returns a map with
+// "result" or "error" in internal/wire's form: n bytes of C memory, which
+// the caller frees.
 //
 //export goCall
-func goCall(name *C.char, data *C.char, n C.int) *C.char {
-	resp := map[string]any{}
+func goCall(name *C.char, data *C.char, dn C.int, n *C.int) unsafe.Pointer {
+	b := wire.AppendMap(nil, 1)
 	if h, ok := goOps[C.GoString(name)]; !ok {
-		resp["error"] = "unknown operation " + C.GoString(name)
-	} else if res, err := h(context.Background(), C.GoBytes(unsafe.Pointer(data), n)); err != nil {
-		resp["error"] = err.Error()
+		b = wire.AppendString(wire.AppendKey(b, "error"), "unknown operation "+C.GoString(name))
+	} else if res, err := h(context.Background(), C.GoBytes(unsafe.Pointer(data), dn)); err != nil {
+		b = wire.AppendString(wire.AppendKey(b, "error"), err.Error())
 	} else {
-		resp["result"] = res
+		b = wire.AppendValue(wire.AppendKey(b, "result"), res)
 	}
-	b, err := json.Marshal(resp)
-	if err != nil {
-		b, _ = json.Marshal(map[string]any{"error": err.Error()})
-	}
-	return C.CString(string(b))
+	*n = C.int(len(b))
+	return C.CBytes(b)
 }

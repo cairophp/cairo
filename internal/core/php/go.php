@@ -21,8 +21,7 @@ namespace Cairo\Internal {
         public static function call(string $op, array $payload): mixed
         {
             if (Scheduler::running() && Context::current()->fiberId !== 0) {
-                $json = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-                return Scheduler::instance()->call($op, $json);
+                return Scheduler::instance()->call($op, $payload);
             }
             return self::callNow($op, $payload);
         }
@@ -35,8 +34,7 @@ namespace Cairo\Internal {
          */
         public static function callNow(string $op, array $payload): mixed
         {
-            $json = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-            $response = json_decode(\cairo_go_call($op, $json), true, 512, JSON_THROW_ON_ERROR);
+            $response = \cairo_go_call($op, $payload);
             if (isset($response['error'])) {
                 throw new \RuntimeException((string) $response['error']);
             }

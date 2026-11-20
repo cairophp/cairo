@@ -237,23 +237,40 @@ PHP_FUNCTION(cairo_fiber_op)
 	RETURN_LONG((zend_long)goFiberOp(cairo_tid, (long long)fiber, json, (int)len));
 }
 
-// cairo_go_call(string $op, string $json): string. Runs a Go operation on
-// this thread, outside a fiber; returns {"result": ...} or {"error": ...}.
+// cairo_go_call(string $op, array $args): array. Runs a Go operation on
+// this thread, outside a fiber; returns ['result' => ...] or ['error' => ...].
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_go_call, 0, 0, 2)
 	ZEND_ARG_INFO(0, op)
-	ZEND_ARG_INFO(0, json)
+	ZEND_ARG_INFO(0, args)
 ZEND_END_ARG_INFO()
 
 PHP_FUNCTION(cairo_go_call)
 {
-	zend_string *name, *json;
+	zend_string *name;
+	HashTable *args;
 	ZEND_PARSE_PARAMETERS_START(2, 2)
 		Z_PARAM_STR(name)
-		Z_PARAM_STR(json)
+		Z_PARAM_ARRAY_HT(args)
 	ZEND_PARSE_PARAMETERS_END();
-	char *res = goCall(ZSTR_VAL(name), ZSTR_VAL(json), (int)ZSTR_LEN(json));
-	RETVAL_STRING(res);
+	smart_str encoded = {0};
+	if (cairo_wire_encode(args, &encoded) == FAILURE) {
+		smart_str_free(&encoded);
+		RETURN_THROWS();
+	}
+	if (ZSTR_LEN(encoded.s) > INT_MAX) {
+		smart_str_free(&encoded);
+		zend_value_error("cairo_go_call(): the arguments are larger than 2 GB");
+		RETURN_THROWS();
+	}
+	int n = 0;
+	char *res = goCall(ZSTR_VAL(name), ZSTR_VAL(encoded.s), (int)ZSTR_LEN(encoded.s), &n);
+	smart_str_free(&encoded);
+	int ok = cairo_wire_decode(res, n < 0 ? 0 : (size_t)n, return_value);
 	free(res);
+	if (ok == FAILURE) {
+		zend_throw_exception(NULL, "cairo: malformed answer from Go", 0);
+		RETURN_THROWS();
+	}
 }
 
 PHP_FUNCTION(cairo_guard);

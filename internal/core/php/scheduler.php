@@ -172,8 +172,14 @@ namespace Cairo\Internal {
             return $this->submitted(\cairo_fiber_op(Context::current()->fiberId, json_encode($op, JSON_THROW_ON_ERROR)));
         }
 
-        /** Ask the current fiber's goroutine to run $op with a payload string, and suspend until it is done. */
-        public function call(string $op, string $payload): mixed
+        /**
+         * Ask the current fiber's goroutine to run $op, and suspend until it
+         * is done. A Go operation takes its arguments as an array; what the
+         * hooks ask for takes the string they built.
+         *
+         * @param string|array<string, mixed> $payload
+         */
+        public function call(string $op, string|array $payload): mixed
         {
             return $this->submitted(\cairo_fiber_call(Context::current()->fiberId, $op, $payload));
         }

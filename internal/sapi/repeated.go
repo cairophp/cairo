@@ -7,12 +7,12 @@ import "C"
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/cairophp/cairo/internal/core"
+	"github.com/cairophp/cairo/internal/wire"
 )
 
 // App::repeatedQueries(): php/queries.php counts each request's statements
@@ -59,7 +59,7 @@ func init() {
 				Count int    `json:"count"`
 			} `json:"queries"`
 		}
-		if err := json.Unmarshal(payload, &req); err != nil {
+		if err := wire.Unmarshal(payload, &req); err != nil {
 			return nil, fmt.Errorf("sql.repeated: %w", err)
 		}
 		now := time.Now()

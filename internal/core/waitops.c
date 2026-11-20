@@ -6,6 +6,7 @@
 #include <php.h>
 
 #include "extension.h"
+#include "wire.h"
 #include "_cgo_export.h"
 
 // Descriptors per curl wait; curl uses a handful per transfer.
@@ -71,21 +72,34 @@ PHP_FUNCTION(cairo_fiber_waitset)
 	RETURN_LONG(id);
 }
 
-// cairo_fiber_call(int $fiber, string $op, string $payload): int
+// cairo_fiber_call(int $fiber, string $op, string|array $payload): int
+// An array is the arguments of a Go operation, which cross in internal/wire's
+// form (wire.Unmarshal reads them); a string crosses as it is.
 PHP_FUNCTION(cairo_fiber_call)
 {
 	zend_long fiber;
 	zend_string *name, *payload;
+	HashTable *args;
 	ZEND_PARSE_PARAMETERS_START(3, 3)
 		Z_PARAM_LONG(fiber)
 		Z_PARAM_STR(name)
-		Z_PARAM_STR(payload)
+		Z_PARAM_ARRAY_HT_OR_STR(args, payload)
 	ZEND_PARSE_PARAMETERS_END();
-	if (ZSTR_LEN(name) > INT_MAX || ZSTR_LEN(payload) > INT_MAX) {
-		RETURN_LONG(-1);
+	smart_str encoded = {0};
+	if (args != NULL) {
+		if (cairo_wire_encode(args, &encoded) == FAILURE) {
+			smart_str_free(&encoded);
+			RETURN_THROWS();
+		}
+		payload = encoded.s;
 	}
-	RETURN_LONG((zend_long)goFiberCall(cairo_thread_id(), (long long)fiber, ZSTR_VAL(name), (int)ZSTR_LEN(name),
-		ZSTR_VAL(payload), (int)ZSTR_LEN(payload)));
+	zend_long id = -1;
+	if (ZSTR_LEN(name) <= INT_MAX && ZSTR_LEN(payload) <= INT_MAX) {
+		id = (zend_long)goFiberCall(cairo_thread_id(), (long long)fiber, ZSTR_VAL(name), (int)ZSTR_LEN(name),
+			ZSTR_VAL(payload), (int)ZSTR_LEN(payload));
+	}
+	smart_str_free(&encoded);
+	RETURN_LONG(id);
 }
 
 // Longest wait on the PHP thread itself, in milliseconds: long enough for a

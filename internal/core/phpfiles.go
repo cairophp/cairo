@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/cairophp/cairo/internal/core/php"
 )
@@ -55,12 +56,21 @@ func writeRuntime() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Opcache leaves out a file that changed in the last seconds
+	// (opcache.file_update_protection), and these are read right away: with
+	// the time of their writing every PHP thread would compile the runtime
+	// itself, with no optimizer and nothing shared.
+	old := time.Now().Add(-24 * time.Hour)
 	for name, files := range phpSources {
 		code, err := fs.ReadFile(files, name)
 		if err != nil {
 			return "", err
 		}
-		if err := os.WriteFile(filepath.Join(dir, name), code, 0o600); err != nil {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, code, 0o600); err != nil {
+			return "", err
+		}
+		if err := os.Chtimes(path, old, old); err != nil {
 			return "", err
 		}
 	}

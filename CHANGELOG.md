@@ -80,6 +80,11 @@ change the PHP API; patch versions do not.
   that Go asks for by default, so every build had compiled that code
   without any. A Go operation or a wait among 64 fibers is about 8% cheaper,
   and the PostgreSQL benchmark route serves 3.6% more requests per second.
+- Performance: opcache holds Cairo's own PHP files. The engine writes them
+  when the server starts, and opcache leaves out a file that changed in the
+  last two seconds, so every PHP thread compiled the runtime itself, with no
+  optimizer and nothing shared between threads. The files now get an old
+  modification time.
 
 ## [0.4.0] - 2026-11-19
 

@@ -185,12 +185,12 @@ namespace Cairo {
             $waiter = new PoolWaiter($fiber, $ctx, $this->acquireTimeout === null ? null : new Waiter());
             $id = spl_object_id($waiter);
             $this->waiters[$id] = $waiter;
-            $event = [];
+            $ended = null;
             try {
                 if ($waiter->park === null) {
                     \Fiber::suspend();
                 } else {
-                    $event = Scheduler::instance()->park($waiter->park, $this->acquireTimeout);
+                    $ended = Scheduler::instance()->waits->park($ctx, $this->acquireTimeout, $waiter->park);
                 }
             } finally {
                 unset($this->waiters[$id]);
@@ -198,8 +198,8 @@ namespace Cairo {
             if ($waiter->entry !== null || $waiter->slot) {
                 return $waiter->entry;
             }
-            if (isset($event['error'])) {
-                $ctx->ended((string) $event['error']);
+            if ($ended !== null) {
+                $ctx->ended($ended);
             }
             if (($err = $ctx->err()) !== null) {
                 throw $err;

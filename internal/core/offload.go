@@ -21,6 +21,7 @@ func (e *Engine) runOffload(ctx context.Context, payload string) (string, error)
 	select {
 	case t.inbox <- event{data: b, call: c}:
 		t.sendMu.RUnlock()
+		t.mark()
 	case <-ctx.Done():
 		t.sendMu.RUnlock()
 		t.inflight.Add(-1)

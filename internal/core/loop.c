@@ -1,0 +1,160 @@
+// The loop of a PHP thread, where it comes back between fibers: it takes the
+// events Go queued for it, and asks Go only when there is one or when no
+// fiber can run and the thread is to sleep. See loop.h.
+
+#include <time.h>
+
+#include <php.h>
+#include <zend_exceptions.h>
+
+#include "extension.h"
+#include "loop.h"
+#include "wire.h"
+#include "_cgo_export.h"
+
+static _Alignas(64) cairo_mailbox boxes[CAIRO_MAX_THREADS];
+static int32_t probed;
+static int64_t look_ns;   // written once, before the PHP threads start
+
+cairo_mailbox *cairo_mailbox_of(int tid)
+{
+	return &boxes[tid];
+}
+
+void cairo_loop_probe(void)
+{
+	__atomic_store_n(&probed, 1, __ATOMIC_SEQ_CST);
+}
+
+void cairo_loop_look(int64_t ns)
+{
+	look_ns = ns;
+}
+
+int cairo_loop_has_event(void)
+{
+	int tid = cairo_thread_id();
+	return tid >= 0 && __atomic_load_n(&boxes[tid].pending, __ATOMIC_SEQ_CST) != 0 && goHasEvent(tid);
+}
+
+// The time as Go's time.Now().UnixNano() gives it: dispatch compares the two.
+static int64_t unix_ns(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_REALTIME, &ts);
+	return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+}
+
+static int64_t mono_ns(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+}
+
+// look is what a thread does before it sleeps: it watches its mailbox for
+// look_ns, and not past wait, and returns how long it did. Sleeping at once
+// costs two wake-ups of threads where this costs none: the thread stays out
+// of Go, so Go takes over the operation it just handed it, and the answer
+// of a short one is there before the thread would have slept.
+static int64_t look(cairo_mailbox *box, int64_t wait)
+{
+	int64_t limit = wait < 0 || wait > look_ns ? look_ns : wait;
+	int64_t start = mono_ns(), spent = 0;
+	while (spent < limit && __atomic_load_n(&box->pending, __ATOMIC_SEQ_CST) == 0) {
+#if defined(__x86_64__) || defined(__i386__)
+		__builtin_ia32_pause();
+#elif defined(__aarch64__)
+		__asm__ __volatile__("yield");
+#endif
+		spent = mono_ns() - start;
+	}
+	return spent;
+}
+
+// cairo_next_event(int $wait): ?array
+// The thread comes back to its loop. Returns the next event Go has for it
+// (a request, a finished operation, shutdown), which Go encodes in
+// internal/wire's format and wire.c turns into the array; or null when
+// none came within $wait nanoseconds (0: do not wait; below 0: wait as long
+// as it takes). A call that finds no event and does not wait makes no call
+// into Go: the mailbox says that the inbox is empty.
+PHP_FUNCTION(cairo_next_event)
+{
+	zend_long wait;
+	ZEND_PARSE_PARAMETERS_START(1, 1)
+		Z_PARAM_LONG(wait)
+	ZEND_PARSE_PARAMETERS_END();
+	int tid = cairo_thread_id();
+	if (tid < 0) {
+		zend_throw_error(NULL, "cairo_next_event(): this thread has no events");
+		RETURN_THROWS();
+	}
+	cairo_mailbox *box = &boxes[tid];
+	int64_t now = unix_ns();
+	if (box->since != 0) {   // only this thread writes since and stretch, and Go reads them as a hint
+		int64_t ran = now - box->since;
+		__atomic_store_n(&box->stretch, box->stretch + (ran - box->stretch) / 8, __ATOMIC_RELAXED);
+		if (__atomic_load_n(&probed, __ATOMIC_SEQ_CST)) {
+			goRan(tid, (long long)ran);
+		}
+	}
+	char *buf = NULL;
+	int len = 0;
+	int marked = __atomic_load_n(&box->pending, __ATOMIC_SEQ_CST) != 0;
+	if (wait != 0 && !marked) {
+		int64_t spent = look(box, wait);
+		now += spent;
+		if (wait > 0) {
+			wait = wait > spent ? wait - spent : 0;
+		}
+		marked = __atomic_load_n(&box->pending, __ATOMIC_SEQ_CST) != 0;
+	}
+	if (wait != 0 || marked) {
+		buf = goNextEvent(tid, (long long)wait, &len);   // sleeps there, with since at 0
+		if (box->since == 0) {
+			now = unix_ns();
+		}
+	}
+	__atomic_store_n(&box->since, now, __ATOMIC_RELAXED);
+	if (buf == NULL) {
+		RETURN_NULL();
+	}
+	int ok = cairo_wire_decode(buf, len < 0 ? 0 : (size_t)len, return_value);
+	free(buf);
+	if (ok == FAILURE) {
+		zend_throw_exception(NULL, "cairo: malformed event from Go", 0);
+		RETURN_THROWS();
+	}
+}
+
+// cairo_wait_began(int $fiber): int
+// A fiber starts a wait that stays on the thread (Waits in waits.php), which
+// Go does not see. Returns what cairo_wait_ended() takes back; 0 when
+// requests are not probed, and then neither function calls Go.
+PHP_FUNCTION(cairo_wait_began)
+{
+	zend_long fiber;
+	ZEND_PARSE_PARAMETERS_START(1, 1)
+		Z_PARAM_LONG(fiber)
+	ZEND_PARSE_PARAMETERS_END();
+	if (!__atomic_load_n(&probed, __ATOMIC_SEQ_CST)) {
+		RETURN_LONG(0);
+	}
+	RETURN_LONG((zend_long)goWaitBegan(cairo_thread_id(), (long long)fiber));
+}
+
+// cairo_wait_ended(int $fiber, bool $parked, int $began): void
+// The wait that cairo_wait_began() answered $began for is over; $parked
+// tells a wait in select() from a sleep.
+PHP_FUNCTION(cairo_wait_ended)
+{
+	zend_long fiber, began;
+	bool parked;
+	ZEND_PARSE_PARAMETERS_START(3, 3)
+		Z_PARAM_LONG(fiber)
+		Z_PARAM_BOOL(parked)
+		Z_PARAM_LONG(began)
+	ZEND_PARSE_PARAMETERS_END();
+	goWaitEnded(cairo_thread_id(), (long long)fiber, parked ? 1 : 0, (long long)began);
+}

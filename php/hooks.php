@@ -46,7 +46,7 @@ namespace Cairo\Internal {
             if (!self::on(\Cairo\Hook::SLEEP)) {
                 return false;
             }
-            Scheduler::instance()->op(['op' => 'sleep', 'seconds' => $seconds]);
+            Scheduler::instance()->waits->sleep($seconds);
             return true;
         }
 

@@ -6,6 +6,7 @@
 #include <php.h>
 
 #include "extension.h"
+#include "loop.h"
 #include "wire.h"
 #include "_cgo_export.h"
 
@@ -122,7 +123,7 @@ PHP_FUNCTION(cairo_wait_here)
 		Z_PARAM_BOOL(write)
 		Z_PARAM_BOOL(unless_queued)
 	ZEND_PARSE_PARAMETERS_END();
-	if (fd < 0 || fd > INT_MAX || (unless_queued && goInboxLen(cairo_thread_id()) > 0)) {
+	if (fd < 0 || fd > INT_MAX || (unless_queued && cairo_loop_has_event())) {
 		RETURN_FALSE;
 	}
 	struct pollfd pfd = {.fd = (int)fd, .events = write ? POLLOUT : POLLIN};

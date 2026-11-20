@@ -534,16 +534,17 @@ final class Driver implements EventLoop\Driver
      */
     private function park(Waiter $waiter, float $timeout): bool
     {
-        $event = Scheduler::instance()->park($waiter, $timeout);
+        $ctx = Context::current();
+        $ended = Scheduler::instance()->waits->park($ctx, $timeout, $waiter);
         if ($waiter->done) {
             if ($waiter->error !== null) {
                 throw $waiter->error;
             }
             return true;
         }
-        if (isset($event['error'])) {
-            Context::current()->ended((string) $event['error']);
-            throw $event['error'] === 'canceled' ? new \Cairo\Context\Canceled() : new \Cairo\Context\DeadlineExceeded();
+        if ($ended !== null) {
+            $ctx->ended($ended);
+            throw $ended === 'canceled' ? new \Cairo\Context\Canceled() : new \Cairo\Context\DeadlineExceeded();
         }
         return false;
     }
@@ -588,8 +589,9 @@ final class Suspension implements EventLoop\Suspension
             throw new \Error('Must not call suspend() from another fiber');
         }
         $waiter = $this->waiter = new Waiter();
+        $ctx = Context::current();
         try {
-            $event = Scheduler::instance()->park($waiter, -1.0);
+            $ended = Scheduler::instance()->waits->park($ctx, -1.0, $waiter) ?? 'canceled';
         } finally {
             $this->waiter = null;
         }
@@ -599,9 +601,8 @@ final class Suspension implements EventLoop\Suspension
             }
             return $waiter->result[1];
         }
-        $error = (string) ($event['error'] ?? 'canceled');
-        Context::current()->ended($error);
-        throw $error === 'deadline_exceeded' ? new \Cairo\Context\DeadlineExceeded() : new \Cairo\Context\Canceled();
+        $ctx->ended($ended);
+        throw $ended === 'deadline_exceeded' ? new \Cairo\Context\DeadlineExceeded() : new \Cairo\Context\Canceled();
     }
 
     public function resume(mixed $value = null): void

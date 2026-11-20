@@ -336,6 +336,21 @@ namespace Cairo {
         {
         }
 
+        /** @internal how the context ended ('canceled' or 'deadline_exceeded'), or null while it is live */
+        public function endedAs(): ?string
+        {
+        }
+
+        /** @internal the deadline in hrtime() nanoseconds; PHP_INT_MAX when there is none */
+        public function deadlineTick(): int
+        {
+        }
+
+        /** @internal whether this context is $other or derives from it */
+        public function within(self $other): bool
+        {
+        }
+
         /** @internal */
         public function setGoValues(array $values): void
         {
@@ -406,8 +421,9 @@ namespace Cairo {
         }
 
         /**
-         * @internal Go reported that this fiber's context ended. Its parents
-         * ended too when the cause is theirs: a cancel, or the deadline they share.
+         * @internal This fiber's context ended, as Go reported or a wait on
+         * the thread found. Its parents ended too when the cause is theirs:
+         * a cancel, or the deadline they share.
          */
         public function ended(string $why): void
         {
@@ -603,9 +619,10 @@ namespace Cairo {
     }
 
     /**
-     * Sleep without blocking the thread: the fiber suspends and its goroutine
-     * waits. Throws Context\DeadlineExceeded or Context\Canceled if the
-     * request's context ends first.
+     * Sleep without blocking the thread: the fiber suspends, and the thread
+     * runs other fibers until the time is up. Throws
+     * Context\DeadlineExceeded or Context\Canceled if the request's context
+     * ends first.
      */
     function sleep(float $seconds): void
     {

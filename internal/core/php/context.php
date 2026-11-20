@@ -173,15 +173,46 @@ namespace Cairo {
         /** Why the context ended (it, or a context it derives from), or null while it is live. */
         public function err(): ?Context\ContextException
         {
+            return match ($this->endedAs()) {
+                null => null,
+                'canceled' => new Context\Canceled(),
+                default => new Context\DeadlineExceeded(),
+            };
+        }
+
+        /** @internal how the context ended ('canceled' or 'deadline_exceeded'), or null while it is live */
+        public function endedAs(): ?string
+        {
             for ($ctx = $this; $ctx !== null; $ctx = $ctx->parent) {
                 if ($ctx->ended !== null) {
-                    return $ctx->ended === 'canceled' ? new Context\Canceled() : new Context\DeadlineExceeded();
-                }
-                if ($ctx->deadline !== null && microtime(true) >= $ctx->deadline) {
-                    return new Context\DeadlineExceeded();
+                    return $ctx->ended;
                 }
             }
-            return null;
+            // Its own deadline is the earliest of those above it.
+            return $this->deadline !== null && hrtime(true) >= $this->deadlineTick() ? 'deadline_exceeded' : null;
+        }
+
+        /** The deadline on hrtime()'s clock, which the thread's timers run on. */
+        private ?int $tick = null;
+
+        /** @internal the deadline in hrtime() nanoseconds; PHP_INT_MAX when there is none */
+        public function deadlineTick(): int
+        {
+            if ($this->deadline === null) {
+                return PHP_INT_MAX;
+            }
+            return $this->tick ??= hrtime(true) + (int) (($this->deadline - microtime(true)) * 1e9);
+        }
+
+        /** @internal whether this context is $other or derives from it */
+        public function within(self $other): bool
+        {
+            for ($ctx = $this; $ctx !== null; $ctx = $ctx->parent) {
+                if ($ctx === $other) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /** @var array<string, mixed> values Go middleware set on the request (root context only) */
@@ -268,7 +299,10 @@ namespace Cairo {
             }
             $this->canceledHere = true;
             $this->ended ??= 'canceled';
-            \cairo_context_cancel($this->fiberId);
+            \cairo_context_cancel($this->fiberId);   // for what waits in Go under it
+            if (Internal\Waits::$waiting !== 0) {
+                Internal\Scheduler::instance()->waits->end($this);
+            }
             foreach (self::$doneChannels ?? [] as $ch) {
                 if ($ch->isClosed()) {
                     $ch->contextEnded();
@@ -299,7 +333,7 @@ namespace Cairo {
             }
         }
 
-        /** @var ?string how Go reported this context ended: 'canceled' or 'deadline_exceeded' */
+        /** @var ?string how this context ended, once that is known: 'canceled' or 'deadline_exceeded' */
         private ?string $ended = null;
         private ?Channel $done = null;
 
@@ -325,8 +359,9 @@ namespace Cairo {
         }
 
         /**
-         * @internal Go reported that this fiber's context ended. Its parents
-         * ended too when the cause is theirs: a cancel, or the deadline they share.
+         * @internal This fiber's context ended, as Go reported or a wait on
+         * the thread found. Its parents ended too when the cause is theirs:
+         * a cancel, or the deadline they share.
          */
         public function ended(string $why): void
         {

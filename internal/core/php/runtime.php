@@ -74,6 +74,7 @@ namespace {
     require __DIR__ . '/channel.php';
     require __DIR__ . '/async.php';
     require __DIR__ . '/offload.php';
+    require __DIR__ . '/waits.php';
     require __DIR__ . '/scheduler.php';
     require __DIR__ . '/go.php';
     \Cairo\Internal\main();

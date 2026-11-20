@@ -59,9 +59,10 @@ namespace Cairo {
     }
 
     /**
-     * Sleep without blocking the thread: the fiber suspends and its goroutine
-     * waits. Throws Context\DeadlineExceeded or Context\Canceled if the
-     * request's context ends first.
+     * Sleep without blocking the thread: the fiber suspends, and the thread
+     * runs other fibers until the time is up. Throws
+     * Context\DeadlineExceeded or Context\Canceled if the request's context
+     * ends first.
      */
     function sleep(float $seconds): void
     {
@@ -69,7 +70,7 @@ namespace Cairo {
             usleep((int) ($seconds * 1e6));
             return;
         }
-        Scheduler::instance()->op(['op' => 'sleep', 'seconds' => $seconds]);
+        Scheduler::instance()->waits->sleep($seconds);
     }
 }
 

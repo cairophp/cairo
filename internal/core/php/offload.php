@@ -72,11 +72,12 @@ namespace Cairo\Internal {
         public function run(): void
         {
             while (true) {
-                $event = \cairo_next_event();
-                if ($event['type'] === 'shutdown') {
+                $event = \cairo_next_event(-1);   // null: woken for nothing
+                $type = $event['type'] ?? null;
+                if ($type === 'shutdown') {
                     return;
                 }
-                if ($event['type'] !== 'offload') {
+                if ($type !== 'offload') {
                     continue;
                 }
                 try {

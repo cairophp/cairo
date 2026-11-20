@@ -51,6 +51,16 @@ namespace Cairo\Internal {
         /** @var array<int, \Fiber> I/O operation id => waiting fiber */
         private array $io = [];
         private \SplQueue $ready;
+        /** @internal The waits that stay on this thread: sleep(), select(). */
+        public readonly Waits $waits;
+        /** @var array<int, Context> request id => its context, until the request ends */
+        private array $requests = [];
+        /**
+         * How many ready fibers, and then how many events, one turn of the
+         * loop takes: fibers that keep waking each other must not keep the
+         * thread from Go's events, nor from telling Go that it is not stuck.
+         */
+        private const TURN = 64;
         /** @var \SplQueue<\Closure> work to start from this loop, outside any fiber */
         private \SplQueue $later;
         /** @var array<int, mixed> handler id => resolved handler */
@@ -77,6 +87,7 @@ namespace Cairo\Internal {
         public function __construct(private readonly App $app)
         {
             $this->ready = new \SplQueue();
+            $this->waits = new Waits($this->ready);
             $this->later = new \SplQueue();
             $this->pending = new \SplQueue();
             self::$instance = $this;
@@ -193,22 +204,6 @@ namespace Cairo\Internal {
             return $this->waitIO($id);
         }
 
-        /**
-         * Suspend the current fiber in select() until a Waiter::wake(), the
-         * timeout (seconds, < 0 for none) or the end of its context. Returns
-         * the I/O event, with 'error' when the context ended.
-         */
-        public function park(Waiter $waiter, float $timeout): array
-        {
-            $id = \cairo_fiber_op(Context::current()->fiberId, json_encode(['op' => 'park', 'timeout' => $timeout], JSON_THROW_ON_ERROR));
-            if ($id < 0) {
-                throw new \LogicException('waiting on a Cairo\Channel must happen inside a request handler or an async() task');
-            }
-            $waiter->op = $id;
-            $this->io[$id] = \Fiber::getCurrent();
-            return \Fiber::suspend();
-        }
-
         /** Suspend the current fiber until Go reports I/O operation $id. */
         public function waitIO(int $id): mixed
         {
@@ -244,47 +239,80 @@ namespace Cairo\Internal {
 
         public function run(): void
         {
+            $ready = $this->ready;
+            $waits = $this->waits;
             while (true) {
-                do {
-                    while (!$this->ready->isEmpty() || !$this->later->isEmpty()) {
-                        if (!$this->ready->isEmpty()) {
-                            $this->ready->dequeue()->resume();
-                        } else {
-                            ($this->later->dequeue())();
-                        }
-                    }
-                    // Isolated mode: start the next request once the thread is free.
-                    if (!$this->busy && !$this->pending->isEmpty()) {
-                        $this->start($this->pending->dequeue());
-                        continue;
-                    }
-                    break;
-                } while (true);
-                if ($this->retiring && $this->active === 0 && $this->pending->isEmpty()) {
+                for ($n = self::TURN; $n > 0 && !$ready->isEmpty(); $n--) {
+                    $ready->dequeue()->resume();
+                }
+                $idle = $n > 0;   // the queue ran empty
+                while (!$this->later->isEmpty()) {
+                    ($this->later->dequeue())();
+                    $idle = false;
+                }
+                // Isolated mode: start the next request once the thread is free.
+                if (!$this->busy && !$this->pending->isEmpty()) {
+                    $this->start($this->pending->dequeue());
+                    continue;
+                }
+                if ($this->retiring && $this->active === 0 && $idle && $this->pending->isEmpty()) {
                     return;   // recycled: Go already runs a replacement thread
                 }
-                $event = \cairo_next_event();
-                switch ($event['type']) {
-                    case 'io':
+                // Sleep only with no fiber to run, and no longer than until the next timer.
+                $wait = -1;
+                if ($waits->nextAt !== PHP_INT_MAX) {
+                    $wait = $waits->tick();
+                    $idle = $idle && $ready->isEmpty();
+                }
+                $n = self::TURN;
+                $event = \cairo_next_event($idle ? $wait : 0);
+                while ($event !== null) {
+                    if ($event['type'] === 'io') {
                         $fiber = $this->io[$event['io']] ?? null;
                         unset($this->io[$event['io']]);
                         $fiber?->resume($event);
-                        break;
-                    case 'retire':
-                        // Go queues no more requests here; finish the ones held.
-                        $this->retiring = true;
-                        break;
-                    case 'shutdown':
+                    } elseif (!$this->take($event)) {
                         return;
-                    default:
-                        // A request: its type names the server it came through.
-                        if ($this->app->isolated() && $this->busy) {
-                            $this->pending->enqueue($event);
-                        } else {
-                            $this->start($event);
-                        }
+                    }
+                    // With fibers to run, the events that are there come first.
+                    $event = !$idle && --$n > 0 ? \cairo_next_event(0) : null;
                 }
             }
+        }
+
+        /**
+         * Handle an event from Go that is not the end of an operation, which
+         * the loop handles itself; false when it is the thread's last.
+         *
+         * @param array<string, mixed> $event
+         */
+        private function take(array $event): bool
+        {
+            switch ($event['type']) {
+                case 'cancel':
+                    // The request's context ended in Go before PHP answered (the
+                    // client left, the deadline passed): Go ends what waits there,
+                    // and this ends what waits here.
+                    if (($context = $this->requests[$event['id']] ?? null) !== null) {
+                        $context->ended((string) $event['error']);
+                        $this->waits->end($context);
+                    }
+                    break;
+                case 'retire':
+                    // Go queues no more requests here; finish the ones held.
+                    $this->retiring = true;
+                    break;
+                case 'shutdown':
+                    return false;
+                default:
+                    // A request: its type names the server it came through.
+                    if ($this->app->isolated() && $this->busy) {
+                        $this->pending->enqueue($event);
+                    } else {
+                        $this->start($event);
+                    }
+            }
+            return true;
         }
 
         public function app(): App
@@ -337,12 +365,21 @@ namespace Cairo\Internal {
             $id = (int) $event['id'];   // the request's root fiber is served by the request goroutine
             $context = new Context($id, $id, isset($event['deadline']) ? (float) $event['deadline'] : null);
             $context->setGoValues((array) ($event['values'] ?? []));
+            $this->requests[$id] = $context;
             $this->active++;
             $this->startFiber(function () use ($answer, $context, $event): void {
                 try {
                     $answer($event);
                 } finally {
+                    $early = $context->endedAs() !== null;
                     $context->finish();
+                    // The request's context ends with it, as it does in Go: what
+                    // the request left waiting on this thread ends too.
+                    unset($this->requests[$context->requestId]);
+                    $context->ended('canceled');
+                    if (Waits::$waiting !== 0) {
+                        $this->waits->end($context);
+                    }
                     \cairo_local_end($context->requestId);
                     if ($this->afterRequest !== []) {
                         $route = ($this->routes[$event['type']])($event);
@@ -352,7 +389,7 @@ namespace Cairo\Internal {
                     }
                     $this->active--;
                     $this->served++;
-                    if ($context->err() !== null) {
+                    if ($early) {
                         $this->failed = true;
                     }
                     $this->collectAfterFailure();

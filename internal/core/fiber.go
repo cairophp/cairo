@@ -26,12 +26,11 @@ type fiber struct {
 }
 
 // op is an operation a fiber asked Go to perform while it is suspended. The
-// engine's own operations (sleep, park, wait, waitset, offload) use the
-// fields; every other one is looked up by name and gets the payload.
+// engine's own operations (wait, waitset, offload) use the fields; every
+// other one is looked up by name and gets the payload.
 type op struct {
 	ID      int64   `json:"-"`
 	Op      string  `json:"op"`
-	Seconds float64 `json:"seconds"`
 	Payload string  `json:"payload"`
 	Fd      int     `json:"fd"`
 	Write   bool    `json:"write"`
@@ -49,22 +48,6 @@ func (e *Engine) runOp(f *fiber, o op) {
 	}
 	ev := map[string]any{"type": "io", "io": o.ID}
 	switch o.Op {
-	case "sleep":
-		timer := time.NewTimer(time.Duration(o.Seconds * float64(time.Second)))
-		select {
-		case <-timer.C:
-		case <-f.ctx.Done():
-			timer.Stop()
-			ev["error"] = CtxError(f.ctx)
-		}
-	case "park":
-		// A fiber blocked on Cairo\Channel or select(): wait until PHP wakes
-		// it (cairo_wake), the timeout passes or the context ends.
-		ev["result"] = e.park(f.ctx, o.ID, o.Timeout)
-		if ev["result"] == "done" {
-			delete(ev, "result")
-			ev["error"] = CtxError(f.ctx)
-		}
 	case "offload":
 		res, err := e.runOffload(f.ctx, o.Payload)
 		if err != nil {
@@ -139,7 +122,7 @@ func (e *Engine) runOp(f *fiber, o op) {
 	if f.probe != nil {
 		f.probe.WaitEnd(o.Op, began)
 	}
-	f.thread.inbox <- event{data: wire.Encode(ev), probe: f.probe}
+	f.thread.send(event{data: wire.Encode(ev), probe: f.probe})
 }
 
 // CtxError is how an operation tells PHP that its context ended, which PHP

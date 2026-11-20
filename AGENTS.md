@@ -20,10 +20,11 @@ on I/O through Cairo, only its fiber suspends and Go does the waiting.
 | `cmd/cairo/` | The CLI: `serve`, `gen`, `version`. Its blank import of `internal/sapi` is what links the extensions in |
 | `internal/core/` | The core engine. cgo: the embedded PHP (`cairo.c`, Cairo's own SAPI), PHP threads, fiber goroutines, the offload pool, what fibers wait on and the op registry. What it exports is all that an extension can use, and it names no extension: `boundary_test.go` fails when it does |
 | `internal/core/engine.go`, `dispatch.go`, `fiber.go`, `offload.go`, `supervise.go` | The engine in Go: start and shutdown, a request's way to a PHP thread and the answer's way back, the goroutine side of a fiber, the offload pool, thread supervision |
+| `internal/core/loop.c`, `loop.h`, `mailbox.go`, `php/waits.php` | The loop of a PHP thread and the waits that stay on it. `cairo_next_event()` is where the thread comes back between fibers: it takes the events Go queued (the inbox, a Go channel) and, with none and no fiber to run, sleeps on the inbox, after it watched the mailbox for a few microseconds (`look`). The mailbox is the memory both sides read without a call: whether the inbox may hold an event, and since when the thread runs PHP (0 while it sleeps). Send to an inbox with `thread.send()`, or set the mark after the send as it does. `Waits` parks the fibers in `sleep()` and `select()` on the thread, with its timers; no goroutine is involved, and a context that ends wakes them from PHP (`Waits::end()`) |
 | `internal/core/goops.go` | The op registry: `core.RegisterOp("name", fn)` in Go, `Cairo\Internal\Go::call('name', $payload)` in PHP. The payload array goes to Go in `internal/wire`'s binary format, where `wire.Unmarshal` reads it into a struct by its `json` tags; results come back as events. `RegisterFiberOp` is for what PHP's hooked functions ask for |
 | `internal/core/extension.go`, `extension.h`, `extension.c` | How an extension's C code joins the SAPI module: it defines a `cairo_extension` (what to run at module startup, when a PHP thread ends and when a thread that the extension interrupted reaches a safe point, the PHP functions it adds) and its Go file adds it with `core.RegisterC` from `init()`. C types do not cross Go packages, so `internal/sapi` has a `registerC` that takes its own |
 | `internal/wire/` | The binary format of the events Go sends to PHP threads (requests, op results), which `internal/core/wire.c` decodes into PHP arrays, and of the arguments PHP passes to a Go operation, which `wire.c` encodes and `wire.Unmarshal` decodes. Bodies cross as raw bytes |
-| `internal/core/php/` | The core's PHP files, one per concern, embedded in the binary. Every PHP thread runs `runtime.php`, which loads the core's other files (`app.php`, `context.php`, `channel.php`, `async.php`, `offload.php`, `scheduler.php`, `go.php`; `request_local.php` on first use) and then the files of the extensions |
+| `internal/core/php/` | The core's PHP files, one per concern, embedded in the binary. Every PHP thread runs `runtime.php`, which loads the core's other files (`app.php`, `context.php`, `channel.php`, `async.php`, `offload.php`, `waits.php`, `scheduler.php`, `go.php`; `request_local.php` on first use) and then the files of the extensions |
 | `internal/core/phpfiles.go` | How an extension's PHP file joins the runtime: `core.RegisterPHP(files, "name.php")` from its Go file's `init()` (`registerPHP("name.php")` in `internal/sapi`), loaded at start, or on first use of the classes it names. The engine writes the files of the core and of every extension into one directory when it starts, so a file name can be taken once |
 | `internal/core/onstart.go`, `probe.go` | What an extension runs when the engine starts (`RegisterStart`), and how it follows requests through the engine: `ProbeRequests` gives each request a `Probe`, which is told of the waits of its fibers and of the stretches of PHP its thread ran. The engine measures nothing itself. `internal/sapi/timing.go` is the one that asks: the request timing behind the slow log (`slowlog.go`) and the heavy routes (`heavy.go`) |
 | `internal/sapi/` | The extensions that are cgo or Go operations: the runtime hooks, the PDO pgsql driver, the clients, `Cairo\Sql`, the diagnostics, how an HTTP answer leaves PHP. Every file joins the core from its `init()` |
@@ -270,9 +271,10 @@ one line and move on.
 
 Cairo is a server: per-request code runs millions of times.
 
-- **Never block the PHP thread.** Every wait goes through Go on the fiber's
-  goroutine (see Concurrency is the point). A new blocking call without a
-  hook is a bug, even if tests pass.
+- **Never block the PHP thread.** Every wait suspends its fiber: through Go
+  on the fiber's goroutine, or parked on the thread's own loop (`Waits`, for
+  what needs no Go: a sleep, a channel). See Concurrency is the point. A new
+  blocking call without a hook is a bug, even if tests pass.
 - **Nothing per request that can be done once.** Compile regexes, build
   lookup tables, parse config and resolve classes at boot or in the declare
   phase, not in the handler path.

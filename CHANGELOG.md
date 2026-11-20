@@ -112,6 +112,16 @@ change the PHP API; patch versions do not.
   operation that runs on the PHP thread gets its result back the same way. A
   string argument may now hold any bytes, where JSON refused text that was
   not UTF-8.
+- Performance: a fiber in `Cairo\sleep()`, in a hooked `sleep()` or
+  `usleep()`, or blocked on a `Cairo\Channel`, in `select()` or on a
+  `Cairo\Pool` now waits on its PHP thread, which keeps the timers itself,
+  instead of on a goroutine: nothing crosses to Go, and a sleep or a channel
+  hand-over between two fibers costs about a microsecond where it cost 35 to
+  70. A thread whose fibers keep each other busy still takes new requests
+  and Go's answers every 64 fibers. Before it sleeps, an idle thread also
+  watches for a few microseconds whether Go has an answer for it, which a
+  short Go operation has by then: about a third off the time of a Go
+  operation when nothing else runs on the thread.
 
 ## [0.4.0] - 2026-11-19
 

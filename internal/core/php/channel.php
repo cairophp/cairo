@@ -277,7 +277,7 @@ namespace Cairo {
         }
 
         // done() channels of other contexts close at their deadline, which the
-        // park below does not see: wake up then and look again.
+        // wait below does not see: wake up then and look again.
         $end = $timeout === null ? null : microtime(true) + $timeout;
         while (true) {
             $now = microtime(true);
@@ -302,7 +302,7 @@ namespace Cairo {
                 }
             }
             try {
-                $event = Internal\Scheduler::instance()->park($waiter, $wait);
+                $ended = Internal\Scheduler::instance()->waits->park($ctx, $wait, $waiter);
             } finally {
                 foreach ($cases as $case) {
                     ($case instanceof Channel ? $case : $case[0])->remove($waiter);
@@ -314,13 +314,13 @@ namespace Cairo {
                 }
                 return $waiter->result;
             }
-            if (isset($event['error'])) {
-                $ctx->ended((string) $event['error']);
+            if ($ended !== null) {
+                $ctx->ended($ended);
                 // A done() channel among the cases is now closed.
                 if (($ready = $poll()) !== null) {
                     return $ready;
                 }
-                throw $event['error'] === 'canceled' ? new Context\Canceled() : new Context\DeadlineExceeded();
+                throw $ended === 'canceled' ? new Context\Canceled() : new Context\DeadlineExceeded();
             }
             if (!$forDone) {
                 return [null, null, false];   // timeout
@@ -349,6 +349,7 @@ namespace Cairo\Internal {
     /** @internal a fiber waiting in select() */
     final class Waiter
     {
+        /** The id of its wait (Waits::park), 0 before it waits. */
         public int $op = 0;
         public bool $done = false;
         /** @var array{int|string|null, mixed, bool} */
@@ -363,7 +364,7 @@ namespace Cairo\Internal {
             }
             $this->done = true;
             $this->result = [$key, $value, $ok];
-            \cairo_wake($this->op);
+            Scheduler::instance()->waits->wake($this->op);
         }
 
         public function fail(\Throwable $error): void
@@ -373,7 +374,7 @@ namespace Cairo\Internal {
             }
             $this->done = true;
             $this->error = $error;
-            \cairo_wake($this->op);
+            Scheduler::instance()->waits->wake($this->op);
         }
     }
 }

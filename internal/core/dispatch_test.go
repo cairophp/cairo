@@ -7,12 +7,12 @@ import (
 	"time"
 )
 
-// Busy is running PHP: the thread took an event and has not come back for
-// the next one.
+// Busy is running PHP: the thread came to its loop, found work and has not
+// come back since.
 func TestEachBusyThread(t *testing.T) {
 	since := time.Date(2026, 11, 20, 1, 2, 3, 456, time.UTC)
-	waiting, busy := &thread{id: 4}, &thread{id: 7}
-	busy.busySince.Store(since.UnixNano())
+	waiting, busy := &thread{id: 4, box: &mailbox{}}, &thread{id: 7, box: &mailbox{}}
+	busy.box.since.Store(since.UnixNano())
 	e := &Engine{workers: make([]atomic.Pointer[thread], 3)}
 	e.workers[0].Store(waiting)
 	e.workers[2].Store(busy) // and no thread in slot 1
@@ -73,11 +73,11 @@ func TestLeastBusyPrefersAwakeThread(t *testing.T) {
 		{"holds far more calls", 2 * us, 5 * us, 0, awakeLead + 1, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			asleep := &thread{id: 0}
-			awake := &thread{id: 1, inbox: make(chan event, 8)}
+			asleep := &thread{id: 0, box: &mailbox{}}
+			awake := &thread{id: 1, inbox: make(chan event, 8), box: &mailbox{}}
 			now := time.Now().UnixNano()
-			awake.busySince.Store(now - tc.ran)
-			awake.stretch.Store(tc.stretch)
+			awake.box.since.Store(now - tc.ran)
+			awake.box.stretch.Store(tc.stretch)
 			awake.inflight.Store(tc.inflight)
 			for range tc.queued {
 				awake.inbox <- event{}

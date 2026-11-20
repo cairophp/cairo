@@ -39,6 +39,7 @@ import (
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"github.com/cairophp/cairo/internal/spec"
@@ -104,15 +105,15 @@ type thread struct {
 	inbox    chan event
 	inflight atomic.Int64
 
-	// When the thread last took an event (unix ns; 0 while it waits for
-	// one): dispatch passes over a thread that has run PHP for too long
-	// (leastBusy), and extensions ask which threads are busy (EachBusyThread).
-	busySince atomic.Int64
-	// A moving average of how long the thread runs PHP for one event, in
-	// nanoseconds: what a call queued behind others waits for each of them.
-	stretch atomic.Int64
-	// The probe of the request whose fiber this thread resumed last; only
-	// the thread itself uses it, in goNextEvent and goRespond.
+	// What the thread's loop reads and writes without a call into Go:
+	// whether its inbox holds an event, and since when it runs PHP.
+	box *mailbox
+	// Ends the thread's sleep when the next timer of its scheduler is due;
+	// only the thread itself uses it (sleep).
+	alarm *time.Timer
+	// The probe of the request that began the stretch of PHP the thread is
+	// running; only the thread itself uses it (goNextEvent, goWaitEnded,
+	// goRan, goRespond).
 	running Probe
 	// The calls this thread took and has not answered (requests, offload
 	// jobs) and the fibers that live on it, by id. They have no lock: only
@@ -229,6 +230,7 @@ func Start(opts Options) (*Engine, error) {
 		}
 		all = append(all, t)
 	}
+	setLook()
 	for _, t := range all {
 		e.threadsWG.Add(1)
 		if err := e.startThread(t); err != nil {
@@ -248,7 +250,7 @@ func Start(opts Options) (*Engine, error) {
 // newThread makes the Go side of PHP thread tid and puts it in the table.
 func (e *Engine) newThread(tid int, p pool, slot int) *thread {
 	t := &thread{
-		id: tid, pool: p, slot: slot, inbox: make(chan event, inboxSize),
+		id: tid, pool: p, slot: slot, inbox: make(chan event, inboxSize), box: mailboxOf(tid),
 		calls: map[int64]*call{}, fibers: map[int64]*fiber{},
 	}
 	e.table[tid].Store(t)
@@ -317,6 +319,10 @@ func (e *Engine) bootThread() {
 func (e *Engine) startThread(t *thread) error {
 	cfile := C.CString(e.runtimeFile)
 	defer C.free(unsafe.Pointer(cfile))
+	// Asleep until it first comes to its loop, whatever a thread before it
+	// left under this id.
+	t.box.since.Store(0)
+	t.box.stretch.Store(0)
 	if C.cairo_thread_start(C.int(t.id), cfile) != 0 {
 		return fmt.Errorf("could not start php thread %d", t.id)
 	}
@@ -342,7 +348,7 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 	stop := wire.Encode(map[string]string{"type": "shutdown"})
 	for i := range e.table {
 		if t := e.table[i].Load(); t != nil {
-			t.inbox <- event{data: stop}
+			t.send(event{data: stop})
 		}
 	}
 	select {

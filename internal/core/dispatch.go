@@ -132,6 +132,7 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 	select {
 	case t.inbox <- event{data: r.buf, call: c, probe: p}:
 		t.sendMu.RUnlock()
+		t.mark()
 	case <-ctx.Done():
 		t.sendMu.RUnlock()
 		t.inflight.Add(-1)
@@ -160,6 +161,9 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 			// code that never waits on Go is stopped where it runs.
 			deadline := errors.Is(ctx.Err(), context.DeadlineExceeded)
 			go func() {
+				// The fibers that wait on the thread itself (a sleep, a
+				// channel) have no goroutine that sees ctx end: PHP ends them.
+				e.post(t, map[string]any{"type": "cancel", "id": id, "error": CtxError(ctx)})
 				var tick <-chan time.Time
 				if deadline {
 					C.cairo_interrupt(C.int(t.id))
@@ -222,7 +226,7 @@ func leastBusy(ts []atomic.Pointer[thread], now int64) *thread {
 	for i := range ts {
 		t := ts[i].Load()
 		n := t.inflight.Load()
-		since := t.busySince.Load()
+		since := t.box.since.Load()
 		if best == nil || n < min {
 			best, min = t, n
 		}
@@ -247,7 +251,7 @@ func leastBusy(ts []atomic.Pointer[thread], now int64) *thread {
 // awakeWait: it is early in a stretch of PHP, and its stretches are short
 // enough for what its inbox already holds.
 func (t *thread) backSoon(ran int64) bool {
-	return ran < int64(awakeWait) && (int64(len(t.inbox))+1)*t.stretch.Load() < int64(awakeWait)
+	return ran < int64(awakeWait) && (int64(len(t.inbox))+1)*t.box.stretch.Load() < int64(awakeWait)
 }
 
 // EachBusyThread calls fn for every request thread that is running PHP, with
@@ -258,7 +262,7 @@ func (e *Engine) EachBusyThread(fn func(tid int, since time.Time)) {
 		if t == nil {
 			continue
 		}
-		if since := t.busySince.Load(); since != 0 {
+		if since := t.box.since.Load(); since != 0 {
 			fn(t.id, time.Unix(0, since))
 		}
 	}
@@ -285,45 +289,7 @@ func acquire(ts []atomic.Pointer[thread]) *thread {
 }
 
 func (e *Engine) post(t *thread, ev any) {
-	t.inbox <- event{data: wire.Encode(ev)}
-}
-
-// goNextEvent returns the thread's next event (internal/wire) in C memory,
-// which the caller frees, and its length in n.
-//
-//export goNextEvent
-func goNextEvent(tid C.int, n *C.int) unsafe.Pointer {
-	t := engine.table[int(tid)].Load()
-	now := time.Now().UnixNano()
-	if since := t.busySince.Load(); since != 0 {
-		if t.running != nil {
-			t.running.Ran(time.Duration(now - since))
-		}
-		avg := t.stretch.Load()
-		t.stretch.Store(avg + (now-since-avg)/8)
-	}
-	var ev event
-	select {
-	case ev = <-t.inbox:
-		// No sleep: the thread stays awake in the eyes of dispatch.
-		t.busySince.Store(now)
-	default:
-		t.busySince.Store(0)
-		ev = <-t.inbox
-		t.busySince.Store(time.Now().UnixNano())
-	}
-	t.running = ev.probe
-	if c := ev.call; c != nil {
-		// From here the thread answers for the call if it dies (failCalls),
-		// and its PHP finds the request's fiber.
-		t.calls[c.id] = c
-		if c.fiber != nil {
-			t.fibers[c.id] = c.fiber
-		}
-		t.served.Add(1)
-	}
-	*n = C.int(len(ev.data))
-	return C.CBytes(ev.data)
+	t.send(event{data: wire.Encode(ev)})
 }
 
 //export goRespond
@@ -340,9 +306,9 @@ func goRespond(tid C.int, id C.longlong, data *C.char, n C.int, body *C.char, bn
 	delete(t.fibers, c.id)
 	t.inflight.Add(-1)
 	// The request's probe is done as soon as the answer arrives, before
-	// this stretch of PHP ends in goNextEvent: report it up to now.
+	// this stretch of PHP ends at the thread's loop: report it up to now.
 	if t.running != nil {
-		t.running.Ran(time.Duration(time.Now().UnixNano() - t.busySince.Load()))
+		t.running.Ran(time.Duration(time.Now().UnixNano() - t.box.since.Load()))
 	}
 	c.reply.meta = C.GoBytes(unsafe.Pointer(data), n)
 	if bn > 0 {

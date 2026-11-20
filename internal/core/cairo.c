@@ -97,22 +97,6 @@ PHP_FUNCTION(cairo_spec)
 	}
 }
 
-// cairo_next_event(): array. Blocks this PHP thread until Go has work for
-// it: a new request, a finished I/O operation, or shutdown. Go encodes the
-// event in internal/wire's format; wire.c turns it into the array.
-PHP_FUNCTION(cairo_next_event)
-{
-	ZEND_PARSE_PARAMETERS_NONE();
-	int len = 0;
-	char *buf = goNextEvent(cairo_tid, &len);
-	int ok = cairo_wire_decode(buf, len < 0 ? 0 : (size_t)len, return_value);
-	free(buf);
-	if (ok == FAILURE) {
-		zend_throw_exception(NULL, "cairo: malformed event from Go", 0);
-		RETURN_THROWS();
-	}
-}
-
 // cairo_respond(int $id, string $json, string $body = ''): void. $json is
 // the answer's metadata; $body, an HTTP response's body, goes to Go as raw
 // bytes.
@@ -145,17 +129,6 @@ PHP_FUNCTION(cairo_retire)
 		Z_PARAM_STRING(reason, len)
 	ZEND_PARSE_PARAMETERS_END();
 	goThreadRetire(cairo_tid, reason, (int)len);
-}
-
-// cairo_wake(int $op): void. Wakes a fiber parked by a "park" operation
-// (Cairo\Channel, select()); harmless if it already woke.
-PHP_FUNCTION(cairo_wake)
-{
-	zend_long op;
-	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_LONG(op)
-	ZEND_PARSE_PARAMETERS_END();
-	goFiberWake((long long)op);
 }
 
 // cairo_stream_fd(resource $stream): int is the descriptor under a socket or
@@ -274,13 +247,26 @@ PHP_FUNCTION(cairo_go_call)
 }
 
 PHP_FUNCTION(cairo_guard);
+PHP_FUNCTION(cairo_next_event);
+PHP_FUNCTION(cairo_wait_began);
+PHP_FUNCTION(cairo_wait_ended);
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_retire, 0, 0, 1)
 	ZEND_ARG_INFO(0, reason)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_wake, 0, 0, 1)
-	ZEND_ARG_INFO(0, op)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_next_event, 0, 0, 1)
+	ZEND_ARG_INFO(0, wait)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_wait_began, 0, 0, 1)
+	ZEND_ARG_INFO(0, fiber)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_wait_ended, 0, 0, 3)
+	ZEND_ARG_INFO(0, fiber)
+	ZEND_ARG_INFO(0, parked)
+	ZEND_ARG_INFO(0, began)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_stream_fd, 0, 0, 1)
@@ -299,9 +285,10 @@ ZEND_END_ARG_INFO()
 static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_info, arginfo_cairo_none)
 	PHP_FE(cairo_spec, arginfo_cairo_spec)
-	PHP_FE(cairo_next_event, arginfo_cairo_none)
+	PHP_FE(cairo_next_event, arginfo_cairo_next_event)
+	PHP_FE(cairo_wait_began, arginfo_cairo_wait_began)
+	PHP_FE(cairo_wait_ended, arginfo_cairo_wait_ended)
 	PHP_FE(cairo_respond, arginfo_cairo_respond)
-	PHP_FE(cairo_wake, arginfo_cairo_wake)
 	PHP_FE(cairo_stream_fd, arginfo_cairo_stream_fd)
 	PHP_FE(cairo_retire, arginfo_cairo_retire)
 	PHP_FE(cairo_fiber_open, arginfo_cairo_fiber_open)

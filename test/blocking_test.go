@@ -84,3 +84,49 @@ func TestBlockingDetector(t *testing.T) {
 	}
 	t.Logf("blocking report:\n%s", logs[strings.Index(logs, "cairo: blocking"):])
 }
+
+// The deadline's hard stop interrupts the thread as the detector does. That
+// interrupt is not the detector's: it makes no report, even on a thread
+// whose last interrupt was one.
+func TestBlockingThenDeadline(t *testing.T) {
+	addr, timed := freeAddr(), freeAddr()
+	cmd := exec.Command(cairoBin, "serve", "testdata/blocking-deadline/server.php", "--threads", "1", "--offload-threads", "1")
+	cmd.Env = append(os.Environ(), "CAIRO_HTTP="+addr, "CAIRO_HTTP_TIMED="+timed)
+	var stderr syncBuffer
+	cmd.Stdout, cmd.Stderr = os.Stderr, &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Signal(os.Interrupt)
+		_ = cmd.Wait()
+	})
+	for _, a := range []string{addr, timed} {
+		if err := waitFor(a, 10*time.Second); err != nil {
+			t.Fatalf("%v\n%s", err, stderr.String())
+		}
+	}
+	// A report is written while its request runs, so each is in the log
+	// long before the last /spin answers.
+	for _, step := range []struct {
+		url  string
+		want int
+	}{
+		{"http://" + addr + "/spin", 200},
+		{"http://" + timed + "/late", 504},
+		{"http://" + addr + "/spin", 200},
+	} {
+		resp, err := http.Get(step.url)
+		if err != nil {
+			t.Fatalf("GET %s: %v", step.url, err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != step.want {
+			t.Fatalf("GET %s: status %d, want %d\n%s", step.url, resp.StatusCode, step.want, stderr.String())
+		}
+	}
+	if n := strings.Count(stderr.String(), "cairo: blocking"); n != 2 {
+		t.Fatalf("%d blocking reports, want one for each /spin and none for /late:\n%s", n, stderr.String())
+	}
+}

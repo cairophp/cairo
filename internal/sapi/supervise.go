@@ -22,7 +22,7 @@ import (
 // slot, stops queueing requests to the old thread and sends it a "retire"
 // event. The old thread finishes the requests it holds, then exits.
 
-// maxThreads matches CAIRO_MAX_THREADS in cairo.c.
+// maxThreads matches CAIRO_MAX_THREADS in extension.h.
 const maxThreads = 4096
 
 // ErrThreadStopped is returned for a request whose PHP thread died before it

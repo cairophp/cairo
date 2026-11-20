@@ -13,9 +13,6 @@ import (
 type Spec struct {
 	Threads        int `json:"threads"`
 	OffloadThreads int `json:"offload_threads"`
-	// DetectBlocking is App::detectBlocking(): log a request that keeps its
-	// PHP thread busy longer than this many seconds (0: off).
-	DetectBlocking float64 `json:"detect_blocking"`
 	// MaxInFlight caps the requests each PHP request thread holds at once
 	// (0: no cap). Requests over it wait in Go until one finishes.
 	MaxInFlight int `json:"max_in_flight"`
@@ -23,7 +20,7 @@ type Spec struct {
 	// request at a time.
 	Isolated bool `json:"isolated"`
 	// Extensions is what each extension declared, under its name ("http",
-	// "grpc", "timing"). An extension reads its own with Section.
+	// "grpc", "timing", "blocking"). An extension reads its own with Section.
 	Extensions map[string]json.RawMessage `json:"extensions"`
 }
 
@@ -38,7 +35,7 @@ func Parse(b []byte) (*Spec, error) {
 
 // Validate checks the core's part of the spec before anything is served.
 func (s *Spec) Validate() error {
-	if s.Threads < 0 || s.OffloadThreads < 0 || s.DetectBlocking < 0 || s.MaxInFlight < 0 {
+	if s.Threads < 0 || s.OffloadThreads < 0 || s.MaxInFlight < 0 {
 		return fmt.Errorf("threads must be 'auto' or a positive number")
 	}
 	return nil

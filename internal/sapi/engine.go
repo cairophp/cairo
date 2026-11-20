@@ -32,7 +32,6 @@ import (
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
-	"time"
 	"unsafe"
 
 	"github.com/cairophp/cairo/internal/spec"
@@ -101,10 +100,10 @@ type thread struct {
 	inbox    chan event
 	inflight atomic.Int64
 
-	// The blocking detector (detect.go): when the thread last took an event
-	// (unix ns; 0 while it waits for one), and whether that stretch was reported.
+	// When the thread last took an event (unix ns; 0 while it waits for
+	// one): dispatch passes over a thread that has run PHP for too long
+	// (leastBusy), and extensions ask which threads are busy (eachBusyThread).
 	busySince atomic.Int64
-	reported  atomic.Bool
 	// The probe of the request whose fiber this thread resumed last; only
 	// the thread itself uses it, in goNextEvent and goRespond.
 	running probe
@@ -232,9 +231,6 @@ func Start(opts Options) (*Engine, error) {
 			return nil, err
 		}
 	}
-	if e.spec.DetectBlocking > 0 {
-		go e.detectBlocking(time.Duration(e.spec.DetectBlocking * float64(time.Second)))
-	}
 	return e, nil
 }
 
@@ -285,6 +281,10 @@ func (e *Engine) startThread(t *thread) error {
 	}
 	return nil
 }
+
+// stopping is closed when Shutdown begins: an extension's goroutine that
+// lives as long as the engine ends on it.
+func (e *Engine) stopping() <-chan struct{} { return e.shutdownCh }
 
 // Shutdown stops the PHP threads after the work they hold, then shuts PHP
 // down. Callers should stop accepting requests first.

@@ -12,15 +12,17 @@ import (
 	"github.com/cairophp/cairo/internal/wire"
 )
 
-// fiber is the goroutine side of one PHP fiber.
+// fiber is the goroutine side of one PHP fiber. A request's root fiber waits
+// under the context Dispatch was given; a child (async(), a derived context)
+// under one of its own, a child of its parent's.
 type fiber struct {
 	id     int64
 	ctx    context.Context
-	cancel context.CancelFunc
 	thread *thread
 	ops    chan op
-	closed chan struct{} // child fibers only: closed by cairo_fiber_close
-	probe  Probe         // its request's, when requests are probed
+	cancel context.CancelFunc // child fibers only
+	closed chan struct{}      // child fibers only: closed by cairo_fiber_close
+	probe  Probe              // its request's, when requests are probed
 }
 
 // op is an operation a fiber asked Go to perform while it is suspended. The
@@ -171,7 +173,7 @@ func goContextOpen(tid C.int, parent C.longlong, timeout C.double) C.longlong {
 //
 //export goContextCancel
 func goContextCancel(tid C.int, id C.longlong) {
-	if f := engine.fiber(tid, int64(id)); f != nil {
+	if f := engine.fiber(tid, int64(id)); f != nil && f.cancel != nil {
 		f.cancel()
 	}
 }
@@ -227,14 +229,12 @@ func (e *Engine) openFiber(tid C.int, parent int64, timeout float64) C.longlong 
 //export goFiberClose
 func goFiberClose(tid C.int, id C.longlong) {
 	f := engine.fiber(tid, int64(id))
-	if f == nil {
-		return
+	if f == nil || f.closed == nil {
+		return // a request's fiber ends with its call
 	}
 	delete(f.thread.fibers, f.id)
 	f.cancel()
-	if f.closed != nil {
-		close(f.closed)
-	}
+	close(f.closed)
 }
 
 // goFiberOp hands an operation to the fiber's goroutine and returns its id.

@@ -96,6 +96,10 @@ change the PHP API; patch versions do not.
   their channels and the buffer of its event) is reused from one request to
   the next instead of allocated for each: eight allocations and about 1 kB
   less per request.
+- Performance: a request's fibers wait under the context of the server's
+  request itself. The engine made a context of its own under it for every
+  request and ended it when PHP answered, which the server's context does
+  anyway once the request is done: five allocations less per request.
 
 ## [0.4.0] - 2026-11-19
 

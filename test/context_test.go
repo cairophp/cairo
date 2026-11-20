@@ -49,6 +49,16 @@ func TestContextDoneAtDeadline(t *testing.T) {
 	}
 }
 
+// A task that its request did not await does not wait on after the answer:
+// the request's context ends once the server is done with the request, and
+// the task's waits end with it.
+func TestContextEndsWithRequest(t *testing.T) {
+	get(t, "/ctx/left-running")
+	if out := getJSON(t, "/ctx/left-running/ended"); out["task"] != `Cairo\Context\Canceled` {
+		t.Errorf("a 30s sleep in a task its request did not await: %v, want it canceled when the request was answered", out["task"])
+	}
+}
+
 func TestContextValueFromGoMiddleware(t *testing.T) {
 	req, _ := http.NewRequest("GET", "http://"+httpAddr+"/ctx/value", nil)
 	req.Header.Set("X-Request-Id", "abc-123")

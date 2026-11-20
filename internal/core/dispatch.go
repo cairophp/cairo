@@ -92,6 +92,11 @@ func (r *request) free() {
 // "id" and "deadline". If ctx ends first, Dispatch returns ctx.Err() and a
 // helper goroutine keeps answering the fiber (with the context's error)
 // until PHP finishes.
+//
+// The request's fibers wait under ctx itself, so ctx must end once the
+// caller is done with the request, as a server's request context does: that
+// is what ends the waits of a fiber the request left running (an async()
+// that nobody awaited).
 func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte, err error) {
 	var p Probe
 	if e.newProbe != nil {
@@ -112,12 +117,11 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 	if err != nil {
 		return nil, nil, err
 	}
-	ctx, cancel := context.WithCancel(ctx)
 	id := e.nextID.Add(1)
 	r := requests.Get().(*request)
 	c, f := &r.call, &r.fiber
 	c.id, c.thread = id, t
-	*f = fiber{id: id, ctx: ctx, cancel: cancel, thread: t, ops: f.ops, probe: p}
+	*f = fiber{id: id, ctx: ctx, thread: t, ops: f.ops, probe: p}
 	t.inflight.Add(1)
 
 	var deadline float64
@@ -131,7 +135,6 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 	case <-ctx.Done():
 		t.sendMu.RUnlock()
 		t.inflight.Add(-1)
-		cancel()
 		release()
 		r.free()
 		return nil, nil, ctx.Err()
@@ -140,7 +143,6 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 		select {
 		case answer := <-c.resp:
 			release()
-			cancel()
 			if answer == nil {
 				r.free()
 				return nil, nil, ErrThreadStopped

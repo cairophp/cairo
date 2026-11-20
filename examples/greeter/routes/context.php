@@ -83,6 +83,26 @@ return function ($http): void {
         return Response::json(['select' => [$key, $ok], 'waited' => round(microtime(true) - $start, 2)]);
     });
 
+    // A task that nobody awaited does not wait on: the request's context ends
+    // once the request is answered, and the task's sleep with it. The second
+    // route tells how that sleep ended.
+    $left = new Channel(1);
+    $http->get('/ctx/left-running', function () use ($left): Response {
+        async(function () use ($left): void {
+            try {
+                sleep(30);
+                $left->trySend('slept');
+            } catch (Context\Canceled $e) {
+                $left->trySend($e::class);
+            }
+        });
+        return Response::text("answered\n");
+    });
+    $http->get('/ctx/left-running/ended', function () use ($left): Response {
+        [, $how] = select([$left], 5);
+        return Response::json(['task' => $how]);
+    });
+
     // A value set by Go middleware (Middleware::requestId()).
     $http->get('/ctx/value', fn (Request $req, Context $ctx): Response => Response::json([
         'request_id' => $ctx->value('request_id'),

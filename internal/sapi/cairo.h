@@ -6,6 +6,6 @@ void cairo_shutdown(void);
 int cairo_thread_run(int tid, const char *runtime_file);
 int cairo_thread_start(int tid, const char *runtime_file);
 void cairo_interrupt(int tid);
-void cairo_report_blocking(int tid, int ms);
+void cairo_vm_interrupt(int tid);
 
 #endif

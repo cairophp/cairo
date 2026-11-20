@@ -42,3 +42,14 @@ void cairo_extensions_thread_end(void)
 		}
 	}
 }
+
+// Stops at the first one that leaves an exception: the next would not start
+// with none pending.
+void cairo_extensions_interrupt(int tid)
+{
+	for (int i = 0; i < extension_count && EG(exception) == NULL; i++) {
+		if (extensions[i]->interrupt != NULL) {
+			extensions[i]->interrupt(tid);
+		}
+	}
+}

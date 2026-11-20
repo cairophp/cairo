@@ -365,16 +365,13 @@ static void cairo_fiber_switch(zend_fiber_context *from, zend_fiber_context *to)
 // destructors run), and cairo_guard(), around the handler and each async()
 // task, turns the unwind back into Context\DeadlineExceeded for the runtime.
 
-#define CAIRO_MAX_THREADS 4096
-
 typedef struct {
 #if PHP_VERSION_ID >= 80200
 	_Atomic(zend_atomic_bool *) vm_interrupt;
 #else
 	_Atomic(volatile zend_bool *) vm_interrupt;
 #endif
-	atomic_bool poked;
-	atomic_int blocked_ms;   // > 0: report that the running code blocked the thread this long
+	atomic_bool poked;   // by cairo_interrupt(): a deadline has passed
 } cairo_thread_slot;
 
 static cairo_thread_slot cairo_slots[CAIRO_MAX_THREADS];
@@ -395,59 +392,34 @@ static void cairo_interrupt_unregister(void)
 	}
 }
 
+// Has thread tid run cairo_on_interrupt at its next safe point. Called from
+// any goroutine.
+void cairo_vm_interrupt(int tid)
+{
+	if (tid < 0 || tid >= CAIRO_MAX_THREADS) {
+		return;
+	}
+#if PHP_VERSION_ID >= 80200
+	zend_atomic_bool *flag = atomic_load(&cairo_slots[tid].vm_interrupt);
+	if (flag != NULL) {
+		zend_atomic_bool_store(flag, true);
+	}
+#else
+	volatile zend_bool *flag = atomic_load(&cairo_slots[tid].vm_interrupt);
+	if (flag != NULL) {
+		*flag = 1;
+	}
+#endif
+}
+
 // Called from any goroutine.
 void cairo_interrupt(int tid)
 {
 	if (tid < 0 || tid >= CAIRO_MAX_THREADS) {
 		return;
 	}
-	cairo_thread_slot *slot = &cairo_slots[tid];
-	atomic_store(&slot->poked, true);
-#if PHP_VERSION_ID >= 80200
-	zend_atomic_bool *flag = atomic_load(&slot->vm_interrupt);
-	if (flag != NULL) {
-		zend_atomic_bool_store(flag, true);
-	}
-#else
-	volatile zend_bool *flag = atomic_load(&slot->vm_interrupt);
-	if (flag != NULL) {
-		*flag = 1;
-	}
-#endif
-}
-
-// Called from Go's blocking detector (App::detectBlocking()): the thread has
-// run PHP for ms milliseconds without waiting for an event. At the next safe
-// point the running fiber logs where it is.
-void cairo_report_blocking(int tid, int ms)
-{
-	if (tid < 0 || tid >= CAIRO_MAX_THREADS) {
-		return;
-	}
-	cairo_thread_slot *slot = &cairo_slots[tid];
-	atomic_store(&slot->blocked_ms, ms);
-#if PHP_VERSION_ID >= 80200
-	zend_atomic_bool *flag = atomic_load(&slot->vm_interrupt);
-	if (flag != NULL) {
-		zend_atomic_bool_store(flag, true);
-	}
-#else
-	volatile zend_bool *flag = atomic_load(&slot->vm_interrupt);
-	if (flag != NULL) {
-		*flag = 1;
-	}
-#endif
-}
-
-static void cairo_call_report_blocking(int ms)
-{
-	zval fn, ret, arg;
-	ZVAL_STRING(&fn, "Cairo\\Internal\\reportBlocking");
-	ZVAL_LONG(&arg, ms);
-	ZVAL_UNDEF(&ret);
-	call_user_function(NULL, NULL, &fn, &ret, 1, &arg);
-	zval_ptr_dtor(&fn);
-	zval_ptr_dtor(&ret);
+	atomic_store(&cairo_slots[tid].poked, true);
+	cairo_vm_interrupt(tid);
 }
 
 // The running fiber's Cairo state, created when missing.
@@ -500,10 +472,7 @@ static bool cairo_should_stop(void)
 static void cairo_on_interrupt(zend_execute_data *execute_data)
 {
 	if (cairo_tid >= 0 && cairo_tid < CAIRO_MAX_THREADS && EG(active_fiber) != NULL && EG(exception) == NULL) {
-		int ms = atomic_exchange(&cairo_slots[cairo_tid].blocked_ms, 0);
-		if (ms > 0) {
-			cairo_call_report_blocking(ms);
-		}
+		cairo_extensions_interrupt(cairo_tid);
 	}
 	if (cairo_tid >= 0 && cairo_tid < CAIRO_MAX_THREADS
 		&& EG(active_fiber) != NULL && EG(exception) == NULL

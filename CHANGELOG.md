@@ -52,6 +52,12 @@ change the PHP API; patch versions do not.
   for and how long its thread ran PHP (`internal/sapi/probe.go`), and the
   request timing asks for one when either report is on, with its settings in
   its own part of the declaration. Sixth step of the same separation.
+- Internal, no change in behaviour: the blocking detector leaves the engine
+  and `cairo.c` for its own files (`internal/sapi/blocking.go`, `blocking.c`,
+  `php/blocking.php`). It asks the engine which threads are running PHP and
+  interrupts one through a hook that the C code of any extension can use,
+  with its setting in its own part of the declaration. Seventh step of the
+  same separation.
 
 ## [0.4.0] - 2026-11-19
 

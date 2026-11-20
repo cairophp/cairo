@@ -180,6 +180,26 @@ func leastBusy(ts []atomic.Pointer[thread]) *thread {
 	return best
 }
 
+// eachBusyThread calls fn for every request thread that is running PHP, with
+// when it took the event it is running.
+func (e *Engine) eachBusyThread(fn func(tid int, since time.Time)) {
+	for i := range e.workers {
+		t := e.workers[i].Load()
+		if t == nil {
+			continue
+		}
+		if since := t.busySince.Load(); since != 0 {
+			fn(t.id, time.Unix(0, since))
+		}
+	}
+}
+
+// interruptThread has request thread tid run the interrupt of every
+// extension (cairo_extension in extension.h) at its next safe point.
+func (e *Engine) interruptThread(tid int) {
+	C.cairo_vm_interrupt(C.int(tid))
+}
+
 // acquire picks the least busy thread that still takes work and returns it
 // with sendMu held for reading: the caller queues its event, then unlocks.
 func acquire(ts []atomic.Pointer[thread]) *thread {
@@ -210,7 +230,6 @@ func goNextEvent(tid C.int, n *C.int) unsafe.Pointer {
 	t.busySince.Store(0)
 	ev := <-t.inbox
 	t.running = ev.probe
-	t.reported.Store(false)
 	t.busySince.Store(time.Now().UnixNano())
 	if ev.call != nil {
 		ev.call.started.Store(true)

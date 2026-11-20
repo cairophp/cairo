@@ -50,3 +50,44 @@ func TestRequestFree(t *testing.T) {
 		t.Errorf("an event buffer of %d bytes was kept", cap(r.buf))
 	}
 }
+
+// A thread that is running PHP and will be back in a moment takes the next
+// call, so that no sleeping thread is woken for it. Not when its PHP has
+// run for long, when its stretches of PHP are long, when what already
+// queues for it takes too long, or when it holds far more calls than the
+// least busy thread.
+func TestLeastBusyPrefersAwakeThread(t *testing.T) {
+	const us = int64(time.Microsecond)
+	for _, tc := range []struct {
+		name         string
+		ran, stretch int64 // of the thread that is awake
+		queued       int
+		inflight     int64
+		wantAwake    bool
+	}{
+		{"just took an event", 2 * us, 5 * us, 0, 3, true},
+		{"calls queued, short stretches", 2 * us, 5 * us, 4, 3, true},
+		{"long in one stretch", 80 * us, 5 * us, 0, 3, false},
+		{"long stretches", 2 * us, 300 * us, 0, 3, false},
+		{"calls queued", 2 * us, 15 * us, 4, 3, false},
+		{"holds far more calls", 2 * us, 5 * us, 0, awakeLead + 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			asleep := &thread{id: 0}
+			awake := &thread{id: 1, inbox: make(chan event, 8)}
+			now := time.Now().UnixNano()
+			awake.busySince.Store(now - tc.ran)
+			awake.stretch.Store(tc.stretch)
+			awake.inflight.Store(tc.inflight)
+			for range tc.queued {
+				awake.inbox <- event{}
+			}
+			ts := make([]atomic.Pointer[thread], 2)
+			ts[0].Store(asleep)
+			ts[1].Store(awake)
+			if got := leastBusy(ts, now); (got == awake) != tc.wantAwake {
+				t.Errorf("chose thread %d, want the awake thread: %v", got.id, tc.wantAwake)
+			}
+		})
+	}
+}

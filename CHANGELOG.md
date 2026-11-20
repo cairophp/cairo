@@ -100,6 +100,11 @@ change the PHP API; patch versions do not.
   request itself. The engine made a context of its own under it for every
   request and ended it when PHP answered, which the server's context does
   anyway once the request is done: five allocations less per request.
+- Performance: a request goes to a PHP thread that is already running PHP
+  and will be back for its next event within 50 µs, when there is one,
+  instead of waking a thread that sleeps. A thread that holds 32 more
+  requests than the least busy one, or that has run one fiber for long, is
+  still passed over.
 
 ## [0.4.0] - 2026-11-19
 

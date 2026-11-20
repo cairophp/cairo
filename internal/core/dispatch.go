@@ -198,26 +198,56 @@ const interruptEvery = 50 * time.Millisecond
 // there waits for it.
 const stuckAfter = 5 * time.Millisecond
 
+// awakeWait is how long a call may wait for a thread that is running PHP
+// while another thread sleeps. Waking a thread costs about 10 µs on the
+// waker's core and on its own, and a thread that comes back for its next
+// event anyway takes the call for nothing. Measured on a route that answers
+// at once: 20 µs gains about half of what 50 µs does, and 200 µs little
+// more, for a wait four times as long when a core is idle.
+const awakeWait = 50 * time.Microsecond
+
+// awakeLead is how many more calls in flight than the least busy thread a
+// thread may hold and still be chosen for being awake, so that one thread
+// does not end up with every request that waits (and all their memory).
+const awakeLead = 32
+
 // leastBusy returns the thread with the fewest calls in flight, among those
-// not stuck in one fiber; when every thread is stuck, among all of them.
-func leastBusy(ts []atomic.Pointer[thread]) *thread {
-	stuck := time.Now().UnixNano() - int64(stuckAfter)
-	var best, free *thread
-	var min, freeMin int64
+// not stuck in one fiber; when every thread is stuck, among all of them. A
+// thread that is running PHP and will be back within awakeWait goes first.
+// now is the time in unix nanoseconds.
+func leastBusy(ts []atomic.Pointer[thread], now int64) *thread {
+	stuck := now - int64(stuckAfter)
+	var best, free, awake *thread
+	var min, freeMin, awakeMin int64
 	for i := range ts {
 		t := ts[i].Load()
 		n := t.inflight.Load()
+		since := t.busySince.Load()
 		if best == nil || n < min {
 			best, min = t, n
 		}
-		if since := t.busySince.Load(); (since == 0 || since > stuck) && (free == nil || n < freeMin) {
+		if (since == 0 || since > stuck) && (free == nil || n < freeMin) {
 			free, freeMin = t, n
 		}
+		if since != 0 && t.backSoon(now-since) && (awake == nil || n < awakeMin) {
+			awake, awakeMin = t, n
+		}
+	}
+	if awake != nil && awakeMin <= freeMin+awakeLead {
+		return awake
 	}
 	if free != nil {
 		return free
 	}
 	return best
+}
+
+// backSoon reports whether a thread that has run PHP for ran nanoseconds
+// since its last event is expected to have taken a call queued now within
+// awakeWait: it is early in a stretch of PHP, and its stretches are short
+// enough for what its inbox already holds.
+func (t *thread) backSoon(ran int64) bool {
+	return ran < int64(awakeWait) && (int64(len(t.inbox))+1)*t.stretch.Load() < int64(awakeWait)
 }
 
 // EachBusyThread calls fn for every request thread that is running PHP, with
@@ -244,7 +274,7 @@ func (e *Engine) InterruptThread(tid int) {
 // with sendMu held for reading: the caller queues its event, then unlocks.
 func acquire(ts []atomic.Pointer[thread]) *thread {
 	for {
-		t := leastBusy(ts)
+		t := leastBusy(ts, time.Now().UnixNano())
 		t.sendMu.RLock()
 		if !t.retired {
 			return t
@@ -264,13 +294,25 @@ func (e *Engine) post(t *thread, ev any) {
 //export goNextEvent
 func goNextEvent(tid C.int, n *C.int) unsafe.Pointer {
 	t := engine.table[int(tid)].Load()
-	if t.running != nil {
-		t.running.Ran(time.Duration(time.Now().UnixNano() - t.busySince.Load()))
+	now := time.Now().UnixNano()
+	if since := t.busySince.Load(); since != 0 {
+		if t.running != nil {
+			t.running.Ran(time.Duration(now - since))
+		}
+		avg := t.stretch.Load()
+		t.stretch.Store(avg + (now-since-avg)/8)
 	}
-	t.busySince.Store(0)
-	ev := <-t.inbox
+	var ev event
+	select {
+	case ev = <-t.inbox:
+		// No sleep: the thread stays awake in the eyes of dispatch.
+		t.busySince.Store(now)
+	default:
+		t.busySince.Store(0)
+		ev = <-t.inbox
+		t.busySince.Store(time.Now().UnixNano())
+	}
 	t.running = ev.probe
-	t.busySince.Store(time.Now().UnixNano())
 	if c := ev.call; c != nil {
 		// From here the thread answers for the call if it dies (failCalls),
 		// and its PHP finds the request's fiber.

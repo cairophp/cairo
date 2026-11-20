@@ -108,6 +108,9 @@ type thread struct {
 	// one): dispatch passes over a thread that has run PHP for too long
 	// (leastBusy), and extensions ask which threads are busy (EachBusyThread).
 	busySince atomic.Int64
+	// A moving average of how long the thread runs PHP for one event, in
+	// nanoseconds: what a call queued behind others waits for each of them.
+	stretch atomic.Int64
 	// The probe of the request whose fiber this thread resumed last; only
 	// the thread itself uses it, in goNextEvent and goRespond.
 	running Probe

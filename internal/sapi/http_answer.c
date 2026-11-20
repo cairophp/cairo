@@ -5,6 +5,7 @@
 #include <php.h>
 #include <zend_smart_str.h>
 
+#include "extension.h"
 #include "http_answer.h"
 #include "wire.h"
 #include "_cgo_export.h"
@@ -110,7 +111,7 @@ static PHP_FUNCTION(cairo_respond_http)
 		}
 		RETURN_THROWS();
 	}
-	goRespondHTTP((long long)id, ZSTR_VAL(meta.s), (int)ZSTR_LEN(meta.s), body, (int)blen);
+	goRespondHTTP(cairo_thread_id(), (long long)id, ZSTR_VAL(meta.s), (int)ZSTR_LEN(meta.s), body, (int)blen);
 	smart_str_free(&meta);
 }
 

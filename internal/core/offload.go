@@ -14,9 +14,8 @@ func (e *Engine) runOffload(ctx context.Context, payload string) (string, error)
 		return "", errors.New("no offload threads")
 	}
 	t := acquire(e.offload)
-	c := &call{thread: t, resp: make(chan *reply, 1)}
 	id := e.nextID.Add(1)
-	e.calls.Store(id, c)
+	c := &call{id: id, thread: t, resp: make(chan *reply, 1)}
 	t.inflight.Add(1)
 	b := wire.Encode(map[string]any{"type": "offload", "id": id, "payload": payload})
 	select {
@@ -24,9 +23,7 @@ func (e *Engine) runOffload(ctx context.Context, payload string) (string, error)
 		t.sendMu.RUnlock()
 	case <-ctx.Done():
 		t.sendMu.RUnlock()
-		if _, ok := e.calls.LoadAndDelete(id); ok {
-			t.inflight.Add(-1)
-		}
+		t.inflight.Add(-1)
 		return "", ctx.Err()
 	}
 	select {

@@ -28,6 +28,6 @@ func init() {
 // status and headers as http_answer.c encodes them, and the body.
 //
 //export goRespondHTTP
-func goRespondHTTP(id C.longlong, meta *C.char, n C.int, body *C.char, bn C.int) {
-	core.Respond(int64(id), unsafe.Pointer(meta), int(n), unsafe.Pointer(body), int(bn))
+func goRespondHTTP(tid C.int, id C.longlong, meta *C.char, n C.int, body *C.char, bn C.int) {
+	core.Respond(int(tid), int64(id), unsafe.Pointer(meta), int(n), unsafe.Pointer(body), int(bn))
 }

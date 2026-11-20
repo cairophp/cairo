@@ -124,39 +124,39 @@ func (e *Engine) threadExited(t *thread, status int) {
 	}()
 }
 
-// failCalls answers, with nil, the calls thread t took (or, with all, every
-// call queued for it) and returns how many.
-func (e *Engine) failCalls(t *thread, all bool) int {
-	n := 0
-	e.calls.Range(func(k, v any) bool {
-		c := v.(*call)
-		if c.thread != t || !(all || c.started.Load()) {
-			return true
+// failCalls answers, with nil, the calls thread t took and, with queued,
+// those still in its inbox, which no thread will take. It returns how many.
+func (e *Engine) failCalls(t *thread, queued bool) int {
+	n := len(t.calls)
+	for _, c := range t.calls {
+		c.resp <- nil
+	}
+	clear(t.calls)
+	for queued {
+		select {
+		case ev := <-t.inbox:
+			if ev.call != nil {
+				ev.call.resp <- nil
+				n++
+			}
+		default:
+			queued = false
 		}
-		if _, ok := e.calls.LoadAndDelete(k); ok {
-			t.inflight.Add(-1)
-			c.resp <- nil
-			n++
-		}
-		return true
-	})
+	}
+	t.inflight.Add(int64(-n))
 	return n
 }
 
 // closeFibers ends the goroutines of the async() fibers that lived on t.
 // Request fibers end with their call.
 func (e *Engine) closeFibers(t *thread) {
-	e.fibers.Range(func(k, v any) bool {
-		f := v.(*fiber)
-		if f.thread != t || f.closed == nil {
-			return true
-		}
-		if _, ok := e.fibers.LoadAndDelete(k); ok {
+	for _, f := range t.fibers {
+		if f.closed != nil {
 			f.cancel()
 			close(f.closed)
 		}
-		return true
-	})
+	}
+	clear(t.fibers)
 }
 
 // retire replaces request thread old with a fresh one, then lets old finish
@@ -177,8 +177,7 @@ func (e *Engine) retire(old *thread, reason string) {
 		e.log.Warn("php thread not recycled: no free thread ids", "thread", old.id)
 		return
 	}
-	nt := &thread{id: tid, pool: poolWorker, slot: old.slot, inbox: make(chan event, inboxSize)}
-	e.table[tid].Store(nt)
+	nt := e.newThread(tid, poolWorker, old.slot)
 	e.threadsWG.Add(1)
 	e.lifeMu.Unlock()
 	if err := e.startThread(nt); err != nil {

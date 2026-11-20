@@ -5,9 +5,8 @@
 
 #include <php.h>
 
+#include "extension.h"
 #include "_cgo_export.h"
-
-int cairo_thread_id(void);   // cairo.c
 
 // Descriptors per curl wait; curl uses a handful per transfer.
 #define CAIRO_WAITSET_MAX 1024
@@ -27,7 +26,7 @@ PHP_FUNCTION(cairo_fiber_wait)
 	if (fd < 0 || fd > INT_MAX) {
 		RETURN_LONG(-1);
 	}
-	RETURN_LONG((zend_long)goFiberWait((long long)fiber, (int)fd, write ? 1 : 0, timeout));
+	RETURN_LONG((zend_long)goFiberWait(cairo_thread_id(), (long long)fiber, (int)fd, write ? 1 : 0, timeout));
 }
 
 // Copies a list of descriptors into out; returns its length, or -1 when an
@@ -66,7 +65,7 @@ PHP_FUNCTION(cairo_fiber_waitset)
 	int nw = nr < 0 ? -1 : cairo_fd_list(write, fds + CAIRO_WAITSET_MAX);
 	zend_long id = -1;
 	if (nw >= 0) {
-		id = (zend_long)goFiberWaitSet((long long)fiber, fds, nr, fds + CAIRO_WAITSET_MAX, nw, timeout);
+		id = (zend_long)goFiberWaitSet(cairo_thread_id(), (long long)fiber, fds, nr, fds + CAIRO_WAITSET_MAX, nw, timeout);
 	}
 	efree(fds);
 	RETURN_LONG(id);
@@ -85,7 +84,7 @@ PHP_FUNCTION(cairo_fiber_call)
 	if (ZSTR_LEN(name) > INT_MAX || ZSTR_LEN(payload) > INT_MAX) {
 		RETURN_LONG(-1);
 	}
-	RETURN_LONG((zend_long)goFiberCall((long long)fiber, ZSTR_VAL(name), (int)ZSTR_LEN(name),
+	RETURN_LONG((zend_long)goFiberCall(cairo_thread_id(), (long long)fiber, ZSTR_VAL(name), (int)ZSTR_LEN(name),
 		ZSTR_VAL(payload), (int)ZSTR_LEN(payload)));
 }
 

@@ -12,13 +12,13 @@ import "unsafe"
 // write and curl transfer, and the ops that carry a payload.
 
 //export goFiberWait
-func goFiberWait(id C.longlong, fd C.int, write C.int, timeout C.double) C.longlong {
-	return engine.submit(int64(id), op{Op: "wait", Fd: int(fd), Write: write != 0, Timeout: float64(timeout)})
+func goFiberWait(tid C.int, id C.longlong, fd C.int, write C.int, timeout C.double) C.longlong {
+	return engine.submit(tid, int64(id), op{Op: "wait", Fd: int(fd), Write: write != 0, Timeout: float64(timeout)})
 }
 
 //export goFiberWaitSet
-func goFiberWaitSet(id C.longlong, read *C.int, nr C.int, write *C.int, nw C.int, timeout C.double) C.longlong {
-	return engine.submit(int64(id), op{Op: "waitset", Read: cInts(read, nr), WriteFD: cInts(write, nw), Timeout: float64(timeout)})
+func goFiberWaitSet(tid C.int, id C.longlong, read *C.int, nr C.int, write *C.int, nw C.int, timeout C.double) C.longlong {
+	return engine.submit(tid, int64(id), op{Op: "waitset", Read: cInts(read, nr), WriteFD: cInts(write, nw), Timeout: float64(timeout)})
 }
 
 func cInts(p *C.int, n C.int) []int {
@@ -37,8 +37,8 @@ func cInts(p *C.int, n C.int) []int {
 // JSON escaped it once in PHP and unescaped it again here.
 //
 //export goFiberCall
-func goFiberCall(id C.longlong, name *C.char, nn C.int, payload *C.char, np C.int) C.longlong {
-	return engine.submit(int64(id), op{Op: C.GoStringN(name, nn), Payload: C.GoStringN(payload, np)})
+func goFiberCall(tid C.int, id C.longlong, name *C.char, nn C.int, payload *C.char, np C.int) C.longlong {
+	return engine.submit(tid, int64(id), op{Op: C.GoStringN(name, nn), Payload: C.GoStringN(payload, np)})
 }
 
 // goInboxLen reports how many events wait for the PHP thread: cairo_wait_here()
@@ -46,7 +46,7 @@ func goFiberCall(id C.longlong, name *C.char, nn C.int, payload *C.char, np C.in
 //
 //export goInboxLen
 func goInboxLen(tid C.int) C.int {
-	t := engine.table[int(tid)].Load()
+	t := engine.own(tid)
 	if t == nil {
 		return 0
 	}

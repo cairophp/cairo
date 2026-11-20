@@ -154,7 +154,7 @@ func CtxError(ctx context.Context) string {
 //
 //export goFiberOpen
 func goFiberOpen(tid C.int, parent C.longlong) C.longlong {
-	return engine.openFiber(int(tid), int64(parent), -1)
+	return engine.openFiber(tid, int64(parent), -1)
 }
 
 // goContextOpen is goFiberOpen for a derived context (Context::withTimeout(),
@@ -163,24 +163,37 @@ func goFiberOpen(tid C.int, parent C.longlong) C.longlong {
 //
 //export goContextOpen
 func goContextOpen(tid C.int, parent C.longlong, timeout C.double) C.longlong {
-	return engine.openFiber(int(tid), int64(parent), float64(timeout))
+	return engine.openFiber(tid, int64(parent), float64(timeout))
 }
 
 // goContextCancel cancels a derived context. Its goroutine stays until
 // goFiberClose, so operations still sent to it fail fast.
 //
 //export goContextCancel
-func goContextCancel(id C.longlong) {
-	if v, ok := engine.fibers.Load(int64(id)); ok {
-		v.(*fiber).cancel()
+func goContextCancel(tid C.int, id C.longlong) {
+	if f := engine.fiber(tid, int64(id)); f != nil {
+		f.cancel()
 	}
 }
 
-func (e *Engine) openFiber(tid int, parent int64, timeout float64) C.longlong {
+// fiber returns fiber id of the PHP thread that is calling, or nil.
+func (e *Engine) fiber(tid C.int, id int64) *fiber {
+	t := e.own(tid)
+	if t == nil {
+		return nil
+	}
+	return t.fibers[id]
+}
+
+func (e *Engine) openFiber(tid C.int, parent int64, timeout float64) C.longlong {
+	t := e.own(tid)
+	if t == nil {
+		return -1
+	}
 	pctx := context.Background()
 	var p Probe
-	if v, ok := e.fibers.Load(parent); ok {
-		pctx, p = v.(*fiber).ctx, v.(*fiber).probe
+	if pf := t.fibers[parent]; pf != nil {
+		pctx, p = pf.ctx, pf.probe
 	}
 	var ctx context.Context
 	var cancel context.CancelFunc
@@ -190,10 +203,10 @@ func (e *Engine) openFiber(tid int, parent int64, timeout float64) C.longlong {
 		ctx, cancel = context.WithCancel(pctx)
 	}
 	f := &fiber{
-		id: e.nextID.Add(1), ctx: ctx, cancel: cancel, thread: e.table[int(tid)].Load(),
+		id: e.nextID.Add(1), ctx: ctx, cancel: cancel, thread: t,
 		ops: make(chan op, 1), closed: make(chan struct{}), probe: p,
 	}
-	e.fibers.Store(f.id, f)
+	t.fibers[f.id] = f
 	// The goroutine lives as long as the fiber, even after its context ends:
 	// operations then fail fast with the context's error, so the fiber always wakes.
 	go func() {
@@ -212,13 +225,15 @@ func (e *Engine) openFiber(tid int, parent int64, timeout float64) C.longlong {
 // goFiberClose ends a fiber's goroutine and cancels its context.
 //
 //export goFiberClose
-func goFiberClose(id C.longlong) {
-	if v, ok := engine.fibers.LoadAndDelete(int64(id)); ok {
-		f := v.(*fiber)
-		f.cancel()
-		if f.closed != nil {
-			close(f.closed)
-		}
+func goFiberClose(tid C.int, id C.longlong) {
+	f := engine.fiber(tid, int64(id))
+	if f == nil {
+		return
+	}
+	delete(f.thread.fibers, f.id)
+	f.cancel()
+	if f.closed != nil {
+		close(f.closed)
 	}
 }
 
@@ -226,29 +241,22 @@ func goFiberClose(id C.longlong) {
 // The PHP fiber suspends right after; the goroutine wakes it when done.
 //
 //export goFiberOp
-func goFiberOp(id C.longlong, data *C.char, n C.int) C.longlong {
-	e := engine
-	opID := e.nextID.Add(1)
-	v, ok := e.fibers.Load(int64(id))
-	if !ok {
-		return -1
-	}
+func goFiberOp(tid C.int, id C.longlong, data *C.char, n C.int) C.longlong {
 	var o op
 	if err := json.Unmarshal(C.GoBytes(unsafe.Pointer(data), n), &o); err != nil {
 		return -1
 	}
-	o.ID = opID
-	v.(*fiber).ops <- o
-	return C.longlong(opID)
+	return engine.submit(tid, int64(id), o)
 }
 
-// submit hands a decoded operation to fiber id's goroutine; see goFiberOp.
-func (e *Engine) submit(id int64, o op) C.longlong {
-	v, ok := e.fibers.Load(id)
-	if !ok {
+// submit hands a decoded operation to the goroutine of the calling thread's
+// fiber id; see goFiberOp.
+func (e *Engine) submit(tid C.int, id int64, o op) C.longlong {
+	f := e.fiber(tid, id)
+	if f == nil {
 		return -1
 	}
 	o.ID = e.nextID.Add(1)
-	v.(*fiber).ops <- o
+	f.ops <- o
 	return C.longlong(o.ID)
 }

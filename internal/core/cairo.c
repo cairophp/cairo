@@ -41,7 +41,6 @@
 // -1 is the boot thread (declare phase); 0..n-1 are worker threads.
 static __thread int cairo_tid = -1;
 
-// For waitops.c.
 int cairo_thread_id(void)
 {
 	return cairo_tid;
@@ -132,7 +131,7 @@ PHP_FUNCTION(cairo_respond)
 		zend_value_error("cairo_respond(): the answer is larger than 2 GB");
 		RETURN_THROWS();
 	}
-	goRespond((long long)id, json, (int)len, body, (int)blen);
+	goRespond(cairo_tid, (long long)id, json, (int)len, body, (int)blen);
 }
 
 // cairo_retire(string $reason): void. Asks Go to replace this request thread
@@ -196,7 +195,7 @@ PHP_FUNCTION(cairo_fiber_close)
 	ZEND_PARSE_PARAMETERS_START(1, 1)
 		Z_PARAM_LONG(fiber)
 	ZEND_PARSE_PARAMETERS_END();
-	goFiberClose((long long)fiber);
+	goFiberClose(cairo_tid, (long long)fiber);
 }
 
 // cairo_context_open(int $parent, float $timeout): int. A derived context
@@ -221,7 +220,7 @@ PHP_FUNCTION(cairo_context_cancel)
 	ZEND_PARSE_PARAMETERS_START(1, 1)
 		Z_PARAM_LONG(id)
 	ZEND_PARSE_PARAMETERS_END();
-	goContextCancel((long long)id);
+	goContextCancel(cairo_tid, (long long)id);
 }
 
 // cairo_fiber_op(int $fiber, string $json): int. Asks the fiber's goroutine
@@ -235,7 +234,7 @@ PHP_FUNCTION(cairo_fiber_op)
 		Z_PARAM_LONG(fiber)
 		Z_PARAM_STRING(json, len)
 	ZEND_PARSE_PARAMETERS_END();
-	RETURN_LONG((zend_long)goFiberOp((long long)fiber, json, (int)len));
+	RETURN_LONG((zend_long)goFiberOp(cairo_tid, (long long)fiber, json, (int)len));
 }
 
 // cairo_go_call(string $op, string $json): string. Runs a Go operation on

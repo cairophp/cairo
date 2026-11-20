@@ -29,9 +29,10 @@ type event struct {
 // call is one unit of work sent to a PHP thread, waiting for cairo_respond().
 // resp receives nil when the thread died before answering.
 type call struct {
-	thread  *thread
-	resp    chan *reply
-	started atomic.Bool // PHP took it from the inbox
+	id     int64
+	thread *thread
+	resp   chan *reply
+	fiber  *fiber // a request's root fiber; nil for an offload job
 }
 
 // reply is PHP's answer to a call: its metadata (JSON) and, for an HTTP
@@ -71,12 +72,9 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 		return nil, nil, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	c := &call{thread: t, resp: make(chan *reply, 1)}
-	f := &fiber{ctx: ctx, cancel: cancel, thread: t, ops: make(chan op, 1), probe: p}
 	id := e.nextID.Add(1)
-	f.id = id
-	e.calls.Store(id, c)
-	e.fibers.Store(id, f)
+	f := &fiber{id: id, ctx: ctx, cancel: cancel, thread: t, ops: make(chan op, 1), probe: p}
+	c := &call{id: id, thread: t, resp: make(chan *reply, 1), fiber: f}
 	t.inflight.Add(1)
 
 	var deadline float64
@@ -89,7 +87,8 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 		t.sendMu.RUnlock()
 	case <-ctx.Done():
 		t.sendMu.RUnlock()
-		e.forget(id, c, f)
+		t.inflight.Add(-1)
+		cancel()
 		release()
 		return nil, nil, ctx.Err()
 	}
@@ -97,7 +96,6 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 		select {
 		case r := <-c.resp:
 			release()
-			e.fibers.Delete(id)
 			cancel()
 			if r == nil {
 				return nil, nil, ErrThreadStopped
@@ -124,7 +122,6 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 					select {
 					case <-c.resp:
 						release() // the slot is free once PHP is done with the request
-						e.fibers.Delete(id)
 						return
 					case o := <-f.ops:
 						e.runOp(f, o)
@@ -144,13 +141,6 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 // interruptEvery is how often a request past its deadline interrupts its
 // PHP thread until PHP answers.
 const interruptEvery = 50 * time.Millisecond
-
-func (e *Engine) forget(id int64, c *call, f *fiber) {
-	e.calls.Delete(id)
-	e.fibers.Delete(id)
-	c.thread.inflight.Add(-1)
-	f.cancel()
-}
 
 // stuckAfter is how long a thread's PHP may run without coming back for an
 // event before dispatch passes it over: it is running one fiber that does
@@ -231,8 +221,13 @@ func goNextEvent(tid C.int, n *C.int) unsafe.Pointer {
 	ev := <-t.inbox
 	t.running = ev.probe
 	t.busySince.Store(time.Now().UnixNano())
-	if ev.call != nil {
-		ev.call.started.Store(true)
+	if c := ev.call; c != nil {
+		// From here the thread answers for the call if it dies (failCalls),
+		// and its PHP finds the request's fiber.
+		t.calls[c.id] = c
+		if c.fiber != nil {
+			t.fibers[c.id] = c.fiber
+		}
 		t.served.Add(1)
 	}
 	*n = C.int(len(ev.data))
@@ -240,14 +235,17 @@ func goNextEvent(tid C.int, n *C.int) unsafe.Pointer {
 }
 
 //export goRespond
-func goRespond(id C.longlong, data *C.char, n C.int, body *C.char, bn C.int) {
-	e := engine
-	v, ok := e.calls.LoadAndDelete(int64(id))
+func goRespond(tid C.int, id C.longlong, data *C.char, n C.int, body *C.char, bn C.int) {
+	t := engine.own(tid)
+	if t == nil {
+		return
+	}
+	c, ok := t.calls[int64(id)]
 	if !ok {
 		return
 	}
-	c := v.(*call)
-	t := c.thread
+	delete(t.calls, c.id)
+	delete(t.fibers, c.id)
 	t.inflight.Add(-1)
 	// The request's probe is done as soon as the answer arrives, before
 	// this stretch of PHP ends in goNextEvent: report it up to now.
@@ -263,9 +261,10 @@ func goRespond(id C.longlong, data *C.char, n C.int, body *C.char, bn C.int) {
 
 // Respond is goRespond for an extension whose C code answers the requests
 // of its server: cgo exports a Go function to the C code of its own package
-// only, so the extension exports one that calls this. meta (what the server
+// only, so the extension exports one that calls this. tid is the PHP thread
+// that answers (cairo_thread_id() in extension.h). meta (what the server
 // makes of the answer) and body are C memory, n and bn bytes long, copied
 // before Respond returns.
-func Respond(id int64, meta unsafe.Pointer, n int, body unsafe.Pointer, bn int) {
-	goRespond(C.longlong(id), (*C.char)(meta), C.int(n), (*C.char)(body), C.int(bn))
+func Respond(tid int, id int64, meta unsafe.Pointer, n int, body unsafe.Pointer, bn int) {
+	goRespond(C.int(tid), C.longlong(id), (*C.char)(meta), C.int(n), (*C.char)(body), C.int(bn))
 }

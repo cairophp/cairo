@@ -89,6 +89,9 @@ change the PHP API; patch versions do not.
   makes Go's runtime fetch the thread's stack from the system each time (a
   `sched_getaffinity` system call and an allocation). Cairo reads each
   thread's stack once and answers from that.
+- Performance: the engine keeps the calls a PHP thread took and the fibers
+  that live on it in tables of that thread, which only the thread itself
+  uses, in place of two maps shared and locked by all threads.
 
 ## [0.4.0] - 2026-11-19
 

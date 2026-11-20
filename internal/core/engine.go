@@ -80,9 +80,7 @@ type Engine struct {
 	// extension asked for one.
 	newProbe func() Probe
 
-	nextID atomic.Int64
-	calls  sync.Map // call id -> *call   (a request or an offload job awaiting PHP's answer)
-	fibers sync.Map // fiber id -> *fiber (the goroutine that serves a PHP fiber)
+	nextID atomic.Int64 // ids of calls, fibers and operations
 
 	bootDone   chan error
 	lifeMu     sync.Mutex // orders thread starts against Shutdown
@@ -113,6 +111,11 @@ type thread struct {
 	// The probe of the request whose fiber this thread resumed last; only
 	// the thread itself uses it, in goNextEvent and goRespond.
 	running Probe
+	// The calls this thread took and has not answered (requests, offload
+	// jobs) and the fibers that live on it, by id. They have no lock: only
+	// the thread itself uses them, in what its PHP calls (see own).
+	calls  map[int64]*call
+	fibers map[int64]*fiber
 
 	// Supervision (see supervise.go).
 	sendMu   sync.RWMutex // held for reading while a request is queued; retire takes it to set retired
@@ -214,14 +217,13 @@ func Start(opts Options) (*Engine, error) {
 	var all []*thread
 	for i := 0; i < nw+no; i++ {
 		tid, _ := e.allocTid()
-		t := &thread{id: tid, pool: poolWorker, slot: i, inbox: make(chan event, inboxSize)}
+		t := e.newThread(tid, poolWorker, i)
 		if i >= nw {
 			t.pool, t.slot = poolOffload, i-nw
 			e.offload[t.slot].Store(t)
 		} else {
 			e.workers[t.slot].Store(t)
 		}
-		e.table[tid].Store(t)
 		all = append(all, t)
 	}
 	for _, t := range all {
@@ -238,6 +240,27 @@ func Start(opts Options) (*Engine, error) {
 		}
 	}
 	return e, nil
+}
+
+// newThread makes the Go side of PHP thread tid and puts it in the table.
+func (e *Engine) newThread(tid int, p pool, slot int) *thread {
+	t := &thread{
+		id: tid, pool: p, slot: slot, inbox: make(chan event, inboxSize),
+		calls: map[int64]*call{}, fibers: map[int64]*fiber{},
+	}
+	e.table[tid].Store(t)
+	return t
+}
+
+// own returns the PHP thread that is calling into Go, from the id its C code
+// passes: what a thread asks for is looked up in its own tables, so an id of
+// another thread's is simply not found. nil outside a PHP thread of the
+// pools (the declare phase).
+func (e *Engine) own(tid C.int) *thread {
+	if tid < 0 || tid >= maxThreads {
+		return nil
+	}
+	return e.table[tid].Load()
 }
 
 func pick(override, declared int) int {

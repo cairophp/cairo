@@ -32,7 +32,6 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/cairophp/cairo/internal/middleware"
-	"github.com/cairophp/cairo/internal/spec"
 	"github.com/cairophp/cairo/internal/wire"
 )
 
@@ -60,7 +59,7 @@ type Server struct {
 }
 
 // New compiles the declared protos, registers the services and opens the listener.
-func New(decl spec.GRPCServer, php Dispatcher, log *slog.Logger) (*Server, error) {
+func New(decl Declaration, php Dispatcher, log *slog.Logger) (*Server, error) {
 	files, err := compileProtos(decl.Protos)
 	if err != nil {
 		return nil, err

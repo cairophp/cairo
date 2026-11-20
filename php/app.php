@@ -10,8 +10,8 @@ namespace Cairo {
 
     final class App
     {
-        /** @var list<Http\Server|Grpc\Server> */
-        private array $servers = [];
+        /** @var array<string, list<Http\Server|Grpc\Server>> the name of an extension => the servers declared with it */
+        private array $servers = ['http' => [], 'grpc' => []];
         private int $threads = 0;
         private int $offloadThreads = 0;
         private int $maxRequests = 0;
@@ -318,14 +318,14 @@ namespace Cairo {
         public function http(string $listen): Http\Server
         {
             $server = new Http\Server($this, $listen);
-            $this->servers[] = $server;
+            $this->servers['http'][] = $server;
             return $server;
         }
 
         public function grpc(string $listen): Grpc\Server
         {
             $server = new Grpc\Server($this, $listen);
-            $this->servers[] = $server;
+            $this->servers['grpc'][] = $server;
             return $server;
         }
 
@@ -352,13 +352,11 @@ namespace Cairo {
         /** @internal */
         public function spec(): array
         {
-            $spec = ['threads' => $this->threads, 'offload_threads' => $this->offloadThreads, 'detect_blocking' => $this->detectBlocking, 'slow_requests' => $this->slowRequests, 'heavy_routes' => $this->isolated() ? 0.0 : $this->heavyRoutes, 'max_in_flight' => $this->maxInFlight, 'isolated' => $this->isolated(), 'http' => [], 'grpc' => []];
-            foreach ($this->servers as $server) {
-                if ($server instanceof Http\Server) {
-                    $spec['http'][] = $server->spec();
-                } else {
-                    $spec['grpc'][] = $server->spec();
-                }
+            // Go's core reads the settings; what an extension declared goes
+            // under its name, for the extension's Go half to read.
+            $spec = ['threads' => $this->threads, 'offload_threads' => $this->offloadThreads, 'detect_blocking' => $this->detectBlocking, 'slow_requests' => $this->slowRequests, 'heavy_routes' => $this->isolated() ? 0.0 : $this->heavyRoutes, 'max_in_flight' => $this->maxInFlight, 'isolated' => $this->isolated(), 'extensions' => []];
+            foreach ($this->servers as $extension => $servers) {
+                $spec['extensions'][$extension] = array_map(static fn (Http\Server|Grpc\Server $server): array => $server->spec(), $servers);
             }
             return $spec;
         }

@@ -42,6 +42,11 @@ change the PHP API; patch versions do not.
   or gRPC. Each server's PHP file registers what answers its requests
   (`php/http_answer.php`, `php/grpc_answer.php`), and `cairo_respond_http()`
   leaves `cairo.c` for `http_answer.c`. Fourth step of the same separation.
+- Internal, no change in behaviour: `internal/spec` reads only the core's
+  part of what `server.php` declares. The HTTP and gRPC servers read and
+  check their own (`internal/httpserver/declaration.go`,
+  `internal/grpcserver/declaration.go`), which `Cairo\App` sends under each
+  one's name. Fifth step of the same separation.
 
 ## [0.4.0] - 2026-11-19
 

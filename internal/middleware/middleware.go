@@ -22,12 +22,16 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/cairophp/cairo/internal/spec"
 )
 
+// Declaration is one `$server->use(Middleware::...)`: Go runs it before PHP.
+type Declaration struct {
+	Name    string          `json:"name"`
+	Options json.RawMessage `json:"options"`
+}
+
 // HTTP wraps h with the declared middleware, first declared outermost.
-func HTTP(h http.Handler, decl []spec.Middleware, log *slog.Logger) (http.Handler, error) {
+func HTTP(h http.Handler, decl []Declaration, log *slog.Logger) (http.Handler, error) {
 	for i := len(decl) - 1; i >= 0; i-- {
 		m := decl[i]
 		var err error
@@ -79,7 +83,7 @@ func HTTP(h http.Handler, decl []spec.Middleware, log *slog.Logger) (http.Handle
 }
 
 // timeoutOf reads the timeout middleware's "seconds".
-func timeoutOf(m spec.Middleware) (time.Duration, error) {
+func timeoutOf(m Declaration) (time.Duration, error) {
 	var o struct {
 		Seconds float64 `json:"seconds"`
 	}
@@ -101,7 +105,7 @@ func timeoutHTTP(h http.Handler, d time.Duration) http.Handler {
 	})
 }
 
-func decode(m spec.Middleware, v any) error {
+func decode(m Declaration, v any) error {
 	if len(m.Options) == 0 || string(m.Options) == "null" || string(m.Options) == "[]" {
 		return nil
 	}

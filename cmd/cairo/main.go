@@ -20,6 +20,7 @@ import (
 	"github.com/cairophp/cairo/internal/grpcserver"
 	"github.com/cairophp/cairo/internal/httpserver"
 	"github.com/cairophp/cairo/internal/sapi"
+	"github.com/cairophp/cairo/internal/spec"
 )
 
 // version is set at build time: -ldflags "-X main.version=v0.1.0".
@@ -103,6 +104,30 @@ type server interface {
 	Shutdown(context.Context) error
 }
 
+// declarations is the servers that server.php declared.
+type declarations struct {
+	http []httpserver.Declaration
+	grpc []grpcserver.Declaration
+}
+
+// read takes the servers out of what server.php declared and checks them.
+// One Claims goes through all of them: no two servers, of any kind, share a
+// listen address or a handler id.
+func (d *declarations) read(s *spec.Spec) error {
+	var claims spec.Claims
+	var err error
+	if d.http, err = httpserver.Declared(s, &claims); err != nil {
+		return err
+	}
+	if d.grpc, err = grpcserver.Declared(s, &claims); err != nil {
+		return err
+	}
+	if len(d.http)+len(d.grpc) == 0 {
+		return errors.New("server.php declared no servers: call $app->http(...) or $app->grpc(...)")
+	}
+	return nil
+}
+
 func serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	threads := fs.Int("threads", 0, "PHP request threads (overrides server.php; default: one per CPU core)")
@@ -125,13 +150,14 @@ func serve(args []string) error {
 	}
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	engine, err := sapi.Start(sapi.Options{ServerFile: file, Threads: *threads, OffloadThreads: *offloadThreads, PHPIni: *phpIni, Logger: log})
+	var decls declarations
+	engine, err := sapi.Start(sapi.Options{ServerFile: file, Threads: *threads, OffloadThreads: *offloadThreads, PHPIni: *phpIni, Logger: log, Validate: decls.read})
 	if err != nil {
 		return err
 	}
 
 	var servers []server
-	for _, decl := range engine.Spec().HTTP {
+	for _, decl := range decls.http {
 		s, err := httpserver.New(decl, engine, log)
 		if err != nil {
 			return fmt.Errorf("http %s: %w", decl.Listen, err)
@@ -139,7 +165,7 @@ func serve(args []string) error {
 		servers = append(servers, s)
 		log.Info("http server listening", "addr", s.Addr(), "routes", len(decl.Routes))
 	}
-	for _, decl := range engine.Spec().GRPC {
+	for _, decl := range decls.grpc {
 		s, err := grpcserver.New(decl, engine, log)
 		if err != nil {
 			return fmt.Errorf("grpc %s: %w", decl.Listen, err)

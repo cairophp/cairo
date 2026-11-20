@@ -28,8 +28,8 @@ on I/O through Cairo, only its fiber suspends and Go does the waiting.
 | `php/http_answer.php`, `php/grpc_answer.php` | How a request of each server is answered. The scheduler knows no server: a server's PHP file registers what answers its requests with `Scheduler::answerWith()`, and the scheduler runs that in the request's fiber. `internal/sapi/http_answer.c` has `cairo_respond_http()`, which sends an HTTP answer to Go |
 | `php/revolt.php` | `Cairo\Revolt\Driver`, loaded when `revolt/event-loop` is installed |
 | `php/cache.php`, `php/pool.php` | `Cairo\Cache` and `Cairo\Pool`, each loaded on first use |
-| `internal/spec/` | The server declaration that `server.php` sends to Go |
-| `internal/httpserver/`, `internal/grpcserver/` | net/http and grpc-go servers built from the declaration |
+| `internal/spec/` | The declaration that `server.php` sends to Go. This package reads the core's part (threads, the concurrency mode, limits) and keeps what each extension declared as PHP sent it, under the extension's name. `Claims` is what servers must not share: listen addresses and handler ids |
+| `internal/httpserver/`, `internal/grpcserver/` | net/http and grpc-go servers built from the declaration. Each reads and checks its own part of it (`declaration.go`); `cmd/cairo` gives both to the engine to run in the declare phase |
 | `internal/middleware/` | Go middleware declared from PHP |
 | `internal/cachetag/` | Tags of cached responses: declared by routes in `httpserver`, purged from PHP through `sapi` |
 | `internal/codegen/` | `cairo gen`: PHP classes and clients from `.proto` files |
@@ -60,9 +60,15 @@ Extensions depend on the core, never the reverse: core code does not name an
 extension. An extension reaches the core through Go operations (`registerOp`,
 `registerFiberOp`), a server that calls `Engine.Dispatch` and whose PHP file
 says how its requests are answered (`Scheduler::answerWith()`), its own
-embedded PHP file (`registerPHP`), and a `cairo_extension` for its C code
-(`registerC`). Engine hooks for the diagnostics are the one way still to be
-built.
+part of the declaration (`Spec.Section`), its own embedded PHP file
+(`registerPHP`), and a `cairo_extension` for its C code (`registerC`).
+Engine hooks for the diagnostics are the one way still to be built.
+
+`Cairo\App` is the declaration's public face. `server.php` sees one class,
+so it has a method for every setting, an extension's included, and it is
+where PHP names the servers, as `cmd/cairo` is in Go. It does not look
+inside what a server declared: that goes to Go under the extension's name,
+and only the extension's Go package knows its shape.
 
 The code is moving behind that line in steps that change no behaviour, and
 everything still shares `internal/sapi` and `php/`. Done: no extension
@@ -70,13 +76,14 @@ operation is written into the engine (`dial`, `starttls`, `stoptls`,
 `lookup` and `pg` register themselves); the SAPI module starts no extension
 by name (the hooks, the PDO pgsql driver, the query watcher and the curl
 hook add their C code with `registerC`); `php/runtime.php` loads no
-extension's file by name (each one is added with `registerPHP`); and the
+extension's file by name (each one is added with `registerPHP`); the
 scheduler answers no request itself (the HTTP and gRPC servers register
-what does, and the HTTP answer left `cairo.c` for `http_answer.c`). Still
-mixed: `cairo.c` has the blocking report, `Cairo\App` and `internal/spec`
-know every extension's settings, and the diagnostics keep fields in the
-engine's structs and in the scheduler. Do not add to those: a new feature
-goes on the extension side, in its own files.
+what does, and the HTTP answer left `cairo.c` for `http_answer.c`); and
+`internal/spec` knows no server (the HTTP and gRPC packages read and check
+their own part of the declaration). Still mixed: `cairo.c` has the blocking
+report, and the diagnostics keep fields in the engine's structs, in the
+core's part of the declaration and in the scheduler. Do not add to those: a
+new feature goes on the extension side, in its own files.
 
 ## Building and testing
 

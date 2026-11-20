@@ -11,14 +11,12 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
-
-	"github.com/cairophp/cairo/internal/spec"
 )
 
 // GRPC returns the stream interceptors for the declared middleware, first
 // declared outermost. Cairo serves every call through a stream handler, so
 // stream interceptors cover unary calls too.
-func GRPC(decl []spec.Middleware, log *slog.Logger) ([]grpc.StreamServerInterceptor, error) {
+func GRPC(decl []Declaration, log *slog.Logger) ([]grpc.StreamServerInterceptor, error) {
 	out := []grpc.StreamServerInterceptor{recoverGRPC(log)}
 	for _, m := range decl {
 		switch m.Name {

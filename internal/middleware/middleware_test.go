@@ -10,16 +10,14 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/cairophp/cairo/internal/spec"
 )
 
-func mw(name string, opts any) spec.Middleware {
+func mw(name string, opts any) Declaration {
 	b, _ := json.Marshal(opts)
-	return spec.Middleware{Name: name, Options: b}
+	return Declaration{Name: name, Options: b}
 }
 
-func build(t *testing.T, h http.Handler, decl ...spec.Middleware) http.Handler {
+func build(t *testing.T, h http.Handler, decl ...Declaration) http.Handler {
 	t.Helper()
 	out, err := HTTP(h, decl, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
@@ -168,13 +166,13 @@ func TestMaxBody(t *testing.T) {
 
 func TestOrderAndUnknown(t *testing.T) {
 	// request_id declared first runs first, so access_log (inner) sees the id.
-	if _, err := HTTP(hello, []spec.Middleware{{Name: "nope"}}, slog.Default()); err == nil {
+	if _, err := HTTP(hello, []Declaration{{Name: "nope"}}, slog.Default()); err == nil {
 		t.Fatal("unknown middleware accepted")
 	}
-	if _, err := GRPC([]spec.Middleware{{Name: "gzip"}}, slog.Default()); err == nil {
+	if _, err := GRPC([]Declaration{{Name: "gzip"}}, slog.Default()); err == nil {
 		t.Fatal("gzip accepted for gRPC")
 	}
-	if _, err := HTTP(hello, []spec.Middleware{mw("rate_limit", RateOptions{PerSecond: 0})}, slog.Default()); err == nil {
+	if _, err := HTTP(hello, []Declaration{mw("rate_limit", RateOptions{PerSecond: 0})}, slog.Default()); err == nil {
 		t.Fatal("per_second 0 accepted")
 	}
 }
@@ -191,10 +189,10 @@ func TestTimeoutSetsADeadline(t *testing.T) {
 	if left <= 0 || left > 500*time.Millisecond {
 		t.Fatalf("deadline in %s, want within 0.5s", left)
 	}
-	if _, err := HTTP(hello, []spec.Middleware{mw("timeout", map[string]any{"seconds": 0})}, slog.Default()); err == nil {
+	if _, err := HTTP(hello, []Declaration{mw("timeout", map[string]any{"seconds": 0})}, slog.Default()); err == nil {
 		t.Fatal("timeout of 0 accepted")
 	}
-	if ics, err := GRPC([]spec.Middleware{mw("timeout", map[string]any{"seconds": 1})}, slog.Default()); err != nil || len(ics) != 2 { // panic recovery, then timeout
+	if ics, err := GRPC([]Declaration{mw("timeout", map[string]any{"seconds": 1})}, slog.Default()); err != nil || len(ics) != 2 { // panic recovery, then timeout
 		t.Fatalf("grpc timeout: %v", err)
 	}
 }

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/cairophp/cairo/internal/cachetag"
-	"github.com/cairophp/cairo/internal/spec"
 	"github.com/cairophp/cairo/internal/wire"
 )
 
@@ -36,9 +35,9 @@ func (f *fakePHP) Dispatch(ctx context.Context, _ wire.Event) ([]byte, []byte, e
 	return wire.AppendHeader(wire.AppendInt(nil, 200), f.header), []byte(strconv.FormatInt(n, 10)), nil
 }
 
-func cachedRoute(t *testing.T, php *fakePHP, c spec.RouteCache) func(req *http.Request) string {
+func cachedRoute(t *testing.T, php *fakePHP, c RouteCache) func(req *http.Request) string {
 	t.Helper()
-	h := routeHandler(spec.Route{ID: 1, Method: "GET", Path: "/", Cache: &c}, php, newResponseCache(cacheMaxBytes), slog.Default())
+	h := routeHandler(Route{ID: 1, Method: "GET", Path: "/", Cache: &c}, php, newResponseCache(cacheMaxBytes), slog.Default())
 	return func(req *http.Request) string {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, req)
@@ -57,7 +56,7 @@ func get(target string, header ...string) *http.Request {
 
 func TestCacheServesRepeats(t *testing.T) {
 	php := &fakePHP{}
-	do := cachedRoute(t, php, spec.RouteCache{TTL: 60})
+	do := cachedRoute(t, php, RouteCache{TTL: 60})
 	for range 3 {
 		if got := do(get("/?a=1")); got != "1" {
 			t.Fatalf("got %q, want the first answer", got)
@@ -73,7 +72,7 @@ func TestCacheServesRepeats(t *testing.T) {
 
 func TestCacheSkipsPersonalRequests(t *testing.T) {
 	php := &fakePHP{}
-	do := cachedRoute(t, php, spec.RouteCache{TTL: 60, Vary: []string{"cookie"}})
+	do := cachedRoute(t, php, RouteCache{TTL: 60, Vary: []string{"cookie"}})
 	do(get("/"))
 	if got := do(get("/", "Authorization", "Bearer x")); got != "2" {
 		t.Fatalf("Authorization request got %q, want its own answer", got)
@@ -93,7 +92,7 @@ func TestCacheNeverStoresSetCookie(t *testing.T) {
 		{"Cache-Control": {"no-store"}},
 	} {
 		php := &fakePHP{header: h, delay: 50 * time.Millisecond}
-		do := cachedRoute(t, php, spec.RouteCache{TTL: 60})
+		do := cachedRoute(t, php, RouteCache{TTL: 60})
 		var wg sync.WaitGroup
 		for range 10 {
 			wg.Add(1)
@@ -109,7 +108,7 @@ func TestCacheNeverStoresSetCookie(t *testing.T) {
 // Identical requests that arrive together make one PHP call.
 func TestCacheMergesInFlightRequests(t *testing.T) {
 	php := &fakePHP{delay: 200 * time.Millisecond}
-	do := cachedRoute(t, php, spec.RouteCache{TTL: 60})
+	do := cachedRoute(t, php, RouteCache{TTL: 60})
 	var wg sync.WaitGroup
 	for range 50 {
 		wg.Add(1)
@@ -129,7 +128,7 @@ func TestCacheMergesInFlightRequests(t *testing.T) {
 // After the TTL a stale answer is served at once while one call rebuilds it.
 func TestCacheStaleWhileRevalidate(t *testing.T) {
 	php := &fakePHP{delay: 100 * time.Millisecond}
-	do := cachedRoute(t, php, spec.RouteCache{TTL: 0.05, StaleWhileRevalidate: 60})
+	do := cachedRoute(t, php, RouteCache{TTL: 0.05, StaleWhileRevalidate: 60})
 	do(get("/"))
 	time.Sleep(80 * time.Millisecond) // past the TTL
 	start := time.Now()
@@ -155,7 +154,7 @@ func TestCacheStaleWhileRevalidate(t *testing.T) {
 
 func TestCacheExpires(t *testing.T) {
 	php := &fakePHP{}
-	do := cachedRoute(t, php, spec.RouteCache{TTL: 0.02})
+	do := cachedRoute(t, php, RouteCache{TTL: 0.02})
 	do(get("/"))
 	time.Sleep(40 * time.Millisecond)
 	if got := do(get("/")); got != "2" {
@@ -185,8 +184,8 @@ func TestCacheEvictsPastItsSize(t *testing.T) {
 // A purge drops the tagged routes' entries, and only theirs.
 func TestCachePurgeByTag(t *testing.T) {
 	php := &fakePHP{}
-	products := cachedRoute(t, php, spec.RouteCache{TTL: 60, StaleWhileRevalidate: 60, Tags: []string{"t-products", "t-shop"}})
-	users := cachedRoute(t, php, spec.RouteCache{TTL: 60, Tags: []string{"t-users"}})
+	products := cachedRoute(t, php, RouteCache{TTL: 60, StaleWhileRevalidate: 60, Tags: []string{"t-products", "t-shop"}})
+	users := cachedRoute(t, php, RouteCache{TTL: 60, Tags: []string{"t-users"}})
 	products(get("/"))
 	users(get("/"))
 	cachetag.Purge("t-products")
@@ -205,7 +204,7 @@ func TestCachePurgeByTag(t *testing.T) {
 // to requests that arrive after the purge.
 func TestCachePurgeDuringCall(t *testing.T) {
 	php := &fakePHP{delay: 150 * time.Millisecond}
-	do := cachedRoute(t, php, spec.RouteCache{TTL: 60, Tags: []string{"t-during"}})
+	do := cachedRoute(t, php, RouteCache{TTL: 60, Tags: []string{"t-during"}})
 	first := make(chan string)
 	go func() { first <- do(get("/")) }()
 	for php.calls.Load() == 0 {
@@ -226,7 +225,7 @@ func TestCachePurgeDuringCall(t *testing.T) {
 // HEAD reads what GET stored and never fills the cache itself.
 func TestCacheHead(t *testing.T) {
 	php := &fakePHP{}
-	do := cachedRoute(t, php, spec.RouteCache{TTL: 60})
+	do := cachedRoute(t, php, RouteCache{TTL: 60})
 	head := func() { do(httptest.NewRequest("HEAD", "/", nil)) }
 	head()
 	head()

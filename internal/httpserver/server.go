@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/cairophp/cairo/internal/middleware"
-	"github.com/cairophp/cairo/internal/spec"
 	"github.com/cairophp/cairo/internal/wire"
 )
 
@@ -40,7 +39,7 @@ type Server struct {
 }
 
 // New builds the router for one declared HTTP server and opens its listener.
-func New(decl spec.HTTPServer, php Dispatcher, log *slog.Logger) (*Server, error) {
+func New(decl Declaration, php Dispatcher, log *slog.Logger) (*Server, error) {
 	mux := http.NewServeMux()
 	cache := newResponseCache(cacheMaxBytes)
 	for _, r := range decl.Routes {
@@ -168,7 +167,7 @@ func (ev *event) AppendWire(b []byte, id int64, deadline float64) []byte {
 	return b
 }
 
-func routeHandler(r spec.Route, php Dispatcher, cache *responseCache, log *slog.Logger) http.Handler {
+func routeHandler(r Route, php Dispatcher, cache *responseCache, log *slog.Logger) http.Handler {
 	var names []string
 	for _, m := range paramRe.FindAllStringSubmatch(r.Path, -1) {
 		names = append(names, m[1])

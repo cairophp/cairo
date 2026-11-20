@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/cairophp/cairo/internal/cachetag"
-	"github.com/cairophp/cairo/internal/spec"
 )
 
 // Limits of one server's response cache. An entry costs its key, headers
@@ -38,7 +37,7 @@ type cachePolicy struct {
 	tags  []*atomic.Uint64
 }
 
-func newCachePolicy(route int, c spec.RouteCache) *cachePolicy {
+func newCachePolicy(route int, c RouteCache) *cachePolicy {
 	vary := make([]string, 0, len(c.Vary))
 	for _, h := range c.Vary {
 		vary = append(vary, textproto.CanonicalMIMEHeaderKey(h))

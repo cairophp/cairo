@@ -60,8 +60,9 @@ type Engine struct {
 	freeTids []int // thread ids of recycled threads, for reuse
 	nextTid  int
 
-	spec    *spec.Spec
-	rawSpec []byte
+	spec     *spec.Spec
+	rawSpec  []byte
+	validate func(*spec.Spec) error // Options.Validate
 
 	// slots caps requests in flight (App::maxInFlight() per request thread);
 	// nil when there is no cap.
@@ -132,6 +133,10 @@ type Options struct {
 	// PHPIni is a php.ini file or directory; empty searches PHP's usual places.
 	PHPIni string
 	Logger *slog.Logger
+	// Validate checks what the extensions declared: the engine reads only
+	// the core's part. It runs in the declare phase, so its error fails
+	// server.php there, as an error in the core's part does.
+	Validate func(*spec.Spec) error
 }
 
 // Start boots PHP, runs server.php once to collect its declaration (the
@@ -162,6 +167,7 @@ func Start(opts Options) (*Engine, error) {
 		runtimeFile: runtimeFile,
 		phpIni:      opts.PHPIni,
 		log:         logger,
+		validate:    opts.Validate,
 		bootDone:    make(chan error, 1),
 		shutdownCh:  make(chan struct{}),
 		stopped:     make(chan struct{}),
@@ -239,9 +245,6 @@ func pick(override, declared int) int {
 	}
 	return runtime.NumCPU()
 }
-
-// Spec is what server.php declared.
-func (e *Engine) Spec() *spec.Spec { return e.spec }
 
 // Errors reports a PHP thread that could not be restarted (see supervise.go).
 func (e *Engine) Errors() <-chan error { return e.threadErrs }
@@ -371,6 +374,9 @@ func goCairoSpec(tid C.int, data *C.char, n C.int) *C.char {
 	raw := C.GoBytes(unsafe.Pointer(data), n)
 	if tid < 0 {
 		s, err := spec.Parse(raw)
+		if err == nil && e.validate != nil {
+			err = e.validate(s)
+		}
 		if err != nil {
 			return C.CString(err.Error())
 		}

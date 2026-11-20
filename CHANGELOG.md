@@ -63,6 +63,11 @@ change the PHP API; patch versions do not.
   its routes. An extension's PHP file hooks into each request thread
   (`Scheduler::onStart()`, `afterRequest()`), and what answers a server's
   requests also names their routes. Eighth step of the same separation.
+- Internal, no change in behaviour: the form in which the status and headers
+  of an HTTP answer cross from PHP to Go leaves the core's wire files
+  (`internal/sapi/wire.c`, `internal/wire`) for the HTTP server's
+  (`internal/sapi/http_answer.c`, `internal/httpserver/answer.go`). Ninth
+  step of the same separation.
 
 ## [0.4.0] - 2026-11-19
 

@@ -9,11 +9,6 @@
 
 #include "wire.h"
 
-// Keep in sync with internal/wire/wire.go.
-enum {
-	TAG_NULL = 0, TAG_FALSE, TAG_TRUE, TAG_INT, TAG_FLOAT, TAG_STRING, TAG_LIST, TAG_MAP, TAG_JSON
-};
-
 #define WIRE_MAX_DEPTH 64
 
 typedef struct {
@@ -156,68 +151,5 @@ int cairo_wire_decode(const char *buf, size_t len, zval *out)
 		zval_ptr_dtor(out);
 		return FAILURE;
 	}
-	return SUCCESS;
-}
-
-static void put_u32(smart_str *out, uint32_t v)
-{
-	char b[4] = {(char)(v & 0xff), (char)(v >> 8 & 0xff), (char)(v >> 16 & 0xff), (char)(v >> 24 & 0xff)};
-	smart_str_appendl(out, b, 4);
-}
-
-static void put_string(smart_str *out, const char *s, size_t len)
-{
-	smart_str_appendc(out, TAG_STRING);
-	put_u32(out, (uint32_t)len);
-	smart_str_appendl(out, s, len);
-}
-
-int cairo_wire_encode_response(zend_long status, HashTable *headers, smart_str *out)
-{
-	uint64_t u = (uint64_t)(int64_t)status;
-	smart_str_appendc(out, TAG_INT);
-	for (int i = 0; i < 8; i++) {
-		smart_str_appendc(out, (char)(u >> (8 * i) & 0xff));
-	}
-	smart_str_appendc(out, TAG_MAP);
-	put_u32(out, zend_hash_num_elements(headers));
-	zend_string *key;
-	zend_ulong idx;
-	zval *val;
-	ZEND_HASH_FOREACH_KEY_VAL(headers, idx, key, val) {
-		if (key != NULL) {
-			put_u32(out, (uint32_t)ZSTR_LEN(key));
-			smart_str_appendl(out, ZSTR_VAL(key), ZSTR_LEN(key));
-		} else {
-			char num[MAX_LENGTH_OF_LONG + 1];
-			int n = snprintf(num, sizeof(num), ZEND_ULONG_FMT, idx);
-			put_u32(out, (uint32_t)n);
-			smart_str_appendl(out, num, (size_t)n);
-		}
-		ZVAL_DEREF(val);
-		if (Z_TYPE_P(val) != IS_ARRAY) {
-			// A single value: header('X: y') style.
-			smart_str_appendc(out, TAG_LIST);
-			put_u32(out, 1);
-			zend_string *s = zval_try_get_string(val);
-			if (s == NULL) {
-				return FAILURE;
-			}
-			put_string(out, ZSTR_VAL(s), ZSTR_LEN(s));
-			zend_string_release(s);
-			continue;
-		}
-		smart_str_appendc(out, TAG_LIST);
-		put_u32(out, zend_hash_num_elements(Z_ARRVAL_P(val)));
-		zval *item;
-		ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(val), item) {
-			zend_string *s = zval_try_get_string(item);
-			if (s == NULL) {
-				return FAILURE;
-			}
-			put_string(out, ZSTR_VAL(s), ZSTR_LEN(s));
-			zend_string_release(s);
-		} ZEND_HASH_FOREACH_END();
-	} ZEND_HASH_FOREACH_END();
 	return SUCCESS;
 }

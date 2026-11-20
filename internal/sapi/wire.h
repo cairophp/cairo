@@ -2,16 +2,14 @@
 #define CAIRO_WIRE_H
 
 #include <php.h>
-#include <zend_smart_str.h>
+
+// The tags of internal/wire's values. Keep in sync with internal/wire/wire.go.
+enum {
+	TAG_NULL = 0, TAG_FALSE, TAG_TRUE, TAG_INT, TAG_FLOAT, TAG_STRING, TAG_LIST, TAG_MAP, TAG_JSON
+};
 
 // Decodes one internal/wire value filling all of buf into out. Returns
 // SUCCESS, or FAILURE (out is then undefined) for a malformed buffer.
 int cairo_wire_decode(const char *buf, size_t len, zval *out);
-
-// Appends an HTTP response's status (an int) and headers (a map of lists of
-// strings; a non-array value is a list of one) in internal/wire's format.
-// Returns FAILURE when a header value cannot be turned into a string (an
-// exception is then pending).
-int cairo_wire_encode_response(zend_long status, HashTable *headers, smart_str *out);
 
 #endif

@@ -271,7 +271,7 @@ func callPHP(ctx context.Context, php Dispatcher, ev *event) (response, error) {
 	if err != nil {
 		return response{}, err
 	}
-	status, header, err := wire.DecodeResponse(raw)
+	status, header, err := decodeAnswer(raw)
 	if err != nil {
 		return response{}, fmt.Errorf("%w: %w", errBadResponse, err)
 	}

@@ -27,7 +27,7 @@ on I/O through Cairo, only its fiber suspends and Go does the waiting.
 | `internal/sapi/phpfiles.go` | How an extension's PHP file joins the runtime: `registerPHP("name.php")` from its Go file's `init()`, loaded at start, or on first use of the classes it names |
 | `internal/sapi/onstart.go`, `probe.go` | What an extension runs when the engine starts (`registerStart`), and how it follows requests through the engine: `probeRequests` gives each request a `probe`, which is told of the waits of its fibers and of the stretches of PHP its thread ran. The engine measures nothing itself. `timing.go` is the one that asks: the request timing behind the slow log (`slowlog.go`) and the heavy routes (`heavy.go`) |
 | `internal/sapi/blocking.go`, `blocking.c`, `php/blocking.php` | The blocking detector, which watches threads instead of requests: it asks the engine which threads are running PHP (`eachBusyThread`) and interrupts one that has for too long (`interruptThread`), and that thread reports from the `interrupt` of the detector's `cairo_extension`. Its goroutine ends when the engine does (`stopping`) |
-| `php/http_answer.php`, `php/grpc_answer.php` | How a request of each server is answered. The scheduler knows no server: a server's PHP file gives it an `Answer` with `Scheduler::answerWith()`, which answers a request in the request's fiber and names its route for the logs. `internal/sapi/http_answer.c` has `cairo_respond_http()`, which sends an HTTP answer to Go |
+| `php/http_answer.php`, `php/grpc_answer.php` | How a request of each server is answered. The scheduler knows no server: a server's PHP file gives it an `Answer` with `Scheduler::answerWith()`, which answers a request in the request's fiber and names its route for the logs. `internal/sapi/http_answer.c` has `cairo_respond_http()`, which sends an HTTP answer to Go. The form its status and headers cross in is the HTTP server's own: written there, read by `decodeAnswer` in `internal/httpserver/answer.go` |
 | `php/query_watch.php`, `php/leak_watch.php` | How a diagnostic joins the scheduler, which names none: `Scheduler::onStart()` runs it on each request thread that starts, and there it asks to be called after each request (`afterRequest()`) when the app turned it on. The detectors themselves (`queries.php`, `leaks.php`) load on first use |
 | `php/revolt.php` | `Cairo\Revolt\Driver`, loaded when `revolt/event-loop` is installed |
 | `php/cache.php`, `php/pool.php` | `Cairo\Cache` and `Cairo\Pool`, each loaded on first use |
@@ -94,13 +94,14 @@ their own part of the declaration); the engine times no request (the slow
 log and the heavy routes get a probe for each request and read their own
 settings); the engine detects no blocking (the detector asks which threads
 are busy and keeps what it reported, its report left `cairo.c` for
-`blocking.c`, and its setting has its own part of the declaration); and the
+`blocking.c`, and its setting has its own part of the declaration); the
 scheduler starts no detector and names no route (the query and leak
-detectors hook into it, and each server's `Answer` names its routes). Still
-mixed, in two small places: the format of an HTTP answer is in the core's
-wire files (`cairo_wire_encode_response()` in `wire.c`, `DecodeResponse` in
-`internal/wire`), and `engine.go` links libcurl for the curl hook. Do not
-add to those: a new feature goes on the extension side, in its own files.
+detectors hook into it, and each server's `Answer` names its routes); and
+the core's wire files hold no server's format (the HTTP answer's encoder
+left `wire.c` for `http_answer.c`, and its decoder left `internal/wire` for
+`internal/httpserver`). Still mixed, in one small place: `engine.go` links
+libcurl for the curl hook. Do not add to that: a new feature goes on the
+extension side, in its own files.
 
 ## Building and testing
 

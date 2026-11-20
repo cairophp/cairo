@@ -1,6 +1,7 @@
 package test
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"os"
@@ -8,6 +9,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 // examples/leaks, in both modes: the unregistered Tenant::$current and the
@@ -66,5 +70,45 @@ func TestDetectLeaks(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A gRPC call is named by its service and method in the report, and a static
+// that App::detectLeaks() was told to ignore is not reported.
+func TestDetectLeaksGRPC(t *testing.T) {
+	addr := freeAddr()
+	cmd := exec.Command(cairoBin, "serve", "testdata/leaks-grpc/server.php", "--threads", "1")
+	cmd.Env = append(os.Environ(), "CAIRO_GRPC="+addr)
+	var logs syncBuffer
+	cmd.Stdout, cmd.Stderr = os.Stderr, &logs
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Signal(os.Interrupt)
+		_ = cmd.Wait()
+	})
+	if err := waitFor(addr, 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	g := newGreeter(t)
+	g.conn = conn
+	for _, name := range []string{"a", "b", "c"} {
+		if _, err := g.call(context.Background(), "SayHello", map[string]any{"name": name}); err != nil {
+			t.Fatalf("SayHello: %v\n%s", err, logs.String())
+		}
+	}
+	// Seen::$ignored is declared first: had it been reported, its line would
+	// be there before the one this waits for.
+	const want = `route=helloworld.Greeter/SayHello static=Seen::$last`
+	for deadline := time.Now().Add(2 * time.Second); !strings.Contains(logs.String(), want) && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+	}
+	if all := logs.String(); !strings.Contains(all, want) || strings.Contains(all, "Seen::$ignored") {
+		t.Fatalf("want %s and nothing about Seen::$ignored:\n%s", want, all)
 	}
 }

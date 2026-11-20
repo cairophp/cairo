@@ -15,6 +15,7 @@ import (
 var leaks repeatedLog
 
 func init() {
+	registerPHP("leak_watch.php")
 	registerPHP("leaks.php", `Cairo\Internal\Leaks`)
 	registerOp("leaks.report", func(_ context.Context, payload []byte) (any, error) {
 		var req struct {

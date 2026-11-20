@@ -58,6 +58,11 @@ change the PHP API; patch versions do not.
   interrupts one through a hook that the C code of any extension can use,
   with its setting in its own part of the declaration. Seventh step of the
   same separation.
+- Internal, no change in behaviour: the fiber scheduler no longer starts the
+  repeated query detector and the leak detector or knows how a server names
+  its routes. An extension's PHP file hooks into each request thread
+  (`Scheduler::onStart()`, `afterRequest()`), and what answers a server's
+  requests also names their routes. Eighth step of the same separation.
 
 ## [0.4.0] - 2026-11-19
 

@@ -12,7 +12,7 @@ namespace Cairo\Internal {
     use Cairo\Grpc;
 
     /** Runs the method of a gRPC call and sends its reply; one per PHP thread. */
-    final class GrpcAnswer
+    final class GrpcAnswer implements Answer
     {
         /** @var array<string, ?string> "class::method" => request class, or null for arrays */
         private array $requestClasses = [];
@@ -99,7 +99,13 @@ namespace Cairo\Internal {
             Context::current()->markAnswered();
             \cairo_respond((int) $event['id'], json_encode($out, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
         }
+
+        /** @param array<string, mixed> $event */
+        public function route(array $event): string
+        {
+            return $this->scheduler->app()->routeName((int) $event['service']) . '/' . (string) $event['method'];
+        }
     }
 
-    Scheduler::answerWith('grpc', static fn (Scheduler $scheduler): \Closure => (new GrpcAnswer($scheduler))->answer(...));
+    Scheduler::answerWith('grpc', static fn (Scheduler $scheduler): Answer => new GrpcAnswer($scheduler));
 }

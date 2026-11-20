@@ -46,6 +46,7 @@ func (l *repeatedLog) due(key string, now time.Time) bool {
 var repeated repeatedLog
 
 func init() {
+	registerPHP("query_watch.php")
 	registerPHP("queries.php", `Cairo\Internal\Queries`)
 	registerC(&C.cairo_pdo_watch)
 	registerOp("sql.repeated", func(_ context.Context, payload []byte) (any, error) {

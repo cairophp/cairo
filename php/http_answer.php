@@ -13,7 +13,7 @@ namespace Cairo\Internal {
     use Cairo\Http;
 
     /** Runs the handler of an HTTP request and sends its response; one per PHP thread. */
-    final class HttpAnswer
+    final class HttpAnswer implements Answer
     {
         private readonly App $app;
         /** @var array<int, mixed> route id => its handler, a framework object already wrapped */
@@ -81,6 +81,12 @@ namespace Cairo\Internal {
             \cairo_respond_http((int) $event['id'], $response->status, $response->headers, $response->body);
         }
 
+        /** @param array<string, mixed> $event */
+        public function route(array $event): string
+        {
+            return $this->app->routeName((int) $event['route']);
+        }
+
         /** @return array<string, list<string>> the headers set with header() */
         private static function sentHeaders(): array
         {
@@ -94,5 +100,5 @@ namespace Cairo\Internal {
         }
     }
 
-    Scheduler::answerWith('http', static fn (Scheduler $scheduler): \Closure => (new HttpAnswer($scheduler))->answer(...));
+    Scheduler::answerWith('http', static fn (Scheduler $scheduler): Answer => new HttpAnswer($scheduler));
 }

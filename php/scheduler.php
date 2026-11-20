@@ -12,15 +12,42 @@ namespace Cairo\Internal {
     use Cairo\App;
     use Cairo\Context;
 
+    /**
+     * What answers the requests of one type on a thread. A server's PHP file
+     * says how to make it (Scheduler::answerWith()).
+     */
+    interface Answer
+    {
+        /**
+         * Answers the request of $event, inside the request's fiber.
+         *
+         * @param array<string, mixed> $event
+         */
+        public function answer(array $event): void;
+
+        /**
+         * The route of $event's request, as logs name it.
+         *
+         * @param array<string, mixed> $event
+         */
+        public function route(array $event): string;
+    }
+
     /** One per PHP thread: runs every request in its own fiber. */
     final class Scheduler
     {
         private static ?self $instance = null;
-        /** @var array<string, \Closure(self): \Closure> request type => what answerWith() was given for it */
+        /** @var array<string, \Closure(self): Answer> request type => what answerWith() was given for it */
         private static array $makers = [];
+        /** @var list<\Closure(self): void> what onStart() was given */
+        private static array $starters = [];
 
         /** @var array<string, \Closure> request type => what answers such a request on this thread */
         private array $answers = [];
+        /** @var array<string, \Closure> request type => what names the route of such a request */
+        private array $routes = [];
+        /** @var list<\Closure(int, string): void> what afterRequest() was given, the last one first */
+        private array $afterRequest = [];
         /** @var array<int, \Fiber> I/O operation id => waiting fiber */
         private array $io = [];
         private \SplQueue $ready;
@@ -47,11 +74,6 @@ namespace Cairo\Internal {
         private bool $retireAsked = false;
         private bool $retiring = false;
 
-        /** App::repeatedQueries() is on: PDO and Cairo\Sql report their statements */
-        private static bool $watchQueries = false;
-        /** App::detectLeaks() is on */
-        private readonly bool $watchLeaks;
-
         public function __construct(private readonly App $app)
         {
             $this->ready = new \SplQueue();
@@ -59,43 +81,50 @@ namespace Cairo\Internal {
             $this->pending = new \SplQueue();
             self::$instance = $this;
             foreach (self::$makers as $type => $make) {
-                $this->answers[$type] = $make($this);
+                $answer = $make($this);
+                $this->answers[$type] = $answer->answer(...);
+                $this->routes[$type] = $answer->route(...);
             }
-            self::$watchQueries = $app->repeatedQueriesAt() > 0;
-            \cairo_watch_queries(self::$watchQueries);
-            $ignored = $app->leaksIgnored();
-            $this->watchLeaks = $ignored !== null;
-            if ($ignored !== null) {
-                Leaks::start($ignored);
+            foreach (self::$starters as $start) {
+                $start($this);
             }
         }
 
         /**
          * @internal A server's PHP file says how its requests are answered.
          * Every request thread calls $make once, with its scheduler, and gets
-         * what it will call with each event of that type, inside the request's
-         * fiber.
+         * the Answer for the events of that type.
          *
-         * @param \Closure(self): \Closure $make
+         * @param \Closure(self): Answer $make
          */
         public static function answerWith(string $type, \Closure $make): void
         {
             self::$makers[$type] = $make;
         }
 
-        /** @internal */
-        public static function watchingQueries(): bool
+        /**
+         * @internal An extension's PHP file says what to run when a request
+         * thread starts: each one calls $start once, with its scheduler,
+         * before it takes its first event.
+         *
+         * @param \Closure(self): void $start
+         */
+        public static function onStart(\Closure $start): void
         {
-            return self::$watchQueries;
+            self::$starters[] = $start;
         }
 
-        /** @param array<string, mixed> $event */
-        private function routeOf(array $event): string
+        /**
+         * @internal Calls $after when each request of this thread ends, in
+         * the request's fiber once its context has finished, with the
+         * request's id and its route as logs name it. What was added last is
+         * called first, as destructors are.
+         *
+         * @param \Closure(int, string): void $after
+         */
+        public function afterRequest(\Closure $after): void
         {
-            if ($event['type'] === 'http') {
-                return $this->app->routeName((int) $event['route']);
-            }
-            return $this->app->routeName((int) $event['service']) . '/' . (string) $event['method'];
+            array_unshift($this->afterRequest, $after);
         }
 
         public static function instance(): self
@@ -309,11 +338,11 @@ namespace Cairo\Internal {
                 } finally {
                     $context->finish();
                     \cairo_local_end($context->requestId);
-                    if (self::$watchQueries) {
-                        Queries::end($context->requestId, $this->routeOf($event), $this->app->repeatedQueriesAt());
-                    }
-                    if ($this->watchLeaks) {
-                        Leaks::check($this->routeOf($event));
+                    if ($this->afterRequest !== []) {
+                        $route = ($this->routes[$event['type']])($event);
+                        foreach ($this->afterRequest as $after) {
+                            $after($context->requestId, $route);
+                        }
                     }
                     $this->active--;
                     $this->served++;

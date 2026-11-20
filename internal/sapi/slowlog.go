@@ -80,8 +80,8 @@ type reqTiming struct {
 	longest atomic.Int64
 }
 
-// ran records one stretch of PHP that resumed this request.
-func (t *reqTiming) ran(d time.Duration) {
+// Ran records one stretch of PHP that resumed this request.
+func (t *reqTiming) Ran(d time.Duration) {
 	for {
 		old := t.longest.Load()
 		if int64(d) <= old || t.longest.CompareAndSwap(old, int64(d)) {
@@ -90,8 +90,8 @@ func (t *reqTiming) ran(d time.Duration) {
 	}
 }
 
-// waitBegin marks the start of a wait and returns its start time.
-func (t *reqTiming) waitBegin() time.Time {
+// WaitBegin marks the start of a wait and returns its start time.
+func (t *reqTiming) WaitBegin() time.Time {
 	now := time.Now()
 	t.mu.Lock()
 	if t.waiting == 0 {
@@ -102,8 +102,8 @@ func (t *reqTiming) waitBegin() time.Time {
 	return now
 }
 
-// waitEnd records one wait for the operation op that began at start.
-func (t *reqTiming) waitEnd(op string, start time.Time) {
+// WaitEnd records one wait for the operation op that began at start.
+func (t *reqTiming) WaitEnd(op string, start time.Time) {
 	k := opKind(op)
 	now := time.Now()
 	t.count[k].Add(1)

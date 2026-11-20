@@ -3,7 +3,6 @@ package sapi
 import (
 	"encoding/json"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,39 +35,6 @@ func TestBlockingThreshold(t *testing.T) {
 	}
 }
 
-// Busy is running PHP: the thread took an event and has not come back for
-// the next one.
-func TestEachBusyThread(t *testing.T) {
-	since := time.Date(2026, 11, 20, 1, 2, 3, 456, time.UTC)
-	waiting, busy := &thread{id: 4}, &thread{id: 7}
-	busy.busySince.Store(since.UnixNano())
-	e := &Engine{workers: make([]atomic.Pointer[thread], 3)}
-	e.workers[0].Store(waiting)
-	e.workers[2].Store(busy) // and no thread in slot 1
-
-	got := map[int]time.Time{}
-	e.eachBusyThread(func(tid int, since time.Time) { got[tid] = since })
-	if len(got) != 1 || !got[7].Equal(since) {
-		t.Fatalf("busy threads: %v, want only thread 7 since %s", got, since)
-	}
-}
-
-// What an extension's goroutine ends on is the channel that Shutdown closes.
-func TestStopping(t *testing.T) {
-	e := &Engine{shutdownCh: make(chan struct{})}
-	select {
-	case <-e.stopping():
-		t.Fatal("stopping() is closed before Shutdown began")
-	default:
-	}
-	close(e.shutdownCh)
-	select {
-	case <-e.stopping():
-	default:
-		t.Fatal("stopping() is open after Shutdown closed its channel")
-	}
-}
-
 // fakeThreads is an engine whose threads the test sets busy.
 type fakeThreads struct {
 	stop chan struct{}
@@ -79,9 +45,9 @@ type fakeThreads struct {
 	interrupted []int
 }
 
-func (f *fakeThreads) stopping() <-chan struct{} { return f.stop }
+func (f *fakeThreads) Stopping() <-chan struct{} { return f.stop }
 
-func (f *fakeThreads) eachBusyThread(fn func(tid int, since time.Time)) {
+func (f *fakeThreads) EachBusyThread(fn func(tid int, since time.Time)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ticks++
@@ -91,7 +57,7 @@ func (f *fakeThreads) eachBusyThread(fn func(tid int, since time.Time)) {
 }
 
 // Called from fn, so with mu held.
-func (f *fakeThreads) interruptThread(tid int) { f.interrupted = append(f.interrupted, tid) }
+func (f *fakeThreads) InterruptThread(tid int) { f.interrupted = append(f.interrupted, tid) }
 
 // waitFor polls until ok says yes of the ticks so far and the threads
 // interrupted so far.

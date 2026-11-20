@@ -1,7 +1,7 @@
 Third-party code in Cairo
 =========================
 
-internal/sapi/cairo.c
+internal/core/cairo.c
 ---------------------
 
 Cairo's SAPI module (the "cairo" sapi_module_struct, its startup and
@@ -90,7 +90,7 @@ FrankenPHP
 
 The design of Cairo's PHP threads (worker threads created in C so PHP fibers
 can call back into Go, one long-lived PHP request per thread) and parts of
-the SAPI setup in internal/sapi/cairo.c follow FrankenPHP
+the SAPI setup in internal/core/cairo.c follow FrankenPHP
 (https://github.com/php/frankenphp), distributed under the MIT license:
 
 The MIT license

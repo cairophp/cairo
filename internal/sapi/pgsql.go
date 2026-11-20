@@ -20,6 +20,8 @@ import (
 	"unsafe"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/cairophp/cairo/internal/core"
 )
 
 // Cairo's PDO driver for PostgreSQL ("pgsql:" DSNs) is C on the PHP side and
@@ -453,7 +455,7 @@ func pgRequestFrom(data []byte) (pgRequest, error) {
 // the query.
 func init() {
 	registerC(&C.cairo_pdo_pgsql)
-	registerFiberOp("pg", func(ctx context.Context, payload []byte) (any, string) {
+	core.RegisterFiberOp("pg", func(ctx context.Context, payload []byte) (any, string) {
 		req, err := pgRequestFrom(payload)
 		if err != nil {
 			return nil, err.Error()
@@ -465,7 +467,7 @@ func init() {
 					C.cairo_pg_result_free(r)
 				}
 			}
-			return nil, ctxError(ctx)
+			return nil, core.CtxError(ctx)
 		}
 		return resp, ""
 	})

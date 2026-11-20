@@ -8,8 +8,9 @@ import (
 )
 
 // stubs/cairo.php, the IDE stubs shipped by the Composer package, is
-// generated from the files in php/ and must be up to date. It must also load in
-// plain PHP, with no Cairo\Internal names in it.
+// generated from the PHP files of the core and the extensions and must be up
+// to date. It must also load in plain PHP, with no Cairo\Internal names in
+// it.
 func TestStubsUpToDate(t *testing.T) {
 	php, err := exec.LookPath("php")
 	if err != nil {

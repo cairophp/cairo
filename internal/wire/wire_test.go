@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// decode mirrors internal/sapi/wire.c, so the format can be checked without
+// decode mirrors internal/core/wire.c, so the format can be checked without
 // PHP: same tags, same bounds checks, same depth limit. JSON values come back
 // as their raw text.
 func decode(b []byte) (any, error) {

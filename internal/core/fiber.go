@@ -1,4 +1,4 @@
-package sapi
+package core
 
 import "C"
 
@@ -20,7 +20,7 @@ type fiber struct {
 	thread *thread
 	ops    chan op
 	closed chan struct{} // child fibers only: closed by cairo_fiber_close
-	probe  probe         // its request's, when requests are probed
+	probe  Probe         // its request's, when requests are probed
 }
 
 // op is an operation a fiber asked Go to perform while it is suspended. The
@@ -43,7 +43,7 @@ type op struct {
 func (e *Engine) runOp(f *fiber, o op) {
 	var began time.Time
 	if f.probe != nil {
-		began = f.probe.waitBegin()
+		began = f.probe.WaitBegin()
 	}
 	ev := map[string]any{"type": "io", "io": o.ID}
 	switch o.Op {
@@ -53,7 +53,7 @@ func (e *Engine) runOp(f *fiber, o op) {
 		case <-timer.C:
 		case <-f.ctx.Done():
 			timer.Stop()
-			ev["error"] = ctxError(f.ctx)
+			ev["error"] = CtxError(f.ctx)
 		}
 	case "park":
 		// A fiber blocked on Cairo\Channel or select(): wait until PHP wakes
@@ -61,12 +61,12 @@ func (e *Engine) runOp(f *fiber, o op) {
 		ev["result"] = e.park(f.ctx, o.ID, o.Timeout)
 		if ev["result"] == "done" {
 			delete(ev, "result")
-			ev["error"] = ctxError(f.ctx)
+			ev["error"] = CtxError(f.ctx)
 		}
 	case "offload":
 		res, err := e.runOffload(f.ctx, o.Payload)
 		if err != nil {
-			ev["error"] = ctxError(f.ctx)
+			ev["error"] = CtxError(f.ctx)
 		} else {
 			ev["result"] = res
 		}
@@ -86,7 +86,7 @@ func (e *Engine) runOp(f *fiber, o op) {
 		case errors.Is(err, errPollTimeout):
 			ev["result"] = "timeout"
 		case f.ctx.Err() != nil:
-			ev["error"] = ctxError(f.ctx)
+			ev["error"] = CtxError(f.ctx)
 		default:
 			ev["error"] = err.Error()
 		}
@@ -106,7 +106,7 @@ func (e *Engine) runOp(f *fiber, o op) {
 		case errors.Is(err, errPollTimeout):
 			ev["result"] = "timeout"
 		case f.ctx.Err() != nil:
-			ev["error"] = ctxError(f.ctx)
+			ev["error"] = CtxError(f.ctx)
 		default:
 			ev["error"] = err.Error()
 		}
@@ -127,7 +127,7 @@ func (e *Engine) runOp(f *fiber, o op) {
 		res, err := h(f.ctx, []byte(o.Payload))
 		switch {
 		case f.ctx.Err() != nil:
-			ev["error"] = ctxError(f.ctx)
+			ev["error"] = CtxError(f.ctx)
 		case err != nil:
 			ev["error"] = err.Error()
 		default:
@@ -135,12 +135,14 @@ func (e *Engine) runOp(f *fiber, o op) {
 		}
 	}
 	if f.probe != nil {
-		f.probe.waitEnd(o.Op, began)
+		f.probe.WaitEnd(o.Op, began)
 	}
 	f.thread.inbox <- event{data: wire.Encode(ev), probe: f.probe}
 }
 
-func ctxError(ctx context.Context) string {
+// CtxError is how an operation tells PHP that its context ended, which PHP
+// turns into the context's exception: "deadline_exceeded" or "canceled".
+func CtxError(ctx context.Context) string {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return "deadline_exceeded"
 	}
@@ -176,7 +178,7 @@ func goContextCancel(id C.longlong) {
 
 func (e *Engine) openFiber(tid int, parent int64, timeout float64) C.longlong {
 	pctx := context.Background()
-	var p probe
+	var p Probe
 	if v, ok := e.fibers.Load(parent); ok {
 		pctx, p = v.(*fiber).ctx, v.(*fiber).probe
 	}

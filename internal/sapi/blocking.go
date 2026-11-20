@@ -9,6 +9,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/cairophp/cairo/internal/core"
 	"github.com/cairophp/cairo/internal/spec"
 )
 
@@ -22,11 +23,11 @@ import (
 func init() {
 	registerC(&C.cairo_blocking)
 	registerPHP("blocking.php")
-	registerStart(startBlockingDetector)
+	core.RegisterStart(startBlockingDetector)
 }
 
-func startBlockingDetector(e *Engine) error {
-	threshold, err := blockingThreshold(e.spec)
+func startBlockingDetector(e *core.Engine) error {
+	threshold, err := blockingThreshold(e.Spec())
 	if err != nil {
 		return err
 	}
@@ -52,9 +53,9 @@ func blockingThreshold(s *spec.Spec) (time.Duration, error) {
 
 // busyThreads is what the detector needs of the engine.
 type busyThreads interface {
-	stopping() <-chan struct{}
-	eachBusyThread(fn func(tid int, since time.Time))
-	interruptThread(tid int)
+	Stopping() <-chan struct{}
+	EachBusyThread(fn func(tid int, since time.Time))
+	InterruptThread(tid int)
 }
 
 // detectBlocking asks each thread once per busy stretch, until the engine
@@ -65,14 +66,14 @@ func detectBlocking(e busyThreads, threshold time.Duration) {
 	asked := map[int]time.Time{} // thread id => the start of the stretch it was last asked about
 	for {
 		select {
-		case <-e.stopping():
+		case <-e.Stopping():
 			return
 		case now := <-tick.C:
-			e.eachBusyThread(func(tid int, since time.Time) {
+			e.EachBusyThread(func(tid int, since time.Time) {
 				if busy := now.Sub(since); busy >= threshold && !asked[tid].Equal(since) {
 					asked[tid] = since
 					C.cairo_report_blocking(C.int(tid), C.int(busy.Milliseconds()))
-					e.interruptThread(tid)
+					e.InterruptThread(tid)
 				}
 			})
 		}

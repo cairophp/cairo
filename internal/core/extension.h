@@ -3,7 +3,7 @@
 
 // The C side of an extension: what the SAPI module (cairo.c) does on its
 // behalf, so that the module names no extension. An extension defines one
-// and its Go file adds it from init() with registerC. Every member may be
+// and its Go file adds it from init() with RegisterC. Every member may be
 // NULL.
 struct _zend_function_entry;
 
@@ -20,7 +20,7 @@ typedef struct cairo_extension {
 int cairo_extension_add(const cairo_extension *ext);
 
 // How an extension gets the attention of a request thread that is running
-// PHP: its Go code calls Engine.interruptThread() with the thread's id, and
+// PHP: its Go code calls Engine.InterruptThread() with the thread's id, and
 // at its next safe point (a loop back-edge or a call) that thread runs the
 // interrupt of every extension, inside whatever fiber is running and with no
 // exception pending. An extension tells its own interrupts from the others'

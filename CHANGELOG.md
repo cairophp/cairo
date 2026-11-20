@@ -85,6 +85,10 @@ change the PHP API; patch versions do not.
   last two seconds, so every PHP thread compiled the runtime itself, with no
   optimizer and nothing shared between threads. The files now get an old
   modification time.
+- Performance: on glibc builds, a call from a PHP fiber into Go no longer
+  makes Go's runtime fetch the thread's stack from the system each time (a
+  `sched_getaffinity` system call and an allocation). Cairo reads each
+  thread's stack once and answers from that.
 
 ## [0.4.0] - 2026-11-19
 

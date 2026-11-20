@@ -25,6 +25,7 @@ on I/O through Cairo, only its fiber suspends and Go does the waiting.
 | `internal/wire/` | The binary format of the events Go sends to PHP threads (requests, op results); `internal/sapi/wire.c` decodes it into PHP arrays. Bodies cross as raw bytes |
 | `php/` | The PHP side, one file per concern, embedded in the binary. Every PHP thread runs `runtime.php`, which loads the core's files (`app.php`, `context.php`, `channel.php`, `async.php`, `offload.php`, `scheduler.php`, `go.php`) and then the files of the extensions |
 | `internal/sapi/phpfiles.go` | How an extension's PHP file joins the runtime: `registerPHP("name.php")` from its Go file's `init()`, loaded at start, or on first use of the classes it names |
+| `php/http_answer.php`, `php/grpc_answer.php` | How a request of each server is answered. The scheduler knows no server: a server's PHP file registers what answers its requests with `Scheduler::answerWith()`, and the scheduler runs that in the request's fiber. `internal/sapi/http_answer.c` has `cairo_respond_http()`, which sends an HTTP answer to Go |
 | `php/revolt.php` | `Cairo\Revolt\Driver`, loaded when `revolt/event-loop` is installed |
 | `php/cache.php`, `php/pool.php` | `Cairo\Cache` and `Cairo\Pool`, each loaded on first use |
 | `internal/spec/` | The server declaration that `server.php` sends to Go |
@@ -57,23 +58,25 @@ yes to either makes it core.
 
 Extensions depend on the core, never the reverse: core code does not name an
 extension. An extension reaches the core through Go operations (`registerOp`,
-`registerFiberOp`), a server that calls `Engine.Dispatch`, its own embedded
-PHP file (`registerPHP`), and a `cairo_extension` for its C code
+`registerFiberOp`), a server that calls `Engine.Dispatch` and whose PHP file
+says how its requests are answered (`Scheduler::answerWith()`), its own
+embedded PHP file (`registerPHP`), and a `cairo_extension` for its C code
 (`registerC`). Engine hooks for the diagnostics are the one way still to be
 built.
 
 The code is moving behind that line in steps that change no behaviour, and
 everything still shares `internal/sapi` and `php/`. Done: no extension
 operation is written into the engine (`dial`, `starttls`, `stoptls`,
-`lookup` and `pg` register themselves), and the SAPI module starts no
-extension by name (the hooks, the PDO pgsql driver, the query watcher and
-the curl hook add their C code with `registerC`), and `php/runtime.php`
-loads no extension's file by name (each one is added with `registerPHP`).
-Still mixed: `cairo.c` has the HTTP answer and the blocking report, the
-scheduler has `http()` and `grpc()` methods, `Cairo\App` and
-`internal/spec` know every extension's settings, and the diagnostics keep
-fields in the engine's structs and in the scheduler. Do not add to those: a
-new feature goes on the extension side, in its own files.
+`lookup` and `pg` register themselves); the SAPI module starts no extension
+by name (the hooks, the PDO pgsql driver, the query watcher and the curl
+hook add their C code with `registerC`); `php/runtime.php` loads no
+extension's file by name (each one is added with `registerPHP`); and the
+scheduler answers no request itself (the HTTP and gRPC servers register
+what does, and the HTTP answer left `cairo.c` for `http_answer.c`). Still
+mixed: `cairo.c` has the blocking report, `Cairo\App` and `internal/spec`
+know every extension's settings, and the diagnostics keep fields in the
+engine's structs and in the scheduler. Do not add to those: a new feature
+goes on the extension side, in its own files.
 
 ## Building and testing
 

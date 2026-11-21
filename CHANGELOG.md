@@ -170,6 +170,13 @@ change the PHP API; patch versions do not.
   and `tryRecv()`: a send and a receive with nobody waiting take 0.1 µs
   instead of 1.2 µs, and a `select()` that finds a channel ready less than
   half its time. Nothing changes in what they do.
+- The scheduler of a PHP thread keeps its fibers in C: the context each
+  fiber runs under, the fibers that wait for their next task, the queue of
+  those to resume, and the parked waits with their timers. A `sleep(0)`
+  takes 0.7 µs instead of 1.4 µs, `Context::current()` 33 ns instead of 69
+  ns, and a route that queries MySQL through PDO, which parks its fiber for
+  every wait on the socket, answers 16% more requests per second. Fibers
+  that sleep until the same moment wake in the order they went to sleep.
 
 ## [0.4.0] - 2026-11-19
 

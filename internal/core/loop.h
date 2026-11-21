@@ -1,6 +1,8 @@
 #ifndef CAIRO_LOOP_H
 #define CAIRO_LOOP_H
 
+#include <stdint.h>
+
 #include "queue.h"
 
 // The loop of a PHP thread: where it comes back between fibers, takes the
@@ -40,6 +42,14 @@ void cairo_loop_probe(void);
 // which it is until this is called, for not at all. Call it before the PHP
 // threads start.
 void cairo_loop_look(int64_t ns);
+
+// A fiber of request starts a wait that stays on the calling thread
+// (parked.h), which Go does not see. Returns what cairo_wait_ended() takes
+// back when the wait is over, with what the fiber waited in (the constants
+// of Waits in waits.php); 0 when requests are not probed, and then neither
+// function calls Go.
+int64_t cairo_wait_began(int64_t request);
+void cairo_wait_ended(int64_t request, int kind, int64_t began);
 
 // The calling PHP thread gave Go an answer: it looks before it sleeps, and
 // when requests are probed, Go learns how long the thread ran up to here,

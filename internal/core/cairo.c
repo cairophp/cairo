@@ -39,6 +39,8 @@
 #include "offload.h"
 #include "waitops.h"
 #include "fiber_local.h"
+#include "fibers.h"
+#include "parked.h"
 #include "_cgo_export.h"
 
 // -1 is the boot thread (declare phase); 0..n-1 are worker threads.
@@ -181,26 +183,14 @@ PHP_FUNCTION(cairo_go_call)
 
 PHP_FUNCTION(cairo_guard);
 PHP_FUNCTION(cairo_next_event);
-PHP_FUNCTION(cairo_wait_began);
-PHP_FUNCTION(cairo_wait_ended);
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_retire, 0, 0, 1)
 	ZEND_ARG_INFO(0, reason)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_next_event, 0, 0, 1)
-	ZEND_ARG_INFO(0, wait)
-	ZEND_ARG_INFO(0, sockets)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_wait_began, 0, 0, 1)
-	ZEND_ARG_INFO(0, request)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_wait_ended, 0, 0, 3)
-	ZEND_ARG_INFO(0, request)
-	ZEND_ARG_INFO(0, kind)
-	ZEND_ARG_INFO(0, began)
+	ZEND_ARG_INFO(0, idle)
+	ZEND_ARG_INFO(0, turn)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_stream_fd, 0, 0, 1)
@@ -215,8 +205,6 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_info, arginfo_cairo_none)
 	PHP_FE(cairo_spec, arginfo_cairo_spec)
 	PHP_FE(cairo_next_event, arginfo_cairo_next_event)
-	PHP_FE(cairo_wait_began, arginfo_cairo_wait_began)
-	PHP_FE(cairo_wait_ended, arginfo_cairo_wait_ended)
 	PHP_FE(cairo_respond, arginfo_cairo_respond)
 	PHP_FE(cairo_stream_fd, arginfo_cairo_stream_fd)
 	PHP_FE(cairo_retire, arginfo_cairo_retire)
@@ -230,7 +218,16 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_go_call, arginfo_cairo_go_call)
 	PHP_FE(cairo_guard, arginfo_cairo_guard)
 	PHP_FE(cairo_local_register, arginfo_cairo_local_register)
-	PHP_FE(cairo_local_bind, arginfo_cairo_local_bind)
+	PHP_FE(cairo_fiber_context, arginfo_cairo_fiber_context)
+	PHP_FE(cairo_fiber_bind, arginfo_cairo_fiber_bind)
+	PHP_FE(cairo_fiber_reuse, arginfo_cairo_fiber_reuse)
+	PHP_FE(cairo_fiber_idle, arginfo_cairo_fiber_idle)
+	PHP_FE(cairo_ready, arginfo_cairo_ready)
+	PHP_FE(cairo_run_ready, arginfo_cairo_run_ready)
+	PHP_FE(cairo_park, arginfo_cairo_park)
+	PHP_FE(cairo_wake, arginfo_cairo_wake)
+	PHP_FE(cairo_parked, arginfo_cairo_parked)
+	PHP_FE(cairo_parked_under, arginfo_cairo_parked_under)
 	PHP_FE(cairo_local_end, arginfo_cairo_local_end)
 	PHP_FE_END
 };
@@ -467,6 +464,9 @@ static PHP_MINIT_FUNCTION(cairo)
 		return FAILURE;
 	}
 	cairo_fiber_local_startup();
+	if (cairo_fibers_startup() == FAILURE) {
+		return FAILURE;
+	}
 	cairo_fiber_slot = zend_get_resource_handle("cairo");
 	if (cairo_fiber_slot >= 0) {
 		zend_observer_fiber_switch_register(cairo_fiber_switch);

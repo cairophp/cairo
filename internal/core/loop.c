@@ -16,7 +16,9 @@
 
 #include "extension.h"
 #include "loop.h"
+#include "fibers.h"
 #include "offload.h"
+#include "parked.h"
 #include "sockets.h"
 #include "wire.h"
 #include "_cgo_export.h"
@@ -202,7 +204,7 @@ void cairo_loop_answered(int tid)
 // Whether the kernel has a socket ready for the thread, asked without
 // waiting. An idle thread with nothing queued does not ask: it is about to
 // sleep in its epoll, which answers the same.
-static int sockets_ready(cairo_mailbox *box, zend_long wait)
+static int sockets_ready(cairo_mailbox *box, int64_t wait)
 {
 	return cairo_sockets_armed() > 0
 		&& (wait == 0 || box->next != NULL || __atomic_load_n(&box->inbox, __ATOMIC_SEQ_CST) != NULL)
@@ -212,7 +214,7 @@ static int sockets_ready(cairo_mailbox *box, zend_long wait)
 // The thread's next event from Go: what is queued, or what comes within
 // wait nanoseconds. NULL when a socket came first or the time is up. *now
 // follows the clock.
-static cairo_msg *next_msg(cairo_mailbox *box, zend_long wait, int handed, int64_t *now)
+static cairo_msg *next_msg(cairo_mailbox *box, int64_t wait, int handed, int64_t *now)
 {
 	cairo_msg *m = take(box);
 	if (m == NULL && wait != 0 && handed) {
@@ -230,24 +232,25 @@ static cairo_msg *next_msg(cairo_mailbox *box, zend_long wait, int handed, int64
 	return m;
 }
 
-// cairo_next_event(int $wait, bool $sockets = true): array|int|null
+// cairo_next_event(bool $idle, bool $turn = true): array|int|null
 // The thread comes back to its loop. Returns a socket that is ready for the
 // fiber that waits on it (cairo_socket_arm() in sockets.c), as its
 // descriptor; or the next event Go has for the thread (a request, a
 // finished operation, shutdown), which Go encodes in internal/wire's format
 // and wire.c turns into the array, or what another PHP thread has for it (an
-// offload job or its result, offload.h); or null when neither came within $wait
-// nanoseconds (0: do not wait; below 0: wait as long as it takes). Without
-// $sockets it does not ask the kernel for ready sockets, and still returns
-// those it asked for before: one question a turn of the loop is enough.
+// offload job or its result, offload.h); or null. A thread that is $idle
+// (PHP has nothing to run) waits for one of them when no fiber is ready
+// either, until the next timer of a parked fiber at the latest. Each turn
+// of the loop begins with a call that is its $turn: that one wakes the
+// parked fibers whose time is up (parked.h) and asks the kernel which
+// sockets are ready. The turn's other calls only return what is there.
 PHP_FUNCTION(cairo_next_event)
 {
-	zend_long wait;
-	bool sockets = 1;
+	bool idle, turn = 1;
 	ZEND_PARSE_PARAMETERS_START(1, 2)
-		Z_PARAM_LONG(wait)
+		Z_PARAM_BOOL(idle)
 		Z_PARAM_OPTIONAL
-		Z_PARAM_BOOL(sockets)
+		Z_PARAM_BOOL(turn)
 	ZEND_PARSE_PARAMETERS_END();
 	int tid = cairo_thread_id();
 	if (tid < 0) {
@@ -257,8 +260,12 @@ PHP_FUNCTION(cairo_next_event)
 	cairo_mailbox *box = &boxes[tid];
 	int64_t now = unix_ns();
 	int handed = came_back(box, tid, now);
+	int64_t wait = turn ? cairo_parked_tick() : 0;
+	if (!idle || cairo_fibers_queued() > 0) {
+		wait = 0;
+	}
 	int fd = cairo_sockets_next();
-	if (fd < 0 && sockets && sockets_ready(box, wait)) {
+	if (fd < 0 && turn && sockets_ready(box, wait)) {
 		fd = cairo_sockets_next();
 	}
 	cairo_msg *m = fd < 0 ? next_msg(box, wait, handed, &now) : NULL;
@@ -288,32 +295,15 @@ PHP_FUNCTION(cairo_next_event)
 	}
 }
 
-// cairo_wait_began(int $request): int
-// A fiber of the request starts a wait that stays on the thread (Waits in waits.php), which
-// Go does not see. Returns what cairo_wait_ended() takes back; 0 when
-// requests are not probed, and then neither function calls Go.
-PHP_FUNCTION(cairo_wait_began)
+int64_t cairo_wait_began(int64_t request)
 {
-	zend_long request;
-	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_LONG(request)
-	ZEND_PARSE_PARAMETERS_END();
 	if (!__atomic_load_n(&probed, __ATOMIC_SEQ_CST)) {
-		RETURN_LONG(0);
+		return 0;
 	}
-	RETURN_LONG((zend_long)goWaitBegan(cairo_thread_id(), (long long)request));
+	return (int64_t)goWaitBegan(cairo_thread_id(), (long long)request);
 }
 
-// cairo_wait_ended(int $request, int $kind, int $began): void
-// The wait that cairo_wait_began() answered $began for is over; $kind is
-// what the fiber waited in (the constants of Waits).
-PHP_FUNCTION(cairo_wait_ended)
+void cairo_wait_ended(int64_t request, int kind, int64_t began)
 {
-	zend_long request, kind, began;
-	ZEND_PARSE_PARAMETERS_START(3, 3)
-		Z_PARAM_LONG(request)
-		Z_PARAM_LONG(kind)
-		Z_PARAM_LONG(began)
-	ZEND_PARSE_PARAMETERS_END();
-	goWaitEnded(cairo_thread_id(), (long long)request, (int)kind, (long long)began);
+	goWaitEnded(cairo_thread_id(), (long long)request, kind, (long long)began);
 }

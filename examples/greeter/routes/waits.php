@@ -31,6 +31,35 @@ return function ($http): void {
         return Response::json(['woke' => $woke, 'took' => microtime(true) - $start]);
     });
 
+    // ?n= tasks sleep 20 ms at once, twice over. Answers whether they woke
+    // in the order they went to sleep, and how many fibers of the first
+    // round ran a task of the second: a fiber whose task is done waits for
+    // another one, up to 64 of them.
+    $http->get('/waits/burst', function (Request $req): Response {
+        $n = min(1000, max(1, (int) ($req->query('n') ?? '300')));
+        $round = function () use ($n): array {
+            $woke = [];
+            $fibers = [];
+            $tasks = [];
+            for ($i = 0; $i < $n; $i++) {
+                $tasks[] = async(function () use ($i, &$woke, &$fibers): void {
+                    sleep(0.02);
+                    $woke[] = $i;
+                    $fibers[] = \Fiber::getCurrent();
+                });
+            }
+            await(all($tasks));
+            return [$woke === range(0, $n - 1), $fibers];
+        };
+        [$first, $before] = $round();
+        [$second, $after] = $round();
+        $reused = 0;
+        foreach ($after as $fiber) {
+            $reused += (int) in_array($fiber, $before, true);
+        }
+        return Response::json(['inOrder' => $first && $second, 'reused' => $reused]);
+    });
+
     // Two fibers hand a number back and forth for ?ms= milliseconds. Neither
     // waits for Go, so the thread is never idle; and one of them waits with
     // a timeout of an hour that never passes, so every round leaves a timer

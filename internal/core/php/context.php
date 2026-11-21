@@ -20,7 +20,6 @@ namespace Cairo {
      */
     final class Context
     {
-        private static ?\WeakMap $byFiber = null;
         private static ?self $background = null;
 
         /** @var array<string, mixed> values set on this context */
@@ -150,19 +149,13 @@ namespace Cairo {
 
         public static function current(): self
         {
-            $fiber = \Fiber::getCurrent();
-            if ($fiber !== null && self::$byFiber !== null && isset(self::$byFiber[$fiber])) {
-                return self::$byFiber[$fiber];
-            }
-            return self::$background ??= new self(0, null);
+            return \cairo_fiber_context() ?? (self::$background ??= new self(0, null));
         }
 
-        /** @internal */
+        /** @internal $fiber runs under $context from now on */
         public static function bind(\Fiber $fiber, self $context): void
         {
-            self::$byFiber ??= new \WeakMap();
-            self::$byFiber[$fiber] = $context;
-            \cairo_local_bind($fiber, $context->requestId);
+            \cairo_fiber_bind($fiber, $context, $context->requestId);
         }
 
         public function deadline(): ?\DateTimeImmutable
@@ -336,7 +329,7 @@ namespace Cairo {
             foreach ($this->goOps as $id => $_) {
                 \cairo_op_cancel($id);   // what waits in Go under it
             }
-            if (Internal\Waits::$waiting !== 0) {
+            if (\cairo_parked() !== 0) {
                 Internal\Scheduler::instance()->waits->end($this);
             }
             foreach (self::$doneChannels ?? [] as $ch) {

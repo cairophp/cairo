@@ -140,7 +140,7 @@ namespace Cairo\Internal {
         public function run(): void
         {
             while (true) {
-                $event = \cairo_next_event(-1);   // null: woken for nothing
+                $event = \cairo_next_event(true);   // null: woken for nothing
                 $type = $event['type'] ?? null;
                 if ($type === 'shutdown') {
                     return;

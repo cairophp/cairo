@@ -153,16 +153,8 @@ PHP_FUNCTION(cairo_local_register)
 	}
 }
 
-// cairo_local_bind(Fiber $fiber, int $request): void, before the fiber runs
-// for that request (0: none).
-PHP_FUNCTION(cairo_local_bind)
+void cairo_local_bind_fiber(zend_fiber *f, zend_long request)
 {
-	zval *fiber;
-	zend_long request;
-	ZEND_PARSE_PARAMETERS_START(2, 2)
-		Z_PARAM_OBJECT_OF_CLASS(fiber, zend_ce_fiber)
-		Z_PARAM_LONG(request)
-	ZEND_PARSE_PARAMETERS_END();
 	if (cairo_local_slot < 0 || cairo_slot_count == 0) {
 		return;
 	}
@@ -176,7 +168,6 @@ PHP_FUNCTION(cairo_local_bind)
 		}
 		s->refs++;  // the fiber's
 	}
-	zend_fiber *f = (zend_fiber *)Z_OBJ_P(fiber);
 	cairo_local_store *old = f->context.reserved[cairo_local_slot];
 	f->context.reserved[cairo_local_slot] = s;
 	if (f == EG(active_fiber)) {

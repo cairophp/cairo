@@ -17,6 +17,16 @@ func TestSleepsWakeInOrder(t *testing.T) {
 	}
 }
 
+// Three hundred tasks that sleep at once, more than the thread's lists of
+// fibers hold at first, wake in the order they went to sleep. A fiber whose
+// task is done runs another one: 64 wait for that, the others end.
+func TestBurstOfSleepsWakesInOrderOnReusedFibers(t *testing.T) {
+	out := getJSON(t, "/waits/burst?n=300")
+	if out["inOrder"] != true || out["reused"] != 64.0 {
+		t.Errorf("two rounds of 300 sleeps: in order %v, %v fibers ran a task of both rounds; want true and 64", out["inOrder"], out["reused"])
+	}
+}
+
 // Two fibers that keep waking each other never leave the thread idle. It
 // still takes what Go sends: other requests are answered while they run.
 func TestBusyFibersLeaveRoomForRequests(t *testing.T) {

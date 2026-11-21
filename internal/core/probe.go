@@ -63,8 +63,8 @@ func (e *Engine) probeOf(tid C.int, id int64) (*thread, Probe) {
 }
 
 // goWaitBegan is a fiber of request id that starts a wait on its PHP thread,
-// which no goroutine sees: a sleep, or a wait in select(). It returns what
-// goWaitEnded takes back, 0 when the request has no probe.
+// which no goroutine sees: a sleep, a wait in select() or on a socket. It
+// returns what goWaitEnded takes back, 0 when the request has no probe.
 //
 //export goWaitBegan
 func goWaitBegan(tid C.int, id C.longlong) C.longlong {
@@ -75,19 +75,19 @@ func goWaitBegan(tid C.int, id C.longlong) C.longlong {
 	return C.longlong(p.WaitBegin().UnixNano())
 }
 
+// What a fiber waits in on its thread, as a probe is told (WaitEnd): the
+// constants of Waits in waits.php, in their order.
+var threadWaits = [...]string{"sleep", "park", "wait", "waitset"}
+
 // goWaitEnded is the end of that wait, as the fiber runs again.
 //
 //export goWaitEnded
-func goWaitEnded(tid C.int, id C.longlong, parked C.int, began C.longlong) {
+func goWaitEnded(tid C.int, id C.longlong, kind C.int, began C.longlong) {
 	t, p := engine.probeOf(tid, int64(id))
-	if p == nil {
+	if p == nil || kind < 0 || int(kind) >= len(threadWaits) {
 		return
 	}
-	op := "sleep"
-	if parked != 0 {
-		op = "park"
-	}
-	p.WaitEnd(op, time.Unix(0, int64(began)))
+	p.WaitEnd(threadWaits[kind], time.Unix(0, int64(began)))
 	// A stretch of PHP that no event began is its request's.
 	if t.running == nil {
 		t.running = p

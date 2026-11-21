@@ -11,18 +11,13 @@ import (
 	"github.com/cairophp/cairo/internal/wire"
 )
 
-// op is an operation a fiber asked Go to perform while it is suspended. The
-// engine's own operations (wait, waitset, offload) use the fields; every
-// other one is looked up by name and gets the payload.
+// op is an operation a fiber asked Go to perform while it is suspended:
+// the engine's own (offload), or one looked up by name. Each gets the
+// payload.
 type op struct {
 	ID      int64
 	Op      string
 	Payload string
-	Fd      int
-	Write   bool
-	Timeout float64 // seconds; < 0 means none
-	Read    []int
-	WriteFD []int
 }
 
 // operation is an op with what it runs under and where its result goes. A
@@ -53,12 +48,6 @@ func (e *Engine) runOp(o operation) {
 		res, err := e.runOffload(o.ctx, o.Payload)
 		if err != nil {
 			ev["error"] = CtxError(o.ctx)
-		} else {
-			ev["result"] = res
-		}
-	case "wait", "waitset":
-		if res, errText := awaitSockets(o); errText != "" {
-			ev["error"] = errText
 		} else {
 			ev["result"] = res
 		}
@@ -94,33 +83,6 @@ func (e *Engine) runOp(o operation) {
 	}
 	if err := o.thread.send(eventOther, o.request, wire.Encode(ev)); err != nil {
 		e.log.Error("result not sent to its php thread", "thread", o.thread.id, "op", o.Op, "err", err)
-	}
-}
-
-// awaitSockets is a hooked socket read or write ("wait") or a hooked curl
-// transfer ("waitset"): it waits until a descriptor is ready.
-func awaitSockets(o operation) (result, errText string) {
-	p, err := getPoller()
-	if err == nil {
-		timeout := time.Duration(-1)
-		if o.Timeout >= 0 {
-			timeout = time.Duration(o.Timeout * float64(time.Second))
-		}
-		if o.Op == "wait" {
-			err = p.wait(o.ctx, o.Fd, o.Write, timeout)
-		} else {
-			err = p.waitSet(o.ctx, o.Read, o.WriteFD, timeout)
-		}
-	}
-	switch {
-	case err == nil:
-		return "ready", ""
-	case errors.Is(err, errPollTimeout):
-		return "timeout", ""
-	case o.ctx.Err() != nil:
-		return "", CtxError(o.ctx)
-	default:
-		return "", err.Error()
 	}
 }
 
@@ -170,9 +132,7 @@ func (e *Engine) submit(tid C.int, request int64, scope float64, o op) C.longlon
 		t.scoped[run.ID] = cancel
 		t.mu.Unlock()
 	}
-	if o.Op != "wait" && o.Op != "waitset" {
-		t.box.handed = 1
-	}
+	t.box.handed = 1
 	e.start(w, run)
 	return C.longlong(run.ID)
 }

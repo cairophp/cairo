@@ -1,9 +1,9 @@
-// Socket hooks: PHP's tcp, unix and TLS stream transports through Go.
+// Socket hooks: PHP's tcp, unix and TLS stream transports without blocking.
 //
 // Cairo re-registers the tcp and unix stream transports. Streams are still
 // created by PHP's own socket code, but get a copy of its ops whose read and
-// write first wait for the descriptor through Go (epoll), suspending only the
-// calling fiber. Everything built on PHP streams benefits: mysqlnd (PDO MySQL,
+// write first wait for the descriptor in the thread's own epoll
+// (Waits::socket()), suspending only the calling fiber. Everything built on PHP streams benefits: mysqlnd (PDO MySQL,
 // mysqli), Predis and phpredis, fsockopen(), stream_socket_client(). The
 // connect itself still blocks for now.
 

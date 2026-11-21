@@ -22,7 +22,7 @@ $app->offloadThreads('auto');   // CPU threads for Cairo\offload()
 $http = $app->http(':8080');
 $http->get('/hello/{name}', fn (Request $r) => Response::text("Hello {$r->param('name')}\n"));
 $http->get('/slow', function (): Response {
-    sleep(1);                    // this fiber suspends; its goroutine waits
+    sleep(1);                    // only this fiber suspends
     return Response::json(['ok' => true]);
 });
 $http->get('/report', fn () => Response::json(offload('buildReport', 2026)));  // CPU work, other threads

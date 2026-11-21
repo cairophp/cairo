@@ -35,6 +35,7 @@
 #include "extension.h"
 #include "outbox.h"
 #include "wire.h"
+#include "sockets.h"
 #include "waitops.h"
 #include "fiber_local.h"
 #include "_cgo_export.h"
@@ -188,6 +189,7 @@ ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_next_event, 0, 0, 1)
 	ZEND_ARG_INFO(0, wait)
+	ZEND_ARG_INFO(0, sockets)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_wait_began, 0, 0, 1)
@@ -196,7 +198,7 @@ ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_wait_ended, 0, 0, 3)
 	ZEND_ARG_INFO(0, request)
-	ZEND_ARG_INFO(0, parked)
+	ZEND_ARG_INFO(0, kind)
 	ZEND_ARG_INFO(0, began)
 ZEND_END_ARG_INFO()
 
@@ -217,9 +219,9 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_respond, arginfo_cairo_respond)
 	PHP_FE(cairo_stream_fd, arginfo_cairo_stream_fd)
 	PHP_FE(cairo_retire, arginfo_cairo_retire)
-	PHP_FE(cairo_fiber_wait, arginfo_cairo_fiber_wait)
+	PHP_FE(cairo_socket_arm, arginfo_cairo_socket_arm)
+	PHP_FE(cairo_socket_disarm, arginfo_cairo_socket_disarm)
 	PHP_FE(cairo_wait_here, arginfo_cairo_wait_here)
-	PHP_FE(cairo_fiber_waitset, arginfo_cairo_fiber_waitset)
 	PHP_FE(cairo_fiber_call, arginfo_cairo_fiber_call)
 	PHP_FE(cairo_op_cancel, arginfo_cairo_op_cancel)
 	PHP_FE(cairo_go_call, arginfo_cairo_go_call)
@@ -752,6 +754,7 @@ int cairo_thread_run(int tid, const char *runtime_file)
 	int status = run_file(runtime_file);
 	cairo_interrupt_unregister();
 	php_request_shutdown(NULL);
+	cairo_sockets_thread_end();
 	cairo_extensions_thread_end();   // after the request closed what it held
 	ts_free_thread();
 	return status;

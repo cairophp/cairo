@@ -64,7 +64,7 @@ namespace Cairo\Internal {
             if ($scheduler->waitHere($fd, $write)) {
                 return 1;
             }
-            return $scheduler->wait($fd, $write, $timeout) === 'timeout' ? -1 : 1;
+            return $scheduler->waits->socket(Context::current(), $fd, $write, $timeout) ? 1 : -1;
         }
 
         /**
@@ -80,7 +80,7 @@ namespace Cairo\Internal {
             if (!self::on(\Cairo\Hook::CURL)) {
                 return 0;
             }
-            Scheduler::instance()->waitSet($read, $write, $timeout);
+            Scheduler::instance()->waits->sockets(Context::current(), $read, $write, $timeout);
             return 1;
         }
 

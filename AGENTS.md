@@ -11,8 +11,9 @@ A PHP application server in one Go binary. `cairo serve server.php` runs the
 PHP file to learn which HTTP and gRPC servers, routes and services it
 declares; Go then does all the networking and hands each request to a PHP
 thread, where it runs in its own Fiber. When PHP waits on I/O through Cairo,
-only its fiber suspends and Go does the waiting, on a goroutine that the
-operation has for its own length.
+only its fiber suspends: the thread's loop watches the sockets that PHP's own
+functions wait on, and what Cairo does in Go waits there, on a goroutine that
+the operation has for its own length.
 
 ## Map
 
@@ -22,7 +23,7 @@ operation has for its own length.
 | `internal/core/` | The core engine. cgo: the embedded PHP (`cairo.c`, Cairo's own SAPI), PHP threads, the goroutines of Go operations, the offload pool, what fibers wait on and the op registry. What it exports is all that an extension can use, and it names no extension: `boundary_test.go` fails when it does |
 | `internal/core/engine.go`, `dispatch.go`, `offload.go`, `supervise.go` | The engine in Go: start and shutdown, a request's way to a PHP thread, the offload pool, thread supervision |
 | `internal/core/operation.go`, `opworker.go`, `waitops.go`, `waitops.c`, `php/context.php` | What a fiber asks Go for. A fiber has no goroutine and no context in Go: `async()` and the derived contexts (`withTimeout()`, `withCancel()`) are PHP alone. An operation names its request and its scope (`Context::goScope()`: nothing, a deadline, or cancelable), `submit` runs it under the request's context, or under one made for it when it has a scope, on a goroutine that then waits for the thread's next operation, and the result is an event in the thread's inbox. `Context::cancel()` ends the operations in flight under it with `cairo_op_cancel()` |
-| `internal/core/loop.c`, `loop.h`, `mailbox.go`, `php/waits.php` | The loop of a PHP thread and the waits that stay on it. `cairo_next_event()` is where the thread comes back between fibers: it takes the events Go queued for it (its inbox) and, with none and no fiber to run, sleeps, in C on a futex and without a call into Go; when it gave Go an operation or an answer on its way, it first watches the inbox for a few microseconds (`look`). The mailbox is the memory both sides read and write without a call: the inbox, how many events were queued and taken, and since when the thread runs PHP (0 while it sleeps). Send to an inbox with `thread.send()`, which wakes the thread when it sleeps. `Waits` parks the fibers in `sleep()` and `select()` on the thread, with its timers; no goroutine is involved, and a context that ends wakes them from PHP (`Waits::end()`) |
+| `internal/core/loop.c`, `loop.h`, `sockets.c`, `sockets.h`, `mailbox.go`, `php/waits.php` | The loop of a PHP thread and the waits that stay on it. `cairo_next_event()` is where the thread comes back between fibers: it takes the events Go queued for it (its inbox) and the sockets that are ready for its fibers and, with none and no fiber to run, sleeps, in C and without a call into Go: on a futex, or in its epoll while a fiber waits on a socket; when it gave Go an operation or an answer on its way, it first watches the inbox for a few microseconds (`look`). The mailbox is the memory both sides read and write without a call: the inbox, how many events were queued and taken, and since when the thread runs PHP (0 while it sleeps). Send to an inbox with `thread.send()`, which wakes the thread when it sleeps. `Waits` parks the fibers in `sleep()`, in `select()` and on a socket (`Waits::socket()`, behind the hooks of PHP's streams, PDO MySQL and curl) on the thread, with its timers; no goroutine is involved, and a context that ends wakes them from PHP (`Waits::end()`). Each thread has an epoll of its own (`sockets.c`): a fiber arms its socket there for one wait (`cairo_socket_arm()`), and Go wakes a thread that sleeps in it by writing to the thread's eventfd |
 | `internal/core/queue.h`, `outbox.c`, `outbox.h`, `outbox.go` | The queues between Go and the PHP threads, and the way of an answer. A message is C memory that its sender pushes without a lock and its one receiver takes all at once (`queue.h`): a thread's inbox is one such queue, and the outbox is the one that all threads share for what they have for Go. `cairo_answer()` (declared in `extension.h`) queues the answer to a call there and the thread goes on, without running Go code; one goroutine (`collect`) takes the answers and hands each to the goroutine in `Dispatch` that waits for it, and learns there of a thread that has ended. The calls a thread holds and the contexts made for its operations are in tables under the thread's mutex, which that goroutine, dispatch and the thread's own calls into Go share |
 | `internal/core/goops.go` | The op registry: `core.RegisterOp("name", fn)` in Go, `Cairo\Internal\Go::call('name', $payload)` in PHP. The payload array goes to Go in `internal/wire`'s binary format, where `wire.Unmarshal` reads it into a struct by its `json` tags; results come back as events. `RegisterFiberOp` is for what PHP's hooked functions ask for |
 | `internal/core/extension.go`, `extension.h`, `extension.c` | How an extension's C code joins the SAPI module: it defines a `cairo_extension` (what to run at module startup, when a PHP thread ends and when a thread that the extension interrupted reaches a safe point, the PHP functions it adds) and its Go file adds it with `core.RegisterC` from `init()`. C types do not cross Go packages, so `internal/sapi` has a `registerC` that takes its own |
@@ -61,7 +62,7 @@ yes to either makes it core.
 
 | Side | What it holds |
 |------|---------------|
-| Core | The SAPI and the PHP threads, their supervision, dispatch (fibers and isolated mode), the fiber scheduler and request-local state, the bridge (wire events, the op registry, the answer path), waiting (the poller, parked fibers, timers), deadlines and the hard stop, the concurrency API (`Context`, `Channel`, `select()`, `async()`, `await()`, `sleep()`, `offload()`, `RequestLocal`), the declaration and boot |
+| Core | The SAPI and the PHP threads, their supervision, dispatch (fibers and isolated mode), the fiber scheduler and request-local state, the bridge (wire events, the op registry, the answer path), waiting (the threads' epolls, parked fibers, timers), deadlines and the hard stop, the concurrency API (`Context`, `Channel`, `select()`, `async()`, `await()`, `sleep()`, `offload()`, `RequestLocal`), the declaration and boot |
 | Extensions | Servers (HTTP, its response cache, middleware, gRPC), clients (`Http\Client`, `Grpc\Client`, `Cairo\Net`), databases (`Cairo\Sql`, the PDO pgsql driver, `Cairo\Pool`), PHP hooks (streams, sleep, DNS, TLS, curl), bridges (PSR adapters, Revolt), diagnostics (slow log, heavy routes, repeated queries, leaks, blocking), `cairo gen` |
 
 The core is `internal/core` (Go and C) with its PHP files in
@@ -276,7 +277,7 @@ Cairo is a server: per-request code runs millions of times.
 
 - **Never block the PHP thread.** Every wait suspends its fiber: through Go
   as an operation on a goroutine, or parked on the thread's own loop (`Waits`, for
-  what needs no Go: a sleep, a channel). See Concurrency is the point. A new
+  what needs no Go: a sleep, a channel, a socket). See Concurrency is the point. A new
   blocking call without a hook is a bug, even if tests pass.
 - **Nothing per request that can be done once.** Compile regexes, build
   lookup tables, parse config and resolve classes at boot or in the declare

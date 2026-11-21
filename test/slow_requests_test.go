@@ -96,6 +96,38 @@ func TestSlowRequestsEnded(t *testing.T) {
 	}
 }
 
+// The waits of PHP's own functions stay on the PHP thread, and are in the
+// breakdown like those a goroutine does: /php-io reads a socket that answers
+// after 0.15 s and fetches a URL that takes 50 ms with curl.
+func TestSlowRequestsCountWaitsOnTheThread(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		fmt.Fprint(w, "ok")
+	}))
+	defer upstream.Close()
+
+	addr, logs := startSlow(t)
+	q := url.Values{"addr": {pongAfter(t)}, "url": {upstream.URL}}
+	resp, err := http.Get("http://" + addr + "/php-io?" + q.Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	line := slowLine(t, logs)
+	for name, atLeast := range map[string]int{"socket": 140, "http": 40} {
+		m := regexp.MustCompile(` ` + name + `="\d+ in (\d+)ms"`).FindStringSubmatch(line)
+		if m == nil {
+			t.Errorf("no %s in %s", name, line)
+			continue
+		}
+		if ms, _ := strconv.Atoi(m[1]); ms < atLeast || ms > atLeast+300 {
+			t.Errorf("%s waited %dms, want about %dms: %s", name, ms, atLeast, line)
+		}
+	}
+}
+
 // startSlow serves examples/slow on one request thread and returns its
 // address and what it logs.
 func startSlow(t *testing.T) (string, *syncBuffer) {

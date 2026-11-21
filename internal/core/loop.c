@@ -1,6 +1,7 @@
 // The loop of a PHP thread, where it comes back between fibers: it takes the
-// events Go queued for it and, with none and no fiber to run, sleeps, all
-// without a call into Go. See loop.h.
+// events Go queued for it and the sockets that are ready for its fibers and,
+// with none and no fiber to run, sleeps, all without a call into Go. See
+// loop.h.
 
 #include <linux/futex.h>
 #include <stdint.h>
@@ -15,6 +16,7 @@
 
 #include "extension.h"
 #include "loop.h"
+#include "sockets.h"
 #include "wire.h"
 #include "_cgo_export.h"
 
@@ -35,12 +37,6 @@ void cairo_loop_probe(void)
 void cairo_loop_look(int64_t ns)
 {
 	look_ns = ns;
-}
-
-int cairo_loop_has_event(void)
-{
-	int tid = cairo_thread_id();
-	return tid >= 0 && (boxes[tid].next != NULL || __atomic_load_n(&boxes[tid].inbox, __ATOMIC_SEQ_CST) != NULL);
 }
 
 static long futex(int32_t *word, int op, int32_t val, const struct timespec *timeout)
@@ -65,8 +61,16 @@ int cairo_inbox_push(int tid, int kind, int64_t id, const char *data, size_t n)
 	__atomic_fetch_add(&box->pushed, 1, __ATOMIC_RELAXED);
 	// The sender queues its event and then reads asleep; the thread writes
 	// asleep and then reads the queue (nap): one of the two sees the other.
-	if (__atomic_load_n(&box->asleep, __ATOMIC_SEQ_CST) != 0 && __atomic_exchange_n(&box->asleep, 0, __ATOMIC_SEQ_CST) != 0) {
+	if (__atomic_load_n(&box->asleep, __ATOMIC_SEQ_CST) == 0) {
+		return 0;
+	}
+	switch (__atomic_exchange_n(&box->asleep, 0, __ATOMIC_SEQ_CST)) {
+	case 1:
 		futex(&box->asleep, FUTEX_WAKE_PRIVATE, 1, NULL);
+		break;
+	case 2:
+		cairo_sockets_wake(__atomic_load_n(&box->waker, __ATOMIC_SEQ_CST));
+		break;
 	}
 	return 0;
 }
@@ -137,23 +141,30 @@ static int64_t look(cairo_mailbox *box, int64_t wait)
 	return spent;
 }
 
-// nap is the thread asleep until an event is queued for it, for wait
-// nanoseconds at most (below 0: as long as it takes). Returns the event, or
-// NULL.
+// nap is the thread asleep until an event is queued for it or a socket that
+// one of its fibers waits on is ready, for wait nanoseconds at most (below
+// 0: as long as it takes). Returns the event, or NULL: then the time is up
+// or cairo_sockets_next() has the socket.
 static cairo_msg *nap(cairo_mailbox *box, int64_t wait)
 {
 	__atomic_store_n(&box->since, 0, __ATOMIC_RELAXED);   // asleep in the eyes of dispatch
 	int64_t until = wait > 0 ? mono_ns() + wait : 0;
+	// With a socket to wait on the thread sleeps in its epoll, where a sender
+	// wakes it with a write; with none on a futex, which costs both less.
+	int sockets = cairo_sockets_armed() > 0;
 	for (;;) {
-		__atomic_store_n(&box->asleep, 1, __ATOMIC_SEQ_CST);
+		__atomic_store_n(&box->asleep, sockets ? 2 : 1, __ATOMIC_SEQ_CST);
 		int64_t left = wait > 0 ? until - mono_ns() : 1;
-		if (left <= 0 || __atomic_load_n(&box->inbox, __ATOMIC_SEQ_CST) != NULL) {
+		if (left <= 0 || __atomic_load_n(&box->inbox, __ATOMIC_SEQ_CST) != NULL
+			|| (sockets && cairo_sockets_wait(wait > 0 ? left : -1))) {
 			__atomic_store_n(&box->asleep, 0, __ATOMIC_SEQ_CST);
 			return take(box);
 		}
-		struct timespec ts = {.tv_sec = left / 1000000000, .tv_nsec = left % 1000000000};
-		// Returns at once when a sender took asleep off in the meantime.
-		futex(&box->asleep, FUTEX_WAIT_PRIVATE, 1, wait > 0 ? &ts : NULL);
+		if (!sockets) {
+			struct timespec ts = {.tv_sec = left / 1000000000, .tv_nsec = left % 1000000000};
+			// Returns at once when a sender took asleep off in the meantime.
+			futex(&box->asleep, FUTEX_WAIT_PRIVATE, 1, wait > 0 ? &ts : NULL);
+		}
 	}
 }
 
@@ -182,17 +193,54 @@ void cairo_loop_answered(int tid)
 	}
 }
 
-// cairo_next_event(int $wait): ?array
-// The thread comes back to its loop. Returns the next event Go has for it
-// (a request, a finished operation, shutdown), which Go encodes in
-// internal/wire's format and wire.c turns into the array; or null when
-// none came within $wait nanoseconds (0: do not wait; below 0: wait as long
-// as it takes).
+// Whether the kernel has a socket ready for the thread, asked without
+// waiting. An idle thread with nothing queued does not ask: it is about to
+// sleep in its epoll, which answers the same.
+static int sockets_ready(cairo_mailbox *box, zend_long wait)
+{
+	return cairo_sockets_armed() > 0
+		&& (wait == 0 || box->next != NULL || __atomic_load_n(&box->inbox, __ATOMIC_SEQ_CST) != NULL)
+		&& cairo_sockets_wait(0);
+}
+
+// The thread's next event from Go: what is queued, or what comes within
+// wait nanoseconds. NULL when a socket came first or the time is up. *now
+// follows the clock.
+static cairo_msg *next_msg(cairo_mailbox *box, zend_long wait, int handed, int64_t *now)
+{
+	cairo_msg *m = take(box);
+	if (m == NULL && wait != 0 && handed) {
+		int64_t spent = look(box, wait);
+		*now += spent;
+		if (wait > 0) {
+			wait = wait > spent ? wait - spent : 0;
+		}
+		m = take(box);
+	}
+	if (m == NULL && wait != 0) {
+		m = nap(box, wait);
+		*now = unix_ns();
+	}
+	return m;
+}
+
+// cairo_next_event(int $wait, bool $sockets = true): array|int|null
+// The thread comes back to its loop. Returns a socket that is ready for the
+// fiber that waits on it (cairo_socket_arm() in sockets.c), as its
+// descriptor; or the next event Go has for the thread (a request, a
+// finished operation, shutdown), which Go encodes in internal/wire's format
+// and wire.c turns into the array; or null when neither came within $wait
+// nanoseconds (0: do not wait; below 0: wait as long as it takes). Without
+// $sockets it does not ask the kernel for ready sockets, and still returns
+// those it asked for before: one question a turn of the loop is enough.
 PHP_FUNCTION(cairo_next_event)
 {
 	zend_long wait;
-	ZEND_PARSE_PARAMETERS_START(1, 1)
+	bool sockets = 1;
+	ZEND_PARSE_PARAMETERS_START(1, 2)
 		Z_PARAM_LONG(wait)
+		Z_PARAM_OPTIONAL
+		Z_PARAM_BOOL(sockets)
 	ZEND_PARSE_PARAMETERS_END();
 	int tid = cairo_thread_id();
 	if (tid < 0) {
@@ -202,20 +250,18 @@ PHP_FUNCTION(cairo_next_event)
 	cairo_mailbox *box = &boxes[tid];
 	int64_t now = unix_ns();
 	int handed = came_back(box, tid, now);
-	cairo_msg *m = take(box);
-	if (m == NULL && wait != 0 && handed) {
-		int64_t spent = look(box, wait);
-		now += spent;
-		if (wait > 0) {
-			wait = wait > spent ? wait - spent : 0;
-		}
-		m = take(box);
+	int fd = cairo_sockets_next();
+	if (fd < 0 && sockets && sockets_ready(box, wait)) {
+		fd = cairo_sockets_next();
 	}
-	if (m == NULL && wait != 0) {
-		m = nap(box, wait);
-		now = unix_ns();
+	cairo_msg *m = fd < 0 ? next_msg(box, wait, handed, &now) : NULL;
+	if (fd < 0 && m == NULL) {
+		fd = cairo_sockets_next();   // what ended the sleep
 	}
 	__atomic_store_n(&box->since, now, __ATOMIC_RELAXED);
+	if (fd >= 0) {
+		RETURN_LONG(fd);
+	}
 	if (m == NULL) {
 		RETURN_NULL();
 	}
@@ -249,17 +295,16 @@ PHP_FUNCTION(cairo_wait_began)
 	RETURN_LONG((zend_long)goWaitBegan(cairo_thread_id(), (long long)request));
 }
 
-// cairo_wait_ended(int $request, bool $parked, int $began): void
-// The wait that cairo_wait_began() answered $began for is over; $parked
-// tells a wait in select() from a sleep.
+// cairo_wait_ended(int $request, int $kind, int $began): void
+// The wait that cairo_wait_began() answered $began for is over; $kind is
+// what the fiber waited in (the constants of Waits).
 PHP_FUNCTION(cairo_wait_ended)
 {
-	zend_long request, began;
-	bool parked;
+	zend_long request, kind, began;
 	ZEND_PARSE_PARAMETERS_START(3, 3)
 		Z_PARAM_LONG(request)
-		Z_PARAM_BOOL(parked)
+		Z_PARAM_LONG(kind)
 		Z_PARAM_LONG(began)
 	ZEND_PARSE_PARAMETERS_END();
-	goWaitEnded(cairo_thread_id(), (long long)request, parked ? 1 : 0, (long long)began);
+	goWaitEnded(cairo_thread_id(), (long long)request, (int)kind, (long long)began);
 }

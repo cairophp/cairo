@@ -51,7 +51,7 @@ namespace Cairo\Internal {
         /** @var array<int, \Fiber> I/O operation id => waiting fiber */
         private array $io = [];
         private \SplQueue $ready;
-        /** @internal The waits that stay on this thread: sleep(), select(). */
+        /** @internal The waits that stay on this thread: sleep(), select(), sockets. */
         public readonly Waits $waits;
         /** @var array<int, Context> request id => its context, until the request ends */
         private array $requests = [];
@@ -191,29 +191,6 @@ namespace Cairo\Internal {
         }
 
         /**
-         * Suspend the current fiber until socket $fd is readable (or
-         * writable), for $timeout seconds at most (below 0: no limit).
-         * Returns 'ready' or 'timeout'.
-         */
-        public function wait(int $fd, bool $write, float $timeout): string
-        {
-            $ctx = Context::current();
-            return $this->waitIO($ctx, \cairo_fiber_wait($ctx->requestId, $ctx->scoped ? $ctx->goScope() : 0.0, $fd, $write, $timeout));
-        }
-
-        /**
-         * wait() for the first of several sockets.
-         *
-         * @param list<int> $read
-         * @param list<int> $write
-         */
-        public function waitSet(array $read, array $write, float $timeout): string
-        {
-            $ctx = Context::current();
-            return $this->waitIO($ctx, \cairo_fiber_waitset($ctx->requestId, $ctx->scoped ? $ctx->goScope() : 0.0, $read, $write, $timeout));
-        }
-
-        /**
          * Suspend the current fiber, which runs under $ctx, until Go reports
          * the operation that a cairo_fiber_*() call just submitted as $id.
          * Go refuses (-1) what belongs to no request it holds.
@@ -291,15 +268,18 @@ namespace Cairo\Internal {
                 $n = self::TURN;
                 $event = \cairo_next_event($idle ? $wait : 0);
                 while ($event !== null) {
-                    if ($event['type'] === 'io') {
+                    if (\is_int($event)) {
+                        $waits->ready($event);   // a socket that a fiber waits on
+                    } elseif ($event['type'] === 'io') {
                         $fiber = $this->io[$event['io']] ?? null;
                         unset($this->io[$event['io']]);
                         $fiber?->resume($event);
                     } elseif (!$this->take($event)) {
                         return;
                     }
-                    // With fibers to run, the events that are there come first.
-                    $event = !$idle && --$n > 0 ? \cairo_next_event(0) : null;
+                    // With fibers to run, the events that are there come first;
+                    // which sockets are ready is asked once a turn.
+                    $event = !$idle && --$n > 0 ? \cairo_next_event(0, false) : null;
                 }
             }
         }
@@ -423,16 +403,18 @@ namespace Cairo\Internal {
         }
 
         /**
-         * @internal Wait for socket $fd on the thread itself for a moment (see
-         * cairo_wait_here() in waitops.c), when nothing else could run on it
-         * meanwhile: no fiber is ready or waiting for Go and, unless the
-         * thread serves one request at a time anyway, Go has no event queued
-         * for it. Returns whether the socket became ready.
+         * @internal Wait for socket $fd with the whole thread for a moment
+         * (cairo_wait_here() in sockets.c), where it could run nothing else
+         * meanwhile: it serves one request at a time, and no other fiber of
+         * that request is ready, waiting for Go or parked on the thread. A
+         * thread that runs requests side by side never does, because the
+         * next request would wait with it. Returns whether the socket became
+         * ready.
          */
         public function waitHere(int $fd, bool $write): bool
         {
-            return $this->io === [] && $this->ready->isEmpty() && $this->later->isEmpty()
-                && \cairo_wait_here($fd, $write, !$this->busy);
+            return $this->busy && $this->io === [] && Waits::$waiting === 0 && $this->ready->isEmpty()
+                && $this->later->isEmpty() && \cairo_wait_here($fd, $write);
         }
 
         /** @internal An async() task threw. */

@@ -85,27 +85,23 @@ func TestSubmitUnderTheRequestAndItsScope(t *testing.T) {
 }
 
 // An operation is something a goroutine takes over, so the thread looks at
-// its inbox before it sleeps; a socket wait is not: the thread watched the
-// socket itself before it asked.
+// its inbox before it sleeps.
 func TestSubmitMakesTheThreadLook(t *testing.T) {
 	e := &Engine{}
 	a := e.newThread(0, poolWorker, 0)
 	t.Cleanup(func() { e.failCalls(a, true); a.endWorkers() })
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()         // the operations end at once
+	cancel()         // the operation ends at once
 	a.box.handed = 0 // the mailbox is the thread id's, and outlives a test
 	a.calls[7] = &call{id: 7, thread: a, ctx: ctx, resp: make(chan *reply, 1)}
 
-	if e.submit(0, 7, 0, op{Op: "wait", Fd: -1}); a.box.handed != 0 {
-		t.Error("a socket wait marked the thread as having handed Go something")
-	}
 	if e.submit(0, 7, 0, op{Op: "no such operation"}); a.box.handed != 1 {
 		t.Error("an operation did not mark the thread as having handed Go something")
 	}
 	a.box.handed = 0
-	for end := time.Now().Add(5 * time.Second); a.queued() < 2; runtime.Gosched() {
+	for end := time.Now().Add(5 * time.Second); a.queued() < 1; runtime.Gosched() {
 		if time.Now().After(end) {
-			t.Fatal("the two results were not queued for the thread")
+			t.Fatal("the result was not queued for the thread")
 		}
 	}
 }

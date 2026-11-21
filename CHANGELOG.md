@@ -143,6 +143,18 @@ change the PHP API; patch versions do not.
   of 2.9, and the hello benchmark serves 2.0% more requests per second.
   Derived contexts now also work outside a request thread, and the internal
   `Context::$fiberId` is gone.
+- Performance: a fiber that waits on a socket (PDO MySQL and everything else
+  on PHP's streams, curl, the Revolt driver) no longer asks Go. Each PHP
+  thread has an epoll of its own: the fiber arms its socket there and parks
+  on the thread, the thread's loop asks once a turn which sockets are ready,
+  and a thread with nothing to run sleeps in its epoll, where Go wakes it
+  through an eventfd. The stream's timeout and the context's deadline are
+  timers of the thread. One MySQL query for each request: 20% more requests
+  per second with 22% less CPU for each, and 0.7 thread switches a request
+  instead of 1.7; a curl transfer costs 18% less CPU. The wait of a
+  millisecond on the thread itself, which stood in for this, is kept only
+  where a thread serves one request at a time (isolated mode): next to other
+  requests it cost 4 to 7%.
 
 ## [0.4.0] - 2026-11-19
 

@@ -38,6 +38,22 @@ $http->get('/report', function (Request $req): Response {
     return Response::text('done');
 });
 
+// PHP's own functions wait on the thread, with no goroutine, and are counted
+// like the waits through Cairo's clients: a read of a socket that answers
+// after 0.15 s (socket=) and a curl transfer (http=).
+$http->get('/php-io', function (Request $req): Response {
+    $conn = stream_socket_client('tcp://' . $req->query('addr'), $errno, $error, 5);
+    if ($conn === false) {
+        return Response::text("connect: $error", 502);
+    }
+    fwrite($conn, "0.15\n");
+    fgets($conn);
+    $curl = curl_init((string) $req->query('url'));
+    curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
+    curl_exec($curl);
+    return Response::text('done');
+});
+
 // Fast: never logged.
 $http->get('/fast', fn (): Response => Response::text('fast'));
 

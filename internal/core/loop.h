@@ -4,8 +4,8 @@
 #include "queue.h"
 
 // The loop of a PHP thread: where it comes back between fibers, takes the
-// events Go queued for it and, with none and no fiber to run, sleeps
-// (loop.c).
+// events Go queued for it and the sockets its fibers wait on that are ready
+// (sockets.h) and, with none and no fiber to run, sleeps (loop.c).
 
 // What a PHP thread shares with the Go code that sends it events, one per
 // thread id. Go reads it as atomics (mailbox in mailbox.go has the same
@@ -22,8 +22,9 @@ typedef struct {
 	char pad[20];
 	cairo_msg *inbox; // the events queued for the thread (queue.h)
 	int64_t pushed;   // how many events were ever queued for it
-	int32_t asleep;   // 1 while the thread sleeps: the sender that takes it off wakes the thread
-	char end[44];
+	int32_t asleep;   // while the thread sleeps, 1 on this word or 2 in its epoll (sockets.h): the sender that takes it off wakes the thread
+	int32_t waker;    // 1 + the descriptor that wakes the thread from its epoll; 0 before it has one
+	char end[40];
 } cairo_mailbox;
 
 enum { cairo_mailbox_inbox_at = offsetof(cairo_mailbox, inbox) };
@@ -39,9 +40,6 @@ void cairo_loop_probe(void);
 // which it is until this is called, for not at all. Call it before the PHP
 // threads start.
 void cairo_loop_look(int64_t ns);
-
-// Whether an event is queued for the calling PHP thread.
-int cairo_loop_has_event(void);
 
 // The calling PHP thread gave Go an answer: it looks before it sleeps, and
 // when requests are probed, Go learns how long the thread ran up to here,

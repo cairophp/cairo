@@ -40,7 +40,7 @@ final class Greeter implements GreeterInterface
     public function SlowHello(SlowHelloRequest $request, Context $ctx): HelloReply
     {
         $remaining = $ctx->remaining();
-        sleep($request->seconds);   // the fiber suspends; Go waits
+        sleep($request->seconds);   // only this fiber suspends
         return new HelloReply(
             message: "Hello {$request->name}",
             remaining: is_finite($remaining) ? $remaining : 0.0,

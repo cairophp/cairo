@@ -35,16 +35,15 @@ type mailbox struct {
 	next *C.cairo_msg
 	// 1 when the thread gave Go an operation or an answer since it last
 	// came to its loop: a goroutine has to take that over, and the thread
-	// looks before it sleeps (look). Not after a socket wait: the thread
-	// watched the socket itself before it asked Go. Only the thread itself
-	// reads and writes it, in C and in its calls into Go.
+	// looks before it sleeps (look). Only the thread itself reads and
+	// writes it, in C and in its calls into Go.
 	handed int32
 	_      [20]byte // the thread's fields and the senders' share no cache line
 	// The events queued for the thread (queue.h), which C pushes for send.
 	inbox unsafe.Pointer
 	// How many events were ever queued for the thread.
 	pushed atomic.Int64
-	_      [48]byte
+	_      [48]byte // how the thread sleeps and is woken, which is C's (loop.h)
 }
 
 // The two layouts are one: neither size, and neither place of the inbox, may

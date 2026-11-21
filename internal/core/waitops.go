@@ -9,7 +9,7 @@ import "C"
 // as arguments.
 
 // goFiberCall submits an operation that carries a payload (Go::call ops,
-// "pg", "offload"). The payload is passed as is: wrapping it in the op's
+// "pg"). The payload is passed as is: wrapping it in the op's
 // JSON escaped it once in PHP and unescaped it again here.
 //
 //export goFiberCall

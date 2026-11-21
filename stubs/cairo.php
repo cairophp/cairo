@@ -687,7 +687,10 @@ namespace Cairo {
     {
     }
 
-    /** An offloaded job threw; the message names the original exception class. */
+    /**
+     * An offloaded job threw, and the message names the original exception
+     * class; or the offload thread stopped before the job was done.
+     */
     final class OffloadException extends \RuntimeException
     {
     }

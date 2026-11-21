@@ -123,7 +123,7 @@ type thread struct {
 	// running; only the thread itself uses it (goTook, goWaitEnded, goRan).
 	running Probe
 	// The calls queued for this thread or taken by it and not answered
-	// (requests, offload jobs), by id, and the contexts made for single
+	// (requests), by id, and the contexts made for single
 	// operations, by the operation's id (submit). The goroutine that queues
 	// a call puts it in, the thread's PHP asks for what an operation runs
 	// under (see own), and collect takes out what the thread answered.
@@ -243,6 +243,9 @@ func Start(opts Options) (*Engine, error) {
 		all = append(all, t)
 	}
 	setLook()
+	if err := e.offloadPool(); err != nil {
+		return nil, err
+	}
 	if e.outbox, err = openOutbox(); err != nil {
 		return nil, err
 	}

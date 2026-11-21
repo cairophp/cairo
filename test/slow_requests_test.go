@@ -128,6 +128,28 @@ func TestSlowRequestsCountWaitsOnTheThread(t *testing.T) {
 	}
 }
 
+// The wait for an offloaded job, which no goroutine sees either, is in the
+// breakdown under its own name, and is no PHP time of the request's thread.
+func TestSlowRequestsCountOffload(t *testing.T) {
+	addr, logs := startSlow(t)
+	resp, err := http.Get("http://" + addr + "/offloaded")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	line := slowLine(t, logs)
+	m := regexp.MustCompile(` php_ms=(\d+) .* offload="1 in (\d+)ms"`).FindStringSubmatch(line)
+	if m == nil {
+		t.Fatalf("no offload in %s", line)
+	}
+	php, _ := strconv.Atoi(m[1])
+	if ms, _ := strconv.Atoi(m[2]); ms < 140 || ms > 450 || php > 100 {
+		t.Errorf("offload waited %dms beside %dms of PHP, want about 150ms and next to none: %s", ms, php, line)
+	}
+}
+
 // startSlow serves examples/slow on one request thread and returns its
 // address and what it logs.
 func startSlow(t *testing.T) (string, *syncBuffer) {

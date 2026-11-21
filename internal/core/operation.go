@@ -11,9 +11,8 @@ import (
 	"github.com/cairophp/cairo/internal/wire"
 )
 
-// op is an operation a fiber asked Go to perform while it is suspended:
-// the engine's own (offload), or one looked up by name. Each gets the
-// payload.
+// op is an operation a fiber asked Go to perform while it is suspended,
+// looked up by name and given the payload.
 type op struct {
 	ID      int64
 	Op      string
@@ -43,28 +42,15 @@ func (e *Engine) runOp(o operation) {
 		began = o.probe.WaitBegin()
 	}
 	ev := map[string]any{"type": "io", "io": o.ID}
-	switch o.Op {
-	case "offload":
-		res, err := e.runOffload(o.ctx, o.Payload)
-		if err != nil {
-			ev["error"] = CtxError(o.ctx)
+	if h, ok := fiberOps[o.Op]; ok {
+		if res, errText := h(o.ctx, []byte(o.Payload)); errText != "" {
+			ev["error"] = errText
 		} else {
 			ev["result"] = res
 		}
-	default:
-		if h, ok := fiberOps[o.Op]; ok {
-			if res, errText := h(o.ctx, []byte(o.Payload)); errText != "" {
-				ev["error"] = errText
-			} else {
-				ev["result"] = res
-			}
-			break
-		}
-		h, ok := goOps[o.Op]
-		if !ok {
-			ev["error"] = "unknown operation " + o.Op
-			break
-		}
+	} else if h, ok := goOps[o.Op]; !ok {
+		ev["error"] = "unknown operation " + o.Op
+	} else {
 		res, err := h(o.ctx, []byte(o.Payload))
 		switch {
 		case o.ctx.Err() != nil:
@@ -111,7 +97,7 @@ func (e *Engine) submit(tid C.int, request int64, scope float64, o op) C.longlon
 	}
 	t.mu.Lock()
 	c := t.calls[request]
-	if c == nil || c.ctx == nil {
+	if c == nil {
 		t.mu.Unlock()
 		return -1
 	}

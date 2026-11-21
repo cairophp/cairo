@@ -15,7 +15,7 @@ use Cairo\Http\Client;
 use Cairo\Http\Request;
 use Cairo\Http\Response;
 
-use function Cairo\{async, await, all, sleep};
+use function Cairo\{async, await, all, offload, sleep};
 
 $app = new App();
 $app->slowRequests((float) (getenv('CAIRO_SLOW') ?: 0.1));
@@ -53,6 +53,10 @@ $http->get('/php-io', function (Request $req): Response {
     curl_exec($curl);
     return Response::text('done');
 });
+
+// A job on an offload thread, which sleeps 0.15 s there: the request waits
+// for it (offload=) and its own thread runs no PHP meanwhile.
+$http->get('/offloaded', fn (): Response => Response::text((string) offload('usleep', 150000)));
 
 // Fast: never logged.
 $http->get('/fast', fn (): Response => Response::text('fast'));

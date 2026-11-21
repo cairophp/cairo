@@ -36,6 +36,7 @@
 #include "outbox.h"
 #include "wire.h"
 #include "sockets.h"
+#include "offload.h"
 #include "waitops.h"
 #include "fiber_local.h"
 #include "_cgo_export.h"
@@ -222,6 +223,8 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_socket_arm, arginfo_cairo_socket_arm)
 	PHP_FE(cairo_socket_disarm, arginfo_cairo_socket_disarm)
 	PHP_FE(cairo_wait_here, arginfo_cairo_wait_here)
+	PHP_FE(cairo_offload_send, arginfo_cairo_offload_send)
+	PHP_FE(cairo_offload_done, arginfo_cairo_offload_done)
 	PHP_FE(cairo_fiber_call, arginfo_cairo_fiber_call)
 	PHP_FE(cairo_op_cancel, arginfo_cairo_op_cancel)
 	PHP_FE(cairo_go_call, arginfo_cairo_go_call)

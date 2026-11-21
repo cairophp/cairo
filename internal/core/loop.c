@@ -16,6 +16,7 @@
 
 #include "extension.h"
 #include "loop.h"
+#include "offload.h"
 #include "sockets.h"
 #include "wire.h"
 #include "_cgo_export.h"
@@ -51,18 +52,24 @@ int cairo_inbox_push(int tid, int kind, int64_t id, const char *data, size_t n)
 		return -1;
 	}
 	m->id = id;
-	m->tid = tid;
 	m->kind = kind;
 	m->len = (uint32_t)n;
 	m->blen = 0;
 	memcpy(m->data, data, n);
+	cairo_inbox_queue(tid, m);
+	return 0;
+}
+
+void cairo_inbox_queue(int tid, cairo_msg *m)
+{
 	cairo_mailbox *box = &boxes[tid];
+	m->tid = tid;
 	cairo_queue_push(&box->inbox, m);
 	__atomic_fetch_add(&box->pushed, 1, __ATOMIC_RELAXED);
 	// The sender queues its event and then reads asleep; the thread writes
 	// asleep and then reads the queue (nap): one of the two sees the other.
 	if (__atomic_load_n(&box->asleep, __ATOMIC_SEQ_CST) == 0) {
-		return 0;
+		return;
 	}
 	switch (__atomic_exchange_n(&box->asleep, 0, __ATOMIC_SEQ_CST)) {
 	case 1:
@@ -72,7 +79,6 @@ int cairo_inbox_push(int tid, int kind, int64_t id, const char *data, size_t n)
 		cairo_sockets_wake(__atomic_load_n(&box->waker, __ATOMIC_SEQ_CST));
 		break;
 	}
-	return 0;
 }
 
 cairo_msg *cairo_inbox_drain(int tid)
@@ -229,7 +235,8 @@ static cairo_msg *next_msg(cairo_mailbox *box, zend_long wait, int handed, int64
 // fiber that waits on it (cairo_socket_arm() in sockets.c), as its
 // descriptor; or the next event Go has for the thread (a request, a
 // finished operation, shutdown), which Go encodes in internal/wire's format
-// and wire.c turns into the array; or null when neither came within $wait
+// and wire.c turns into the array, or what another PHP thread has for it (an
+// offload job or its result, offload.h); or null when neither came within $wait
 // nanoseconds (0: do not wait; below 0: wait as long as it takes). Without
 // $sockets it does not ask the kernel for ready sockets, and still returns
 // those it asked for before: one question a turn of the loop is enough.
@@ -265,16 +272,18 @@ PHP_FUNCTION(cairo_next_event)
 	if (m == NULL) {
 		RETURN_NULL();
 	}
-	if (m->kind == CAIRO_EVENT_CALL) {
+	if (m->kind == CAIRO_EVENT_CALL || m->kind == CAIRO_EVENT_JOB) {
 		__atomic_store_n(&box->served, box->served + 1, __ATOMIC_RELAXED);
 	}
 	if (__atomic_load_n(&probed, __ATOMIC_SEQ_CST)) {
 		goTook(tid, (long long)m->id);
 	}
-	int ok = cairo_wire_decode(m->data, m->len, return_value);
+	int ok = m->kind == CAIRO_EVENT_JOB || m->kind == CAIRO_EVENT_DONE
+		? cairo_offload_event(tid, m, return_value)
+		: cairo_wire_decode(m->data, m->len, return_value);
 	free(m);
 	if (ok == FAILURE) {
-		zend_throw_exception(NULL, "cairo: malformed event from Go", 0);
+		zend_throw_exception(NULL, "cairo: malformed event", 0);
 		RETURN_THROWS();
 	}
 }

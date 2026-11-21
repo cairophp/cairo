@@ -53,6 +53,8 @@ namespace Cairo\Internal {
         private \SplQueue $ready;
         /** @internal The waits that stay on this thread: sleep(), select(), sockets. */
         public readonly Waits $waits;
+        /** @internal The offload() jobs that fibers of this thread wait for. */
+        public readonly Jobs $jobs;
         /** @var array<int, Context> request id => its context, until the request ends */
         private array $requests = [];
         /**
@@ -88,6 +90,7 @@ namespace Cairo\Internal {
         {
             $this->ready = new \SplQueue();
             $this->waits = new Waits($this->ready);
+            $this->jobs = new Jobs($this->waits);
             $this->later = new \SplQueue();
             $this->pending = new \SplQueue();
             self::$instance = $this;
@@ -301,6 +304,9 @@ namespace Cairo\Internal {
                         $context->ended((string) $event['error']);
                         $this->waits->end($context);
                     }
+                    break;
+                case 'offloaded':
+                    $this->jobs->done($event);
                     break;
                 case 'retire':
                     // Go queues no more requests here; finish the ones held.

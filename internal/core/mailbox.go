@@ -27,7 +27,7 @@ type mailbox struct {
 	// for each of them.
 	stretch atomic.Int64
 	// How many events the thread has taken out of its inbox, and how many
-	// of them began a call.
+	// of them began a call or were an offload job.
 	took   atomic.Int64
 	served atomic.Int64
 	// The events the thread took and has not read yet, oldest first. Go

@@ -63,7 +63,8 @@ func (e *Engine) probeOf(tid C.int, id int64) (*thread, Probe) {
 }
 
 // goWaitBegan is a fiber of request id that starts a wait on its PHP thread,
-// which no goroutine sees: a sleep, a wait in select() or on a socket. It
+// which no goroutine sees: a sleep, a wait in select(), on a socket or for
+// an offloaded job. It
 // returns what goWaitEnded takes back, 0 when the request has no probe.
 //
 //export goWaitBegan
@@ -77,7 +78,7 @@ func goWaitBegan(tid C.int, id C.longlong) C.longlong {
 
 // What a fiber waits in on its thread, as a probe is told (WaitEnd): the
 // constants of Waits in waits.php, in their order.
-var threadWaits = [...]string{"sleep", "park", "wait", "waitset"}
+var threadWaits = [...]string{"sleep", "park", "wait", "waitset", "offload"}
 
 // goWaitEnded is the end of that wait, as the fiber runs again.
 //

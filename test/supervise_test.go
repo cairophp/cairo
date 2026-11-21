@@ -79,6 +79,33 @@ func TestCrashedThreadIsRestarted(t *testing.T) {
 	t.Logf("thread restarted after a fatal error; in-flight requests got 500")
 }
 
+// A fatal error in an offloaded job kills the only offload thread: the fiber
+// that waits for the job is told at once instead of waiting forever, the
+// thread is restarted and runs the next job, and the request thread never
+// stopped.
+func TestCrashedOffloadThreadIsRestarted(t *testing.T) {
+	fetch := startSupervise(t)
+	_, request := fetch("/boot")
+	code, first := fetch("/offload/boot")
+	if code != 200 || first == "" || first == request {
+		t.Fatalf("/offload/boot: %d %q, want 200 from another thread than %q", code, first, request)
+	}
+
+	start := time.Now()
+	want := `Cairo\OffloadException: the offload thread stopped before the job was done`
+	if code, body := fetch("/offload/crash"); code != 200 || body != want || time.Since(start) > 3*time.Second {
+		t.Fatalf("/offload/crash: status %d after %s (%q), want %q", code, time.Since(start), body, want)
+	}
+
+	code, second := fetch("/offload/boot")
+	if code != 200 || second == "" || second == first {
+		t.Fatalf("/offload/boot after the crash: %d %q (before: %q), want 200 from a new thread", code, second, first)
+	}
+	if _, now := fetch("/boot"); now != request {
+		t.Fatalf("/boot after the crash: %q, want the same request thread, %q", now, request)
+	}
+}
+
 // maxRequests(5): the thread is replaced again and again under concurrent
 // load, and no request fails while it happens.
 func TestMaxRequestsRecyclesThread(t *testing.T) {

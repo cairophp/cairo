@@ -19,6 +19,7 @@ namespace Cairo\Internal {
         public const PARKED = 1;
         public const SOCKET = 2;
         public const SOCKETS = 3;
+        public const OFFLOAD = 4;
 
         /** @internal How many fibers are parked on this thread: with none, the end of a context has nobody to wake here. */
         public static int $waiting = 0;
@@ -182,8 +183,8 @@ namespace Cairo\Internal {
             }
         }
 
-        /** The exception of $ctx, which ended as $ended while a fiber waited under it. */
-        private static function exceptionOf(Context $ctx, string $ended): \Throwable
+        /** @internal The exception of $ctx, which ended as $ended while a fiber waited under it. */
+        public static function exceptionOf(Context $ctx, string $ended): \Throwable
         {
             $ctx->ended($ended);
             return $ended === 'canceled' ? new Context\Canceled() : new Context\DeadlineExceeded();

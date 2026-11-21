@@ -76,6 +76,9 @@ func (e *Engine) threadExited(t *thread, status int) {
 	if e.shuttingDown() {
 		return
 	}
+	if t.pool == poolOffload {
+		e.jobLost(t)
+	}
 	retiring := t.retiring.Load()
 	// No call is between the thread's tables and its inbox while this is
 	// held, and with retiring, nothing is queued here from now on (a crash

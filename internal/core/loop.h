@@ -14,7 +14,7 @@ typedef struct {
 	int64_t since;    // when the thread last came back to its loop, in unix ns; 0 while it sleeps
 	int64_t stretch;  // a moving average of how long it runs PHP between two visits, in ns
 	int64_t took;     // how many events the thread has taken out of its inbox, and
-	int64_t served;   // how many of them began a call
+	int64_t served;   // how many of them began a call or were an offload job
 	cairo_msg *next;  // the events it took and has not read yet, oldest first
 	int32_t handed;   // 1 when the thread gave Go an operation or an answer since its last visit
 	// What the thread writes at every visit and what senders write share no
@@ -46,13 +46,19 @@ void cairo_loop_look(int64_t ns);
 // before it learns of the answer.
 void cairo_loop_answered(int tid);
 
-// An event either begins a call (a request, an offload job) or does not.
-enum { CAIRO_EVENT = 0, CAIRO_EVENT_CALL = 1 };
+// What a thread finds in its inbox: an event from Go, which begins a call (a
+// request) or does not, or what another PHP thread queued there, an offload
+// job or the result of one (offload.h).
+enum { CAIRO_EVENT = 0, CAIRO_EVENT_CALL = 1, CAIRO_EVENT_JOB = 2, CAIRO_EVENT_DONE = 3 };
 
 // Queues an event (internal/wire's format, n bytes, copied) for thread tid
 // and wakes the thread when it sleeps. id is the call that the event begins,
-// or the fiber it is for, or 0. Returns -1 when there is no memory for it.
+// or the request it is for, or 0. Returns -1 when there is no memory for it.
 int cairo_inbox_push(int tid, int kind, int64_t id, const char *data, size_t n);
+
+// The same for a message that its sender allocated and filled (malloc; the
+// thread frees it).
+void cairo_inbox_queue(int tid, cairo_msg *m);
 
 // Takes what is queued for thread tid and it has not read out of its
 // mailbox, oldest first: for a thread that has ended. The caller frees it

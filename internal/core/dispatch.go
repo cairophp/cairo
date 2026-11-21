@@ -25,8 +25,8 @@ type call struct {
 	id     int64
 	thread *thread
 	resp   chan *reply
-	// A request's context and probe, which the operations of its fibers
-	// run under and report to (submit); nil for an offload job.
+	// The request's context and probe, which the operations of its fibers
+	// run under and report to (submit).
 	ctx   context.Context
 	probe Probe
 	reply reply

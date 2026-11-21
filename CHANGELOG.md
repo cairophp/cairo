@@ -155,6 +155,16 @@ change the PHP API; patch versions do not.
   millisecond on the thread itself, which stood in for this, is kept only
   where a thread serves one request at a time (isolated mode): next to other
   requests it cost 4 to 7%.
+- Performance: an `offload()` job goes from its request thread straight into
+  the inbox of an offload thread, and its result straight back, with no
+  goroutine on the way and no base64 or JSON around the serialized bytes:
+  two wake-ups of threads where it took four. An empty job takes 36 µs where
+  it took 100 µs, and a job of 50 µs costs 87 µs of CPU where it cost 165
+  µs. The wait still ends with the fiber's context while the job runs on. A
+  fiber whose offload thread stops in the middle of its job now gets an
+  `OffloadException` (it was `Context\Canceled`), and a result that cannot
+  be serialized is an `OffloadException` for its caller instead of the end
+  of the offload thread.
 
 ## [0.4.0] - 2026-11-19
 

@@ -2,8 +2,8 @@
 
 Cairo is a PHP application server written in Go. You declare HTTP and gRPC
 servers in PHP; Go does the serving. Every request runs in its own PHP Fiber,
-and every fiber has its own goroutine, so one PHP thread can hold thousands of
-requests at once while Go does the waiting.
+and a fiber that waits on I/O hands the wait to a goroutine, so one PHP thread
+can hold thousands of requests at once while Go does the waiting.
 
 > Status: v0.4.0. The PHP API may still change before 1.0;
 > [CHANGELOG.md](CHANGELOG.md) lists what changed. Design doc:
@@ -22,7 +22,7 @@ $app->offloadThreads('auto');   // CPU threads for Cairo\offload()
 $http = $app->http(':8080');
 $http->get('/hello/{name}', fn (Request $r) => Response::text("Hello {$r->param('name')}\n"));
 $http->get('/slow', function (): Response {
-    sleep(1);                    // this fiber suspends; its goroutine waits
+    sleep(1);                    // only this fiber suspends
     return Response::json(['ok' => true]);
 });
 $http->get('/report', fn () => Response::json(offload('buildReport', 2026)));  // CPU work, other threads
@@ -127,7 +127,7 @@ every performance change with its measured effect, are in
 ```
 cmd/cairo/            the binary (serve, gen)
 internal/codegen/     cairo gen: PHP classes and clients from .proto files
-internal/core/        the core engine: embedded PHP (C bridge), PHP threads, fiber goroutines, offload pool
+internal/core/        the core engine: embedded PHP (C bridge), PHP threads, the goroutines of Go operations, offload pool
 internal/core/php/    the core's PHP side (embedded in the binary); runtime.php is what every PHP thread runs
 internal/sapi/        the extensions next to the embedded PHP: runtime hooks, PDO pgsql, clients, diagnostics
 internal/spec/        the server declaration sent by server.php

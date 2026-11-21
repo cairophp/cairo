@@ -75,6 +75,108 @@ change the PHP API; patch versions do not.
   has the list), and a test fails when the core names an extension in Go, C
   or PHP (`internal/core/boundary_test.go`). Tenth and last step of the same
   separation.
+- Performance: Cairo's own C code is compiled with `-O2`. The build scripts
+  set `CGO_CFLAGS` to PHP's include paths, which dropped the optimization
+  that Go asks for by default, so every build had compiled that code
+  without any. A Go operation or a wait among 64 fibers is about 8% cheaper,
+  and the PostgreSQL benchmark route serves 3.6% more requests per second.
+- Performance: opcache holds Cairo's own PHP files. The engine writes them
+  when the server starts, and opcache leaves out a file that changed in the
+  last two seconds, so every PHP thread compiled the runtime itself, with no
+  optimizer and nothing shared between threads. The files now get an old
+  modification time.
+- Performance: on glibc builds, a call from a PHP fiber into Go no longer
+  makes Go's runtime fetch the thread's stack from the system each time (a
+  `sched_getaffinity` system call and an allocation). Cairo reads each
+  thread's stack once and answers from that.
+- Performance: the engine keeps the calls a PHP thread took and the fibers
+  that live on it in tables of that thread, which only the thread itself
+  uses, in place of two maps shared and locked by all threads.
+- Performance: a request's bookkeeping in Go (its call, its root fiber,
+  their channels and the buffer of its event) is reused from one request to
+  the next instead of allocated for each: eight allocations and about 1 kB
+  less per request.
+- Performance: a request's fibers wait under the context of the server's
+  request itself. The engine made a context of its own under it for every
+  request and ended it when PHP answered, which the server's context does
+  anyway once the request is done: five allocations less per request.
+- Performance: a request goes to a PHP thread that is already running PHP
+  and will be back for its next event within 50 µs, when there is one,
+  instead of waking a thread that sleeps. A thread that holds 32 more
+  requests than the least busy one, or that has run one fiber for long, is
+  still passed over.
+- Performance: the arguments of a Go operation (`Cairo\Sql`, the HTTP, gRPC
+  and network clients, the cache purge) cross from PHP to Go in the binary
+  format that results already come back in, instead of as JSON text: no
+  `json_encode()` in PHP, and Go reads them about three times as fast. An
+  operation that runs on the PHP thread gets its result back the same way. A
+  string argument may now hold any bytes, where JSON refused text that was
+  not UTF-8.
+- Performance: a fiber in `Cairo\sleep()`, in a hooked `sleep()` or
+  `usleep()`, or blocked on a `Cairo\Channel`, in `select()` or on a
+  `Cairo\Pool` now waits on its PHP thread, which keeps the timers itself,
+  instead of on a goroutine: nothing crosses to Go, and a sleep or a channel
+  hand-over between two fibers costs about a microsecond where it cost 35 to
+  70. A thread whose fibers keep each other busy still takes new requests
+  and Go's answers every 64 fibers. A thread that gave Go an operation and
+  has nothing else to run watches for a few microseconds whether the answer
+  is there before it sleeps, which that of a short operation is: about a
+  third off the time of a Go operation when nothing else runs on the thread.
+- Requests and answers cross between Go and the PHP threads in queues that
+  neither side calls the other for. A thread used to call into Go for its
+  next event and to hand over an answer, and each call held one of Go's
+  processors, which Go's scheduler then took back and gave out again: a
+  route that computes for 350 µs cost 5.7 thread switches per request. A
+  thread now sleeps and wakes in C, and one goroutine collects the answers
+  of all threads. Measured at 64 connections: 8% more requests per second
+  on a route that answers at once and on one MySQL query, 10% more on the
+  route that computes. `offload()` and a Go operation of a thread with
+  nothing else to do take longer for now (about 28 µs and 6 µs), and one
+  PostgreSQL query per request does 3% fewer requests.
+- Performance: a fiber no longer has a goroutine and a context in Go.
+  `async()` and the derived contexts (`withTimeout()`, `withDeadline()`,
+  `withCancel()`) are PHP alone, a Go operation runs under its request's
+  context, narrowed to the deadline of the context that asked, on a
+  goroutine that then waits for the thread's next operation, and `cancel()`
+  ends the operations in flight under the context. `async()` + `await()`
+  takes 1.4 µs instead of 3.6, `withTimeout()` + `cancel()` 0.36 µs instead
+  of 2.9, and the hello benchmark serves 2.0% more requests per second.
+  Derived contexts now also work outside a request thread, and the internal
+  `Context::$fiberId` is gone.
+- Performance: a fiber that waits on a socket (PDO MySQL and everything else
+  on PHP's streams, curl, the Revolt driver) no longer asks Go. Each PHP
+  thread has an epoll of its own: the fiber arms its socket there and parks
+  on the thread, the thread's loop asks once a turn which sockets are ready,
+  and a thread with nothing to run sleeps in its epoll, where Go wakes it
+  through an eventfd. The stream's timeout and the context's deadline are
+  timers of the thread. One MySQL query for each request: 20% more requests
+  per second with 22% less CPU for each, and 0.7 thread switches a request
+  instead of 1.7; a curl transfer costs 18% less CPU. The wait of a
+  millisecond on the thread itself, which stood in for this, is kept only
+  where a thread serves one request at a time (isolated mode): next to other
+  requests it cost 4 to 7%.
+- Performance: an `offload()` job goes from its request thread straight into
+  the inbox of an offload thread, and its result straight back, with no
+  goroutine on the way and no base64 or JSON around the serialized bytes:
+  two wake-ups of threads where it took four. An empty job takes 36 µs where
+  it took 100 µs, and a job of 50 µs costs 87 µs of CPU where it cost 165
+  µs. The wait still ends with the fiber's context while the job runs on. A
+  fiber whose offload thread stops in the middle of its job now gets an
+  `OffloadException` (it was `Context\Canceled`), and a result that cannot
+  be serialized is an `OffloadException` for its caller instead of the end
+  of the offload thread.
+- `Cairo\Channel`: `send()` into a channel with room and `recv()` of a
+  buffered value no longer go through `select()`, and neither do `trySend()`
+  and `tryRecv()`: a send and a receive with nobody waiting take 0.1 µs
+  instead of 1.2 µs, and a `select()` that finds a channel ready less than
+  half its time. Nothing changes in what they do.
+- The scheduler of a PHP thread keeps its fibers in C: the context each
+  fiber runs under, the fibers that wait for their next task, the queue of
+  those to resume, and the parked waits with their timers. A `sleep(0)`
+  takes 0.7 µs instead of 1.4 µs, `Context::current()` 33 ns instead of 69
+  ns, and a route that queries MySQL through PDO, which parks its fiber for
+  every wait on the socket, answers 16% more requests per second. Fibers
+  that sleep until the same moment wake in the order they went to sleep.
 
 ## [0.4.0] - 2026-11-19
 

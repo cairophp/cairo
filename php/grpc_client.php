@@ -192,7 +192,7 @@ namespace Cairo\Grpc {
         {
             if (!$this->closed) {
                 $this->closed = true;
-                \cairo_go_call('grpc.stream.close', json_encode(['id' => $this->id], JSON_THROW_ON_ERROR));
+                \cairo_go_call('grpc.stream.close', ['id' => $this->id]);
             }
         }
 

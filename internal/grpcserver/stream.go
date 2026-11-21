@@ -37,7 +37,7 @@ type activeStream struct {
 }
 
 // sendQueue is how many replies may wait for the writer; a send beyond it
-// waits on the fiber's goroutine (StreamSend) until there is room.
+// waits in the fiber's Go operation (StreamSend) until there is room.
 const sendQueue = 64
 
 var (

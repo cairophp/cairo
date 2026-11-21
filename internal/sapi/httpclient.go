@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,18 +17,19 @@ import (
 	"time"
 
 	"github.com/cairophp/cairo/internal/core"
+	"github.com/cairophp/cairo/internal/wire"
 )
 
 // Cairo\Http\Client sends its requests through Go's net/http: connection
 // pooling, keep-alive, HTTP/2 over TLS and proxies from the environment come
-// with it. Inside a request fiber the request runs on the fiber's goroutine,
+// with it. Inside a request fiber the request runs as a Go operation,
 // so the fiber suspends and the request's deadline cancels it.
 
 func init() {
 	registerPHP("http_client.php")
 	core.RegisterOp("http", func(ctx context.Context, payload []byte) (any, error) {
 		var req httpClientRequest
-		if err := json.Unmarshal(payload, &req); err != nil {
+		if err := wire.Unmarshal(payload, &req); err != nil {
 			return nil, err
 		}
 		return httpDo(ctx, req), nil

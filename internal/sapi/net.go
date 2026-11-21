@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cairophp/cairo/internal/core"
+	"github.com/cairophp/cairo/internal/wire"
 )
 
 // Cairo\Net: connections, listeners and DNS from Go's net package. PHP holds
@@ -81,7 +81,7 @@ func init() {
 		fn := fn
 		core.RegisterOp(name, func(ctx context.Context, payload []byte) (any, error) {
 			var req netRequest
-			if err := json.Unmarshal(payload, &req); err != nil {
+			if err := wire.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
 			return fn(ctx, req), nil

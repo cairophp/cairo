@@ -179,18 +179,18 @@ namespace Cairo {
         {
             $ctx = Context::current();
             $fiber = \Fiber::getCurrent();
-            if ($fiber === null || $ctx->fiberId === 0 || !Scheduler::running()) {
+            if ($fiber === null || $ctx->requestId === 0 || !Scheduler::running()) {
                 throw new \LogicException('the pool is exhausted and there is no request fiber to wait in');
             }
             $waiter = new PoolWaiter($fiber, $ctx, $this->acquireTimeout === null ? null : new Waiter());
             $id = spl_object_id($waiter);
             $this->waiters[$id] = $waiter;
-            $event = [];
+            $ended = null;
             try {
                 if ($waiter->park === null) {
                     \Fiber::suspend();
                 } else {
-                    $event = Scheduler::instance()->park($waiter->park, $this->acquireTimeout);
+                    $ended = Scheduler::instance()->waits->park($ctx, $this->acquireTimeout, $waiter->park);
                 }
             } finally {
                 unset($this->waiters[$id]);
@@ -198,8 +198,8 @@ namespace Cairo {
             if ($waiter->entry !== null || $waiter->slot) {
                 return $waiter->entry;
             }
-            if (isset($event['error'])) {
-                $ctx->ended((string) $event['error']);
+            if ($ended !== null) {
+                $ctx->ended($ended);
             }
             if (($err = $ctx->err()) !== null) {
                 throw $err;

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"testing"
 )
 
@@ -46,6 +47,45 @@ func TestContextDoneAtDeadline(t *testing.T) {
 	sel, _ := out["select"].([]any)
 	if len(sel) != 2 || sel[0] != "done" || waited < 0.1 || waited > 0.5 {
 		t.Errorf("select on done() of withTimeout(0.15): %v", out)
+	}
+}
+
+// A Go operation has a context only when PHP derived one for the code that
+// asks: it ends at that context's deadline or when PHP cancels it (or what it
+// derives from), does not start under one that has ended, and under a live
+// one it runs to its end.
+func TestContextEndsGoOperation(t *testing.T) {
+	slow := url.QueryEscape("http://" + httpAddr + "/sleep?seconds=0.6")
+	out := getJSON(t, "/ctx/go-operation?url="+slow)
+	for _, tc := range []struct {
+		key, how string
+		min, max float64
+	}{
+		{"deadline", `Cairo\Context\DeadlineExceeded`, 0.1, 0.5},
+		{"canceled", `Cairo\Context\Canceled`, 0.05, 0.5},
+		{"ended", `Cairo\Context\Canceled`, 0, 0.05},
+		{"parent_canceled", `Cairo\Context\Canceled`, 0.05, 0.5},
+	} {
+		got, _ := out[tc.key].([]any)
+		if len(got) != 2 {
+			t.Fatalf("%s: %v", tc.key, out)
+		}
+		if took, _ := got[1].(float64); got[0] != tc.how || took < tc.min || took > tc.max {
+			t.Errorf("%s: a 0.6s operation ended as %v after %vs, want %s within %v to %vs", tc.key, got[0], got[1], tc.how, tc.min, tc.max)
+		}
+	}
+	if out["request"] != "answered 200" || out["request_err"] != nil {
+		t.Errorf("under a live context, with the request's own: %v, %v", out["request"], out["request_err"])
+	}
+}
+
+// A task that its request did not await does not wait on after the answer:
+// the request's context ends once the server is done with the request, and
+// the task's waits end with it.
+func TestContextEndsWithRequest(t *testing.T) {
+	get(t, "/ctx/left-running")
+	if out := getJSON(t, "/ctx/left-running/ended"); out["task"] != `Cairo\Context\Canceled` {
+		t.Errorf("a 30s sleep in a task its request did not await: %v, want it canceled when the request was answered", out["task"])
 	}
 }
 

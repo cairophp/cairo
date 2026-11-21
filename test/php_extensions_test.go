@@ -15,6 +15,7 @@ func TestPHPBuildHasOpcacheAndExtensions(t *testing.T) {
 		Extensions map[string]bool `json:"extensions"`
 		Opcache    struct {
 			Loaded, Enabled, Cached bool
+			Runtime                 map[string]bool
 		} `json:"opcache"`
 		Checks map[string]any `json:"checks"`
 	}
@@ -35,6 +36,13 @@ func TestPHPBuildHasOpcacheAndExtensions(t *testing.T) {
 	// The static binary has no opcache before PHP 8.5 (scripts/build-static.sh).
 	if os.Getenv("CAIRO_TEST_NO_OPCACHE") == "" && (!out.Opcache.Loaded || !out.Opcache.Enabled || !out.Opcache.Cached) {
 		t.Errorf("opcache = %+v, want loaded, enabled and caching the route file", out.Opcache)
+	}
+	// Cairo writes its own PHP files when it starts. Opcache has to hold
+	// them all the same, or every PHP thread compiles them for itself.
+	for _, part := range []string{"core", "extension", "onUse"} {
+		if os.Getenv("CAIRO_TEST_NO_OPCACHE") == "" && !out.Opcache.Runtime[part] {
+			t.Errorf("opcache does not hold Cairo's own PHP file (%s): %+v", part, out.Opcache.Runtime)
+		}
 	}
 	want := map[string]any{
 		"mb_strtoupper": "ÜMLAUT", "bcadd": "0.3", "sodium": float64(32), "intl": "1,234,567.5", "sqlite": float64(42),

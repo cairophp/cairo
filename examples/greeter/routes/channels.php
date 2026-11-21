@@ -79,6 +79,52 @@ return function ($http): void {
         return Response::json(['key' => $key, 'waited' => round($waited, 2), 'now' => $now]);
     });
 
+    // A buffered channel keeps the order of its values, also those of
+    // senders that waited for room; a receiver that waits gets its value
+    // without the buffer; and a channel in use for long holds no more memory
+    // than the values in it.
+    $http->get('/chan/buffered', function (): Response {
+        $ch = new Channel(3);
+        $producer = async(function () use ($ch): void {
+            foreach (range(1, 1000) as $n) {
+                $ch->send($n);
+            }
+            $ch->close();
+        });
+        $inOrder = iterator_to_array($ch, false) === range(1, 1000);
+        await($producer);
+
+        $full = new Channel(2);
+        $full->send('a');
+        $full->send('b');
+        $blocked = async(fn () => $full->send('c'));   // waits for room
+        $refused = !$full->trySend('d');
+        $taken = [$full->recv(), count($full), $full->recv(), $full->recv()];
+        await($blocked);
+
+        $direct = new Channel(2);
+        $receiver = async(fn () => $direct->recv());   // waits for a value
+        $direct->send('x');
+        $handed = [count($direct), await($receiver)];
+
+        $steady = new Channel(4);
+        $steady->send(0);
+        $steady->send(0);
+        $before = memory_get_usage();
+        $sum = 0;
+        for ($i = 1; $i <= 200000; $i++) {
+            $steady->send($i);
+            $sum += $steady->recv();
+        }
+        return Response::json([
+            'in_order' => $inOrder,
+            'refused_when_full' => $refused,
+            'taken' => $taken,
+            'handed' => $handed,
+            'steady' => [$sum, count($steady), $steady->tryRecv($next), $next, memory_get_usage() - $before < 65536],
+        ]);
+    });
+
     // Closed channels.
     $http->get('/chan/closed', function (): Response {
         $ch = new Channel(1);

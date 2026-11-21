@@ -1,5 +1,9 @@
 package core
 
+/*
+#include "loop.h"
+#include "outbox.h"
+*/
 import "C"
 
 import (
@@ -12,9 +16,10 @@ import (
 // A PHP thread can die: a fatal error (memory_limit, a stack overflow caught
 // by PHP, exit() outside a handler) ends the PHP request the thread runs in,
 // and with it every fiber on the thread. The supervisor then answers the
-// requests the thread had taken with ErrThreadStopped, closes its fibers'
-// goroutines and starts a fresh thread under the same id and inbox, so
-// requests still queued for it are served by the new one.
+// requests the thread had taken with ErrThreadStopped, which ends their
+// contexts and with them what their fibers had asked Go for, and starts a
+// fresh thread under the same id and with it the same inbox, so requests
+// still queued for it are served by the new one.
 //
 // A request thread can also be recycled on purpose, after App::maxRequests()
 // requests or once its memory passes App::maxMemory(). PHP asks with
@@ -64,25 +69,28 @@ func (e *Engine) shuttingDown() bool {
 	}
 }
 
-// threadExited runs on the PHP thread right after it left PHP.
+// threadExited runs once the PHP thread has left PHP and Go has all that
+// the thread answered before (collect).
 func (e *Engine) threadExited(t *thread, status int) {
+	t.endWorkers()
 	if e.shuttingDown() {
 		return
 	}
-	retiring := t.retiring.Load()
-	if retiring {
-		// No request may be queued here from now on (a crash can come
-		// before retire() got this far).
-		t.sendMu.Lock()
-		t.retired = true
-		t.sendMu.Unlock()
+	if t.pool == poolOffload {
+		e.jobLost(t)
 	}
+	retiring := t.retiring.Load()
+	// No call is between the thread's tables and its inbox while this is
+	// held, and with retiring, nothing is queued here from now on (a crash
+	// can come before retire() got as far as retired).
+	t.sendMu.Lock()
+	t.retired, t.gone = t.retired || retiring, retiring
 	failed := e.failCalls(t, retiring)
-	e.closeFibers(t)
+	t.sendMu.Unlock()
 
 	if retiring && status == 0 {
 		e.releaseTid(t)
-		e.log.Info("php thread recycled", "thread", t.id, "served", t.served.Load())
+		e.log.Info("php thread recycled", "thread", t.id, "served", t.box.served.Load()-t.bootMark)
 		return
 	}
 	e.log.Error("php thread stopped unexpectedly", "thread", t.id, "exit_status", status, "failed_calls", failed)
@@ -91,7 +99,7 @@ func (e *Engine) threadExited(t *thread, status int) {
 		return
 	}
 
-	if t.served.Load() == t.bootMark {
+	if t.box.served.Load() == t.bootMark {
 		t.crashes++
 	} else {
 		t.crashes = 0
@@ -112,7 +120,10 @@ func (e *Engine) threadExited(t *thread, status int) {
 	if t.crashes > 0 {
 		delay = min(100*time.Millisecond<<t.crashes, 5*time.Second)
 	}
-	t.bootMark = t.served.Load()
+	t.bootMark = t.box.served.Load()
+	t.mu.Lock()
+	t.ended = false
+	t.mu.Unlock()
 	go func() {
 		time.Sleep(delay)
 		if err := e.startThread(t); err != nil {
@@ -124,39 +135,31 @@ func (e *Engine) threadExited(t *thread, status int) {
 	}()
 }
 
-// failCalls answers, with nil, the calls thread t took (or, with all, every
-// call queued for it) and returns how many.
-func (e *Engine) failCalls(t *thread, all bool) int {
+// failCalls answers, with nil, the calls that thread t read and, with
+// queued, those whose events are still in its inbox, which no thread will
+// take. It returns how many. The thread has ended, and the caller holds
+// sendMu.
+func (e *Engine) failCalls(t *thread, queued bool) int {
+	var waiting map[int64]bool
+	if queued {
+		C.cairo_msg_free(C.cairo_inbox_drain(C.int(t.id)))
+	} else {
+		waiting = t.queuedCalls()
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	n := 0
-	e.calls.Range(func(k, v any) bool {
-		c := v.(*call)
-		if c.thread != t || !(all || c.started.Load()) {
-			return true
+	for id, c := range t.calls {
+		if waiting[id] {
+			continue
 		}
-		if _, ok := e.calls.LoadAndDelete(k); ok {
-			t.inflight.Add(-1)
-			c.resp <- nil
-			n++
-		}
-		return true
-	})
+		// Out of the table before the answer: Dispatch then reuses the call.
+		delete(t.calls, id)
+		c.resp <- nil
+		n++
+	}
+	t.inflight.Add(int64(-n))
 	return n
-}
-
-// closeFibers ends the goroutines of the async() fibers that lived on t.
-// Request fibers end with their call.
-func (e *Engine) closeFibers(t *thread) {
-	e.fibers.Range(func(k, v any) bool {
-		f := v.(*fiber)
-		if f.thread != t || f.closed == nil {
-			return true
-		}
-		if _, ok := e.fibers.LoadAndDelete(k); ok {
-			f.cancel()
-			close(f.closed)
-		}
-		return true
-	})
 }
 
 // retire replaces request thread old with a fresh one, then lets old finish
@@ -177,8 +180,7 @@ func (e *Engine) retire(old *thread, reason string) {
 		e.log.Warn("php thread not recycled: no free thread ids", "thread", old.id)
 		return
 	}
-	nt := &thread{id: tid, pool: poolWorker, slot: old.slot, inbox: make(chan event, inboxSize)}
-	e.table[tid].Store(nt)
+	nt := e.newThread(tid, poolWorker, old.slot)
 	e.threadsWG.Add(1)
 	e.lifeMu.Unlock()
 	if err := e.startThread(nt); err != nil {
@@ -193,7 +195,7 @@ func (e *Engine) retire(old *thread, reason string) {
 	old.retired = true
 	old.sendMu.Unlock()
 	e.post(old, map[string]string{"type": "retire"}) // after every request queued to old
-	e.log.Info("recycling php thread", "thread", old.id, "reason", reason, "served", old.served.Load(), "replacement", tid)
+	e.log.Info("recycling php thread", "thread", old.id, "reason", reason, "served", old.box.served.Load()-old.bootMark, "replacement", tid)
 }
 
 func (e *Engine) report(err error) {
@@ -201,13 +203,6 @@ func (e *Engine) report(err error) {
 	case e.threadErrs <- err:
 	default:
 	}
-}
-
-//export goThreadDone
-func goThreadDone(tid C.int, status C.int) {
-	e := engine
-	defer e.threadsWG.Done()
-	e.threadExited(e.table[int(tid)].Load(), int(status))
 }
 
 //export goThreadRetire

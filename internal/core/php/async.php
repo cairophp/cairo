@@ -59,9 +59,10 @@ namespace Cairo {
     }
 
     /**
-     * Sleep without blocking the thread: the fiber suspends and its goroutine
-     * waits. Throws Context\DeadlineExceeded or Context\Canceled if the
-     * request's context ends first.
+     * Sleep without blocking the thread: the fiber suspends, and the thread
+     * runs other fibers until the time is up. Throws
+     * Context\DeadlineExceeded or Context\Canceled if the request's context
+     * ends first.
      */
     function sleep(float $seconds): void
     {
@@ -69,7 +70,7 @@ namespace Cairo {
             usleep((int) ($seconds * 1e6));
             return;
         }
-        Scheduler::instance()->op(['op' => 'sleep', 'seconds' => $seconds]);
+        Scheduler::instance()->waits->sleep($seconds);
     }
 }
 
@@ -77,14 +78,12 @@ namespace Cairo\Internal {
 
     use Cairo\Context;
 
-/** @internal async(), with the parent context given: start $fn in a new fiber with its own goroutine. */
+/** @internal async(), with the parent context given: start $fn in a new fiber. */
     function spawnTask(Context $parent, callable $fn): \Cairo\Task
     {
         $task = new \Cairo\Task();
-        // Go starts the goroutine that will serve this fiber.
-        $goroutine = \cairo_fiber_open($parent->fiberId);
-        $context = $parent->child($goroutine);
-        Scheduler::instance()->startFiber(static function () use ($fn, $task, $goroutine, $context): void {
+        $context = $parent->child();
+        Scheduler::instance()->startFiber(static function () use ($fn, $task, $context): void {
             try {
                 $task->result = \cairo_guard($fn);
             } catch (\Throwable $e) {
@@ -92,7 +91,6 @@ namespace Cairo\Internal {
                 Scheduler::instance()->taskFailed();
             } finally {
                 $context->finish();
-                \cairo_fiber_close($goroutine);
             }
             $task->done = true;
             foreach ($task->waiters as $waiter) {

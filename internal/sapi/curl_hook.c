@@ -4,8 +4,8 @@
 // libcurl polls its sockets. Cairo defines curl_easy_perform in the binary, so
 // libphp's call resolves here first (the executable is searched before
 // libcurl). Inside a request fiber, the transfer runs on a private curl multi
-// handle, and every wait for curl's sockets suspends the fiber while Go waits
-// on them (Cairo\Internal\Hooks::waitSet). curl names those sockets through
+// handle, and every wait for curl's sockets suspends the fiber while the
+// thread's loop watches them (Cairo\Internal\Hooks::waitSet). curl names those sockets through
 // its socket callback, never through an fd_set: a busy server's descriptors
 // pass FD_SETSIZE (1024), and curl_multi_fdset() silently leaves those out. Everything else in curl_exec()
 // stays PHP's own, so curl_getinfo(), curl_error() and the write and header

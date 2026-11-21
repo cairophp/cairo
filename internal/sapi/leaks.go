@@ -2,11 +2,11 @@ package sapi
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/cairophp/cairo/internal/core"
+	"github.com/cairophp/cairo/internal/wire"
 )
 
 // App::detectLeaks(): php/leaks.php compares the app's static properties
@@ -24,7 +24,7 @@ func init() {
 			Route   string   `json:"route"`
 			Statics []string `json:"statics"`
 		}
-		if err := json.Unmarshal(payload, &req); err != nil {
+		if err := wire.Unmarshal(payload, &req); err != nil {
 			return nil, fmt.Errorf("leaks.report: %w", err)
 		}
 		now := time.Now()

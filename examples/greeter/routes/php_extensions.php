@@ -26,6 +26,12 @@ return function ($http): void {
                 'loaded' => extension_loaded('Zend OPcache'),
                 'enabled' => is_array($status) && $status['opcache_enabled'],
                 'cached' => function_exists('opcache_is_script_cached') && opcache_is_script_cached(__FILE__),
+                // Cairo's own PHP files: one of the core, one of an extension, one loaded on first use.
+                'runtime' => array_map(
+                    static fn (string $class): bool => function_exists('opcache_is_script_cached')
+                        && opcache_is_script_cached((string) (new ReflectionClass($class))->getFileName()),
+                    ['core' => Cairo\Context::class, 'extension' => Response::class, 'onUse' => Cairo\Pool::class],
+                ),
             ],
             // A few calls that only work with the extensions in place.
             'checks' => [

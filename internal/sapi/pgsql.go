@@ -26,7 +26,7 @@ import (
 
 // Cairo's PDO driver for PostgreSQL ("pgsql:" DSNs) is C on the PHP side and
 // pgx's pgconn on the Go side. PHP asks for one operation at a time; inside a
-// request fiber it runs on the fiber's goroutine (the fiber suspends, and the
+// request fiber it runs as a Go operation (the fiber suspends, and the
 // request's deadline cancels the query), elsewhere the PHP thread waits for
 // it. Results are read in full, like libpq's PQexec, and handed to C.
 
@@ -451,7 +451,7 @@ func pgRequestFrom(data []byte) (pgRequest, error) {
 }
 
 // The driver joins the SAPI module, and the "pg" fiber operation is one call
-// of the driver on the fiber's goroutine, so the request's deadline cancels
+// of the driver under the request's context, so the request's deadline cancels
 // the query.
 func init() {
 	registerC(&C.cairo_pdo_pgsql)

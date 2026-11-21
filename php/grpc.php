@@ -135,7 +135,7 @@ namespace Cairo\Grpc {
         public function send(array|object $message): void
         {
             // Queued without a fiber switch while Go's reply queue has room;
-            // a full queue waits on the fiber's goroutine instead.
+            // a full queue waits in a Go operation instead.
             $payload = ['id' => $this->id, 'message' => Stream::encode($message)];
             $r = \Cairo\Internal\Go::callNow('grpc.server.trySend', $payload);
             if (!is_array($r) || !($r['ok'] ?? false)) {

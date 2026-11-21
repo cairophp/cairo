@@ -2,7 +2,7 @@
 //
 // Cairo swaps the handlers of PHP's blocking sleep functions. Inside a fiber,
 // the new handler asks the PHP runtime (Cairo\Internal\Hooks::sleep) to
-// suspend the fiber while its goroutine waits; PHP fibers are stackful, so
+// suspend the fiber until its time is up; PHP fibers are stackful, so
 // the fiber can suspend from inside this C function. Outside a fiber, or when
 // the runtime declines (hooks off, offload thread, a fiber Cairo did not
 // start), the original handler runs and blocks as usual.

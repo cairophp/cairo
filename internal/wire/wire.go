@@ -14,6 +14,10 @@
 //
 // The C decoder checks every length against the buffer and limits nesting
 // to MaxDepth.
+//
+// The arguments of a Go operation come the other way in the same form: C
+// encodes the PHP array (wire.c), and Unmarshal reads it into the
+// operation's struct.
 package wire
 
 import (

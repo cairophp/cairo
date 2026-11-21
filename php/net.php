@@ -76,7 +76,7 @@ namespace Cairo\Net {
         /** Closing never needs to wait, so it does not suspend (it may run in a destructor). */
         public static function close(int $id, string $mode = ''): void
         {
-            \cairo_go_call('net.close', json_encode(['id' => $id, 'mode' => $mode], JSON_THROW_ON_ERROR));
+            \cairo_go_call('net.close', ['id' => $id, 'mode' => $mode]);
         }
     }
 

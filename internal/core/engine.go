@@ -1,14 +1,19 @@
 // Package core is Cairo's core engine: it embeds a thread-safe (ZTS) PHP
 // into the Go process and moves work between Go and PHP threads.
 //
-// The model, in one paragraph: every PHP Fiber has exactly one Go goroutine.
-// A request's root fiber belongs to the goroutine that accepted the request
-// (Engine.Dispatch); fibers started with Cairo\async() get a child goroutine.
-// That goroutine owns the fiber's context.Context and performs every I/O
-// operation the fiber asks for, then wakes the fiber on its PHP thread. So
-// one PHP thread can hold thousands of requests, each waiting on its own
-// goroutine. CPU-heavy work goes to a separate pool of PHP threads through
-// Cairo\offload(), so it never stalls the fibers on a request thread.
+// The model, in one paragraph: a request runs in a PHP fiber on one PHP
+// thread, and fibers it starts with Cairo\async() run next to it on the same
+// thread. A fiber is PHP's alone: its context, its deadline and its waits
+// for a sleep or a channel stay on the thread. When a fiber asks for an I/O
+// operation, it suspends, and a goroutine performs the operation under the
+// request's context.Context and then wakes the fiber. So one PHP thread can
+// hold thousands of requests, and a goroutine exists only for as long as an
+// operation runs. CPU-heavy work goes to a separate pool of PHP threads
+// through Cairo\offload(), so it never stalls the fibers on a request thread.
+//
+// What Go has for a PHP thread and what a thread answers cross in queues
+// that neither side calls the other for (loop.h, outbox.h): a PHP thread
+// calls into Go only for an operation of one of its fibers.
 //
 // Everything else is an extension: a server, a client, a database driver, a
 // hook, a diagnostic. An extension joins from its own package with the
@@ -17,7 +22,9 @@
 package core
 
 /*
-#cgo CFLAGS: -D_GNU_SOURCE
+// -O2 is here and not in CGO_CFLAGS: the build scripts set that variable to
+// PHP's include paths, which drops Go's default of -g -O2.
+#cgo CFLAGS: -D_GNU_SOURCE -O2
 #cgo LDFLAGS: -lphp
 #include <stdlib.h>
 #include "cairo.h"
@@ -37,15 +44,21 @@ import (
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"github.com/cairophp/cairo/internal/spec"
-	"github.com/cairophp/cairo/internal/wire"
 )
 
-// inboxSize bounds how many events can queue for one PHP thread before the
-// sender waits. It does not limit requests in flight.
-const inboxSize = 4096
+// inboxSize bounds how many events can queue for one PHP thread before a
+// call for it waits, and looks again every inboxRetry (acquire). It does
+// not limit requests in flight. What Go has for a fiber that already runs
+// (the result of an operation, the end of its context) is queued
+// regardless: a fiber waits for one result at most.
+const (
+	inboxSize  = 4096
+	inboxRetry = time.Millisecond
+)
 
 // Engine is the embedded PHP runtime. There is one per process: PHP's
 // process-wide state cannot be initialised twice.
@@ -78,9 +91,9 @@ type Engine struct {
 	// extension asked for one.
 	newProbe func() Probe
 
-	nextID atomic.Int64
-	calls  sync.Map // call id -> *call   (a request or an offload job awaiting PHP's answer)
-	fibers sync.Map // fiber id -> *fiber (the goroutine that serves a PHP fiber)
+	nextID atomic.Int64 // ids of calls and operations
+
+	outbox *os.File // what collect waits on; closed once the PHP threads have ended
 
 	bootDone   chan error
 	lifeMu     sync.Mutex // orders thread starts against Shutdown
@@ -101,24 +114,32 @@ type thread struct {
 	id       int
 	pool     pool
 	slot     int // index in its pool
-	inbox    chan event
 	inflight atomic.Int64
 
-	// When the thread last took an event (unix ns; 0 while it waits for
-	// one): dispatch passes over a thread that has run PHP for too long
-	// (leastBusy), and extensions ask which threads are busy (EachBusyThread).
-	busySince atomic.Int64
-	// The probe of the request whose fiber this thread resumed last; only
-	// the thread itself uses it, in goNextEvent and goRespond.
+	// What the thread's loop reads and writes without a call into Go: its
+	// inbox, and since when it runs PHP.
+	box *mailbox
+	// The probe of the request that began the stretch of PHP the thread is
+	// running; only the thread itself uses it (goTook, goWaitEnded, goRan).
 	running Probe
+	// The calls queued for this thread or taken by it and not answered
+	// (requests), by id, and the contexts made for single
+	// operations, by the operation's id (submit). The goroutine that queues
+	// a call puts it in, the thread's PHP asks for what an operation runs
+	// under (see own), and collect takes out what the thread answered.
+	mu     sync.Mutex
+	calls  map[int64]*call
+	scoped map[int64]context.CancelFunc
+	idle   []opWorker // goroutines that wait for an operation (opworker.go)
+	ended  bool       // the thread ended: a goroutine that finishes an operation does not wait
 
 	// Supervision (see supervise.go).
-	sendMu   sync.RWMutex // held for reading while a request is queued; retire takes it to set retired
+	sendMu   sync.RWMutex // held for reading while an event is queued; taken to set retired and gone
 	retired  bool         // no new requests may be queued here
+	gone     bool         // the thread has ended and none takes its place: nothing may be queued here
 	retiring atomic.Bool  // a replacement was asked for; the thread exits once idle
-	served   atomic.Int64 // requests and jobs the thread has taken
 	crashes  int          // crashes in a row without taking work in between
-	bootMark int64        // served when the thread last started
+	bootMark int64        // calls served (mailbox) when the thread last started
 }
 
 var (
@@ -190,7 +211,7 @@ func Start(opts Options) (*Engine, error) {
 		return nil, fmt.Errorf("too many PHP threads: %d (at most %d)", nw+no, maxThreads/2)
 	}
 	if os.Getenv("GOMAXPROCS") == "" {
-		// A PHP thread calling into Go (to answer a request, to start I/O)
+		// A PHP thread calling into Go (for an operation of one of its fibers)
 		// needs a free P. With only one P per CPU, net/http's goroutines hold
 		// them all under load and PHP threads queue for one.
 		runtime.GOMAXPROCS(runtime.GOMAXPROCS(0) + nw + no)
@@ -212,16 +233,23 @@ func Start(opts Options) (*Engine, error) {
 	var all []*thread
 	for i := 0; i < nw+no; i++ {
 		tid, _ := e.allocTid()
-		t := &thread{id: tid, pool: poolWorker, slot: i, inbox: make(chan event, inboxSize)}
+		t := e.newThread(tid, poolWorker, i)
 		if i >= nw {
 			t.pool, t.slot = poolOffload, i-nw
 			e.offload[t.slot].Store(t)
 		} else {
 			e.workers[t.slot].Store(t)
 		}
-		e.table[tid].Store(t)
 		all = append(all, t)
 	}
+	setLook()
+	if err := e.offloadPool(); err != nil {
+		return nil, err
+	}
+	if e.outbox, err = openOutbox(); err != nil {
+		return nil, err
+	}
+	go e.collect(e.outbox)
 	for _, t := range all {
 		e.threadsWG.Add(1)
 		if err := e.startThread(t); err != nil {
@@ -236,6 +264,30 @@ func Start(opts Options) (*Engine, error) {
 		}
 	}
 	return e, nil
+}
+
+// newThread makes the Go side of PHP thread tid and puts it in the table.
+func (e *Engine) newThread(tid int, p pool, slot int) *thread {
+	t := &thread{
+		id: tid, pool: p, slot: slot, box: mailboxOf(tid),
+		calls: map[int64]*call{}, scoped: map[int64]context.CancelFunc{},
+	}
+	// The mailbox is the thread id's: a thread that had the id before left
+	// its count.
+	t.bootMark = t.box.served.Load()
+	e.table[tid].Store(t)
+	return t
+}
+
+// own returns the PHP thread that is calling into Go, from the id its C code
+// passes: what a thread asks for is looked up in its own tables, so an id of
+// another thread's is simply not found. nil outside a PHP thread of the
+// pools (the declare phase).
+func (e *Engine) own(tid C.int) *thread {
+	if tid < 0 || tid >= maxThreads {
+		return nil
+	}
+	return e.table[tid].Load()
 }
 
 func pick(override, declared int) int {
@@ -282,6 +334,7 @@ func (e *Engine) bootThread() {
 
 	<-e.shutdownCh
 	e.threadsWG.Wait()
+	e.outbox.Close() // ends collect: no thread is left to send
 	C.cairo_shutdown()
 	close(e.stopped)
 }
@@ -289,6 +342,10 @@ func (e *Engine) bootThread() {
 func (e *Engine) startThread(t *thread) error {
 	cfile := C.CString(e.runtimeFile)
 	defer C.free(unsafe.Pointer(cfile))
+	// Asleep until it first comes to its loop, whatever a thread before it
+	// left under this id.
+	t.box.since.Store(0)
+	t.box.stretch.Store(0)
 	if C.cairo_thread_start(C.int(t.id), cfile) != 0 {
 		return fmt.Errorf("could not start php thread %d", t.id)
 	}
@@ -311,10 +368,9 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 	}
 	close(e.shutdownCh)
 	e.lifeMu.Unlock()
-	stop := wire.Encode(map[string]string{"type": "shutdown"})
 	for i := range e.table {
 		if t := e.table[i].Load(); t != nil {
-			t.inbox <- event{data: stop}
+			e.post(t, map[string]string{"type": "shutdown"})
 		}
 	}
 	select {

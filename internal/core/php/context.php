@@ -1,7 +1,7 @@
 <?php
 /**
- * Cairo\Context: the Go context.Context of the current fiber as PHP sees
- * it, with its deadline, its cancellation and its values.
+ * Cairo\Context: what the current fiber runs under, as Go's context.Context
+ * is for a goroutine, with its deadline, its cancellation and its values.
  */
 
 declare(strict_types=1);
@@ -9,29 +9,37 @@ declare(strict_types=1);
 namespace Cairo {
 
     /**
-     * The Go context.Context of the current fiber, as PHP sees it.
+     * What the current fiber runs under: a deadline, a cancellation and
+     * values, as Go's context.Context is for a goroutine.
      *
-     * Every fiber is served by its own goroutine, which owns this context: the
-     * request's root fiber by the goroutine that accepted the request, and each
-     * async() fiber by a child goroutine with a child context.
+     * A request's fiber gets the context of its request, and an async() task
+     * a child of the context that started it. A context lives on its PHP
+     * thread: its deadline is a time that the thread's own waits watch.
+     * When a fiber asks Go for an operation, the operation runs under the
+     * Go context of its request, narrowed to this context's deadline.
      */
     final class Context
     {
-        private static ?\WeakMap $byFiber = null;
         private static ?self $background = null;
 
         /** @var array<string, mixed> values set on this context */
         private array $values = [];
         /** @var list<callable> */
         private array $deferred = [];
+        /** @internal This context or one above it came from withTimeout() and friends. */
+        public readonly bool $scoped;
 
-        /** @internal */
+        /**
+         * @internal
+         * @param int $requestId the request this context belongs to; 0 outside any
+         */
         public function __construct(
             public readonly int $requestId,
-            public readonly int $fiberId,
             private readonly ?float $deadline,
             private readonly ?self $parent = null,
+            private readonly bool $derived = false,
         ) {
+            $this->scoped = $derived || ($parent !== null && $parent->scoped);
         }
 
         private bool $answered = false;
@@ -66,10 +74,10 @@ namespace Cairo {
             return $root;
         }
 
-        /** @internal the context of a child fiber served by goroutine $fiberId */
-        public function child(int $fiberId): self
+        /** @internal the context of a fiber that code under this one starts */
+        public function child(): self
         {
-            return new self($this->requestId, $fiberId, $this->deadline, $this);
+            return new self($this->requestId, $this->deadline, $this);
         }
 
         /**
@@ -141,19 +149,13 @@ namespace Cairo {
 
         public static function current(): self
         {
-            $fiber = \Fiber::getCurrent();
-            if ($fiber !== null && self::$byFiber !== null && isset(self::$byFiber[$fiber])) {
-                return self::$byFiber[$fiber];
-            }
-            return self::$background ??= new self(0, 0, null);
+            return \cairo_fiber_context() ?? (self::$background ??= new self(0, null));
         }
 
-        /** @internal */
+        /** @internal $fiber runs under $context from now on */
         public static function bind(\Fiber $fiber, self $context): void
         {
-            self::$byFiber ??= new \WeakMap();
-            self::$byFiber[$fiber] = $context;
-            \cairo_local_bind($fiber, $context->requestId);
+            \cairo_fiber_bind($fiber, $context, $context->requestId);
         }
 
         public function deadline(): ?\DateTimeImmutable
@@ -173,23 +175,54 @@ namespace Cairo {
         /** Why the context ended (it, or a context it derives from), or null while it is live. */
         public function err(): ?Context\ContextException
         {
+            return match ($this->endedAs()) {
+                null => null,
+                'canceled' => new Context\Canceled(),
+                default => new Context\DeadlineExceeded(),
+            };
+        }
+
+        /** @internal how the context ended ('canceled' or 'deadline_exceeded'), or null while it is live */
+        public function endedAs(): ?string
+        {
             for ($ctx = $this; $ctx !== null; $ctx = $ctx->parent) {
                 if ($ctx->ended !== null) {
-                    return $ctx->ended === 'canceled' ? new Context\Canceled() : new Context\DeadlineExceeded();
-                }
-                if ($ctx->deadline !== null && microtime(true) >= $ctx->deadline) {
-                    return new Context\DeadlineExceeded();
+                    return $ctx->ended;
                 }
             }
-            return null;
+            // Its own deadline is the earliest of those above it.
+            return $this->deadline !== null && hrtime(true) >= $this->deadlineTick() ? 'deadline_exceeded' : null;
+        }
+
+        /** The deadline on hrtime()'s clock, which the thread's timers run on. */
+        private ?int $tick = null;
+
+        /** @internal the deadline in hrtime() nanoseconds; PHP_INT_MAX when there is none */
+        public function deadlineTick(): int
+        {
+            if ($this->deadline === null) {
+                return PHP_INT_MAX;
+            }
+            return $this->tick ??= hrtime(true) + (int) (($this->deadline - microtime(true)) * 1e9);
+        }
+
+        /** @internal whether this context is $other or derives from it */
+        public function within(self $other): bool
+        {
+            for ($ctx = $this; $ctx !== null; $ctx = $ctx->parent) {
+                if ($ctx === $other) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /** @var array<string, mixed> values Go middleware set on the request (root context only) */
         private array $goValues = [];
-        /** this context came from withTimeout() and friends and owns its goroutine */
-        private bool $derived = false;
         /** cancel() was called on it */
         private bool $canceledHere = false;
+        /** @var array<int, true> the Go operations running under this derived context, by id */
+        private array $goOps = [];
         /** @var ?\WeakMap<self, Channel> done() channels, woken when cancel() ends their context */
         private static ?\WeakMap $doneChannels = null;
 
@@ -238,18 +271,43 @@ namespace Cairo {
 
         private function derive(?float $timeout): self
         {
-            if (!Internal\Scheduler::running()) {
-                throw new \LogicException('derived contexts need a Cairo request thread');
-            }
-            $id = \cairo_context_open($this->fiberId, $timeout ?? -1.0);
             $deadline = $this->deadline;
             if ($timeout !== null) {
                 $at = microtime(true) + $timeout;
                 $deadline = $deadline === null ? $at : min($deadline, $at);
             }
-            $child = new self($this->requestId, $id, $deadline, $this);
-            $child->derived = true;
-            return $child;
+            return new self($this->requestId, $deadline, $this, true);
+        }
+
+        /**
+         * @internal What a Go operation asked for under this scoped context
+         * runs under, besides its request's own context: the deadline as a
+         * Unix time, INF when there is none (Go takes 0.0 for a context that
+         * is not scoped). Throws when the context has ended, which Go would
+         * not know.
+         */
+        public function goScope(): float
+        {
+            $this->throwIfDone();
+            return $this->deadline ?? INF;
+        }
+
+        /** @internal Go operation $id began under this context: cancel() ends it. */
+        public function goOpBegan(int $id): void
+        {
+            for ($ctx = $this; $ctx !== null && $ctx->scoped; $ctx = $ctx->parent) {
+                if ($ctx->derived) {
+                    $ctx->goOps[$id] = true;
+                }
+            }
+        }
+
+        /** @internal Go operation $id, begun under this context, is over. */
+        public function goOpEnded(int $id): void
+        {
+            for ($ctx = $this; $ctx !== null && $ctx->scoped; $ctx = $ctx->parent) {
+                unset($ctx->goOps[$id]);
+            }
         }
 
         /**
@@ -268,7 +326,12 @@ namespace Cairo {
             }
             $this->canceledHere = true;
             $this->ended ??= 'canceled';
-            \cairo_context_cancel($this->fiberId);
+            foreach ($this->goOps as $id => $_) {
+                \cairo_op_cancel($id);   // what waits in Go under it
+            }
+            if (\cairo_parked() !== 0) {
+                Internal\Scheduler::instance()->waits->end($this);
+            }
             foreach (self::$doneChannels ?? [] as $ch) {
                 if ($ch->isClosed()) {
                     $ch->contextEnded();
@@ -292,14 +355,7 @@ namespace Cairo {
             }
         }
 
-        public function __destruct()
-        {
-            if ($this->derived) {
-                \cairo_fiber_close($this->fiberId);   // ends its goroutine and cancels its Go context
-            }
-        }
-
-        /** @var ?string how Go reported this context ended: 'canceled' or 'deadline_exceeded' */
+        /** @var ?string how this context ended, once that is known: 'canceled' or 'deadline_exceeded' */
         private ?string $ended = null;
         private ?Channel $done = null;
 
@@ -325,8 +381,9 @@ namespace Cairo {
         }
 
         /**
-         * @internal Go reported that this fiber's context ended. Its parents
-         * ended too when the cause is theirs: a cancel, or the deadline they share.
+         * @internal This fiber's context ended, as Go reported or a wait on
+         * the thread found. Its parents ended too when the cause is theirs:
+         * a cancel, or the deadline they share.
          */
         public function ended(string $why): void
         {

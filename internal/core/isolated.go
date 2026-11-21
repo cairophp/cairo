@@ -33,7 +33,12 @@ func newIdleSlots(n int) idleSlots {
 // thread back. In isolated mode it waits for a free thread, or for ctx.
 func (e *Engine) pickWorker(ctx context.Context, release func()) (*thread, func(), error) {
 	if e.idle == nil {
-		return acquire(e.workers), release, nil
+		t, err := acquire(ctx, e.workers)
+		if err != nil {
+			release()
+			return nil, nil, err
+		}
+		return t, release, nil
 	}
 	select {
 	case i := <-e.idle:

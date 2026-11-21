@@ -2,7 +2,8 @@
 
 // Thread supervision: a PHP thread that dies (here, a fatal error from
 // memory_limit) is restarted, and the requests it held get 500 instead of
-// hanging. App::maxRequests() and App::maxMemory() replace a thread with a
+// hanging. An offload thread that dies is restarted too, and the fiber that
+// waits for the job it ran gets an OffloadException. App::maxRequests() and App::maxMemory() replace a thread with a
 // fresh one before leaks pile up, without failing any request.
 // App::maxInFlight() caps requests per thread; the rest wait in Go.
 
@@ -13,6 +14,7 @@ use Cairo\Http\Response;
 
 use function Cairo\async;
 use function Cairo\await;
+use function Cairo\offload;
 use function Cairo\sleep;
 
 /** Changes every time a PHP thread runs server.php, so a test can see restarts. */
@@ -23,6 +25,22 @@ final class Boot
     public static array $leak = [];
 }
 Boot::$id = bin2hex(random_bytes(6));
+
+/** For offload(): which run of server.php the offload thread is. */
+function boot_id(): string
+{
+    return Boot::$id;
+}
+
+/** A fatal error: PHP ends the whole thread that runs it. */
+function exhaust_memory(): never
+{
+    ini_set('memory_limit', '16M');
+    $hog = [];
+    while (true) {
+        $hog[] = str_repeat('x', 1 << 20);
+    }
+}
 
 $app = new App();
 $app->maxRequests((int) (getenv('CAIRO_MAX_REQUESTS') ?: 0))
@@ -48,11 +66,17 @@ $http->get('/slow-async', function (): Response {
 });
 
 // A fatal error: PHP ends the whole thread, not only this request.
-$http->get('/crash', function (): Response {
-    ini_set('memory_limit', '16M');
-    $hog = [];
-    while (true) {
-        $hog[] = str_repeat('x', 1 << 20);
+$http->get('/crash', fn (): Response => exhaust_memory());
+
+$http->get('/offload/boot', fn (): Response => Response::text(offload('boot_id')));
+
+// The same fatal error in an offloaded job: the offload thread ends, and
+// this request, on its own thread, is told.
+$http->get('/offload/crash', function (): Response {
+    try {
+        return Response::text((string) offload('exhaust_memory'));
+    } catch (Cairo\OffloadException $e) {
+        return Response::text($e::class . ': ' . $e->getMessage());
     }
 });
 

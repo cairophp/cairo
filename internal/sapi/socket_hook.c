@@ -1,9 +1,9 @@
-// Socket hooks: PHP's tcp, unix and TLS stream transports through Go.
+// Socket hooks: PHP's tcp, unix and TLS stream transports without blocking.
 //
 // Cairo re-registers the tcp and unix stream transports. Streams are still
 // created by PHP's own socket code, but get a copy of its ops whose read and
-// write first wait for the descriptor through Go (epoll), suspending only the
-// calling fiber. Everything built on PHP streams benefits: mysqlnd (PDO MySQL,
+// write first wait for the descriptor in the thread's own epoll
+// (Waits::socket()), suspending only the calling fiber. Everything built on PHP streams benefits: mysqlnd (PDO MySQL,
 // mysqli), Predis and phpredis, fsockopen(), stream_socket_client(). The
 // connect itself still blocks for now.
 
@@ -150,7 +150,7 @@ static void cairo_tls_connect_sync(php_netstream_data_t *sock, php_stream_xport_
 }
 
 // Connects through Go (Cairo\Internal\Hooks::connect): the name lookup, the
-// connect and, for TLS, the handshake run on the fiber's goroutine with Go's
+// connect and, for TLS, the handshake run as a Go operation of the fiber with Go's
 // resolver and netpoller. Returns 1 when handled (xparam filled in), 0 to let
 // PHP connect itself. TLS streams are always handled: PHP only sees a plain
 // socket to Go, which encrypts and decrypts.

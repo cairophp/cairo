@@ -1,12 +1,14 @@
 <?php
 
 // Derived contexts: withTimeout(), withCancel() and run(), done() of a
-// derived context in select(), and values from Go middleware.
+// derived context in select(), a Go operation that ends with its context,
+// and values from Go middleware.
 
 declare(strict_types=1);
 
 use Cairo\Channel;
 use Cairo\Context;
+use Cairo\Http\Client;
 use Cairo\Http\Request;
 use Cairo\Http\Response;
 
@@ -81,6 +83,61 @@ return function ($http): void {
         $start = microtime(true);
         [$key, , $ok] = select(['never' => new Channel(), 'done' => $d->done()]);
         return Response::json(['select' => [$key, $ok], 'waited' => round(microtime(true) - $start, 2)]);
+    });
+
+    // A Go operation in flight (here a request to ?url=, which answers late)
+    // ends with the context it was asked under: at the deadline of
+    // withTimeout(), or when another fiber calls cancel() on the context or
+    // on one it derives from. Under a context that has ended it does not
+    // start, and the request's own context goes on through all of it.
+    $http->get('/ctx/go-operation', function (Request $req, Context $ctx): Response {
+        $slow = (string) $req->query('url');
+        $get = static function (Context $c) use ($slow): array {
+            $start = microtime(true);
+            try {
+                $how = 'answered ' . $c->run(fn () => (new Client())->get($slow))->status;
+            } catch (Context\ContextException $e) {
+                $how = $e::class;
+            }
+            return [$how, round(microtime(true) - $start, 2)];
+        };
+        $cancelSoon = static function (Context $c): Context {
+            async(function () use ($c): void {
+                sleep(0.1);
+                $c->cancel();
+            });
+            return $c;
+        };
+        $deadline = $get($ctx->withTimeout(0.15));
+        $canceled = $get($c = $cancelSoon($ctx->withCancel()));
+        return Response::json([
+            'deadline' => $deadline,
+            'canceled' => $canceled,
+            'ended' => $get($c),
+            'parent_canceled' => $get($cancelSoon($ctx->withCancel())->withTimeout(30)),
+            'request' => $get($ctx->withTimeout(30)->withCancel())[0],
+            'request_err' => $ctx->err() ? $ctx->err()::class : null,
+        ]);
+    });
+
+    // A task that nobody awaited does not wait on: the request's context ends
+    // once the request is answered, and the task's sleep with it. The second
+    // route tells how that sleep ended.
+    $left = new Channel(1);
+    $http->get('/ctx/left-running', function () use ($left): Response {
+        async(function () use ($left): void {
+            try {
+                sleep(30);
+                $left->trySend('slept');
+            } catch (Context\Canceled $e) {
+                $left->trySend($e::class);
+            }
+        });
+        return Response::text("answered\n");
+    });
+    $http->get('/ctx/left-running/ended', function () use ($left): Response {
+        [, $how] = select([$left], 5);
+        return Response::json(['task' => $how]);
     });
 
     // A value set by Go middleware (Middleware::requestId()).

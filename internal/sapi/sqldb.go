@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/cairophp/cairo/internal/core"
+	"github.com/cairophp/cairo/internal/wire"
 )
 
 // Cairo\Sql: PHP queries through Go's database/sql (pgx for PostgreSQL,
@@ -28,8 +29,8 @@ import (
 //
 // A pool belongs to the process, not to a PHP thread: Db::open() runs on
 // every thread with the same DSN and options and gets the same *sql.DB, so
-// max_open bounds the connections of the whole server. Queries run on the
-// calling fiber's goroutine, so only the fiber waits, and the request's
+// max_open bounds the connections of the whole server. Queries run as Go
+// operations of the calling fiber, so only the fiber waits, and the request's
 // deadline cancels them.
 //
 // Values cross as JSON. Binary values (bytea, BLOB) travel as
@@ -71,7 +72,7 @@ type sqlRequest struct {
 func sqlOp(fn func(context.Context, sqlRequest) (any, error)) core.GoOp {
 	return func(ctx context.Context, payload []byte) (any, error) {
 		var req sqlRequest
-		if err := json.Unmarshal(payload, &req); err != nil {
+		if err := wire.Unmarshal(payload, &req); err != nil {
 			return nil, err
 		}
 		res, err := fn(ctx, req)

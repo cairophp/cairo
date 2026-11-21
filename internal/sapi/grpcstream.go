@@ -19,6 +19,7 @@ import (
 
 	"github.com/cairophp/cairo/internal/core"
 	"github.com/cairophp/cairo/internal/grpcserver"
+	"github.com/cairophp/cairo/internal/wire"
 )
 
 // Streaming gRPC from PHP. Server side: Cairo\Grpc\ServerStream reads and
@@ -60,7 +61,7 @@ func init() {
 		fn := fn
 		core.RegisterOp(name, func(ctx context.Context, payload []byte) (any, error) {
 			var req grpcStreamRequest
-			if err := json.Unmarshal(payload, &req); err != nil {
+			if err := wire.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
 			return fn(ctx, req), nil

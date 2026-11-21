@@ -15,7 +15,7 @@ use Cairo\Http\Client;
 use Cairo\Http\Request;
 use Cairo\Http\Response;
 
-use function Cairo\{async, await, all, sleep};
+use function Cairo\{async, await, all, offload, sleep};
 
 $app = new App();
 $app->slowRequests((float) (getenv('CAIRO_SLOW') ?: 0.1));
@@ -37,6 +37,26 @@ $http->get('/report', function (Request $req): Response {
     }
     return Response::text('done');
 });
+
+// PHP's own functions wait on the thread, with no goroutine, and are counted
+// like the waits through Cairo's clients: a read of a socket that answers
+// after 0.15 s (socket=) and a curl transfer (http=).
+$http->get('/php-io', function (Request $req): Response {
+    $conn = stream_socket_client('tcp://' . $req->query('addr'), $errno, $error, 5);
+    if ($conn === false) {
+        return Response::text("connect: $error", 502);
+    }
+    fwrite($conn, "0.15\n");
+    fgets($conn);
+    $curl = curl_init((string) $req->query('url'));
+    curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
+    curl_exec($curl);
+    return Response::text('done');
+});
+
+// A job on an offload thread, which sleeps 0.15 s there: the request waits
+// for it (offload=) and its own thread runs no PHP meanwhile.
+$http->get('/offloaded', fn (): Response => Response::text((string) offload('usleep', 150000)));
 
 // Fast: never logged.
 $http->get('/fast', fn (): Response => Response::text('fast'));

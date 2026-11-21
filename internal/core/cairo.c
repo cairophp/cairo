@@ -33,15 +33,19 @@
 
 #include "cairo.h"
 #include "extension.h"
+#include "outbox.h"
 #include "wire.h"
+#include "sockets.h"
+#include "offload.h"
 #include "waitops.h"
 #include "fiber_local.h"
+#include "fibers.h"
+#include "parked.h"
 #include "_cgo_export.h"
 
 // -1 is the boot thread (declare phase); 0..n-1 are worker threads.
 static __thread int cairo_tid = -1;
 
-// For waitops.c.
 int cairo_thread_id(void)
 {
 	return cairo_tid;
@@ -58,19 +62,6 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_respond, 0, 0, 2)
 	ZEND_ARG_INFO(0, id)
 	ZEND_ARG_INFO(0, json)
 	ZEND_ARG_INFO(0, body)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_fiber_open, 0, 0, 1)
-	ZEND_ARG_INFO(0, parent)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_fiber_close, 0, 0, 1)
-	ZEND_ARG_INFO(0, fiber)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_fiber_op, 0, 0, 2)
-	ZEND_ARG_INFO(0, fiber)
-	ZEND_ARG_INFO(0, json)
 ZEND_END_ARG_INFO()
 
 // cairo_info(): string (JSON: mode, server file, thread id)
@@ -98,22 +89,6 @@ PHP_FUNCTION(cairo_spec)
 	}
 }
 
-// cairo_next_event(): array. Blocks this PHP thread until Go has work for
-// it: a new request, a finished I/O operation, or shutdown. Go encodes the
-// event in internal/wire's format; wire.c turns it into the array.
-PHP_FUNCTION(cairo_next_event)
-{
-	ZEND_PARSE_PARAMETERS_NONE();
-	int len = 0;
-	char *buf = goNextEvent(cairo_tid, &len);
-	int ok = cairo_wire_decode(buf, len < 0 ? 0 : (size_t)len, return_value);
-	free(buf);
-	if (ok == FAILURE) {
-		zend_throw_exception(NULL, "cairo: malformed event from Go", 0);
-		RETURN_THROWS();
-	}
-}
-
 // cairo_respond(int $id, string $json, string $body = ''): void. $json is
 // the answer's metadata; $body, an HTTP response's body, goes to Go as raw
 // bytes.
@@ -132,7 +107,10 @@ PHP_FUNCTION(cairo_respond)
 		zend_value_error("cairo_respond(): the answer is larger than 2 GB");
 		RETURN_THROWS();
 	}
-	goRespond((long long)id, json, (int)len, body, (int)blen);
+	if (cairo_answer(id, json, len, body, blen) != 0) {
+		zend_throw_error(NULL, "cairo_respond(): no memory for the answer");
+		RETURN_THROWS();
+	}
 }
 
 // cairo_retire(string $reason): void. Asks Go to replace this request thread
@@ -146,17 +124,6 @@ PHP_FUNCTION(cairo_retire)
 		Z_PARAM_STRING(reason, len)
 	ZEND_PARSE_PARAMETERS_END();
 	goThreadRetire(cairo_tid, reason, (int)len);
-}
-
-// cairo_wake(int $op): void. Wakes a fiber parked by a "park" operation
-// (Cairo\Channel, select()); harmless if it already woke.
-PHP_FUNCTION(cairo_wake)
-{
-	zend_long op;
-	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_LONG(op)
-	ZEND_PARSE_PARAMETERS_END();
-	goFiberWake((long long)op);
 }
 
 // cairo_stream_fd(resource $stream): int is the descriptor under a socket or
@@ -178,102 +145,56 @@ PHP_FUNCTION(cairo_stream_fd)
 	RETURN_LONG(-1);
 }
 
-// cairo_fiber_open(int $parentFiber): int. Gives a new fiber its own
-// goroutine, with a child of the parent fiber's context.
-PHP_FUNCTION(cairo_fiber_open)
-{
-	zend_long parent;
-	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_LONG(parent)
-	ZEND_PARSE_PARAMETERS_END();
-	RETURN_LONG((zend_long)goFiberOpen(cairo_tid, (long long)parent));
-}
-
-// cairo_fiber_close(int $fiber): void
-PHP_FUNCTION(cairo_fiber_close)
-{
-	zend_long fiber;
-	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_LONG(fiber)
-	ZEND_PARSE_PARAMETERS_END();
-	goFiberClose((long long)fiber);
-}
-
-// cairo_context_open(int $parent, float $timeout): int. A derived context
-// (Context::withTimeout(), withCancel()) with its own goroutine, like a fiber's;
-// $timeout < 0 means none.
-PHP_FUNCTION(cairo_context_open)
-{
-	zend_long parent;
-	double timeout;
-	ZEND_PARSE_PARAMETERS_START(2, 2)
-		Z_PARAM_LONG(parent)
-		Z_PARAM_DOUBLE(timeout)
-	ZEND_PARSE_PARAMETERS_END();
-	RETURN_LONG((zend_long)goContextOpen(cairo_tid, (long long)parent, timeout));
-}
-
-// cairo_context_cancel(int $id): void. Cancels a context; its goroutine stays
-// until cairo_fiber_close(), answering operations with the error.
-PHP_FUNCTION(cairo_context_cancel)
-{
-	zend_long id;
-	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_LONG(id)
-	ZEND_PARSE_PARAMETERS_END();
-	goContextCancel((long long)id);
-}
-
-// cairo_fiber_op(int $fiber, string $json): int. Asks the fiber's goroutine
-// to perform an operation; returns its id (or -1). The caller then suspends.
-PHP_FUNCTION(cairo_fiber_op)
-{
-	zend_long fiber;
-	char *json;
-	size_t len;
-	ZEND_PARSE_PARAMETERS_START(2, 2)
-		Z_PARAM_LONG(fiber)
-		Z_PARAM_STRING(json, len)
-	ZEND_PARSE_PARAMETERS_END();
-	RETURN_LONG((zend_long)goFiberOp((long long)fiber, json, (int)len));
-}
-
-// cairo_go_call(string $op, string $json): string. Runs a Go operation on
-// this thread, outside a fiber; returns {"result": ...} or {"error": ...}.
+// cairo_go_call(string $op, array $args): array. Runs a Go operation on
+// this thread, outside a fiber; returns ['result' => ...] or ['error' => ...].
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_go_call, 0, 0, 2)
 	ZEND_ARG_INFO(0, op)
-	ZEND_ARG_INFO(0, json)
+	ZEND_ARG_INFO(0, args)
 ZEND_END_ARG_INFO()
 
 PHP_FUNCTION(cairo_go_call)
 {
-	zend_string *name, *json;
+	zend_string *name;
+	HashTable *args;
 	ZEND_PARSE_PARAMETERS_START(2, 2)
 		Z_PARAM_STR(name)
-		Z_PARAM_STR(json)
+		Z_PARAM_ARRAY_HT(args)
 	ZEND_PARSE_PARAMETERS_END();
-	char *res = goCall(ZSTR_VAL(name), ZSTR_VAL(json), (int)ZSTR_LEN(json));
-	RETVAL_STRING(res);
+	smart_str encoded = {0};
+	if (cairo_wire_encode(args, &encoded) == FAILURE) {
+		smart_str_free(&encoded);
+		RETURN_THROWS();
+	}
+	if (ZSTR_LEN(encoded.s) > INT_MAX) {
+		smart_str_free(&encoded);
+		zend_value_error("cairo_go_call(): the arguments are larger than 2 GB");
+		RETURN_THROWS();
+	}
+	int n = 0;
+	char *res = goCall(ZSTR_VAL(name), ZSTR_VAL(encoded.s), (int)ZSTR_LEN(encoded.s), &n);
+	smart_str_free(&encoded);
+	int ok = cairo_wire_decode(res, n < 0 ? 0 : (size_t)n, return_value);
 	free(res);
+	if (ok == FAILURE) {
+		zend_throw_exception(NULL, "cairo: malformed answer from Go", 0);
+		RETURN_THROWS();
+	}
 }
 
 PHP_FUNCTION(cairo_guard);
+PHP_FUNCTION(cairo_next_event);
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_retire, 0, 0, 1)
 	ZEND_ARG_INFO(0, reason)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_wake, 0, 0, 1)
-	ZEND_ARG_INFO(0, op)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_next_event, 0, 0, 1)
+	ZEND_ARG_INFO(0, idle)
+	ZEND_ARG_INFO(0, turn)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_stream_fd, 0, 0, 1)
 	ZEND_ARG_INFO(0, stream)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_context_open, 0, 0, 2)
-	ZEND_ARG_INFO(0, parent)
-	ZEND_ARG_INFO(0, timeout)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_guard, 0, 0, 1)
@@ -283,24 +204,30 @@ ZEND_END_ARG_INFO()
 static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_info, arginfo_cairo_none)
 	PHP_FE(cairo_spec, arginfo_cairo_spec)
-	PHP_FE(cairo_next_event, arginfo_cairo_none)
+	PHP_FE(cairo_next_event, arginfo_cairo_next_event)
 	PHP_FE(cairo_respond, arginfo_cairo_respond)
-	PHP_FE(cairo_wake, arginfo_cairo_wake)
 	PHP_FE(cairo_stream_fd, arginfo_cairo_stream_fd)
 	PHP_FE(cairo_retire, arginfo_cairo_retire)
-	PHP_FE(cairo_fiber_open, arginfo_cairo_fiber_open)
-	PHP_FE(cairo_fiber_close, arginfo_cairo_fiber_close)
-	PHP_FE(cairo_context_open, arginfo_cairo_context_open)
-	PHP_FE(cairo_context_cancel, arginfo_cairo_fiber_close)
-	PHP_FE(cairo_fiber_op, arginfo_cairo_fiber_op)
-	PHP_FE(cairo_fiber_wait, arginfo_cairo_fiber_wait)
+	PHP_FE(cairo_socket_arm, arginfo_cairo_socket_arm)
+	PHP_FE(cairo_socket_disarm, arginfo_cairo_socket_disarm)
 	PHP_FE(cairo_wait_here, arginfo_cairo_wait_here)
-	PHP_FE(cairo_fiber_waitset, arginfo_cairo_fiber_waitset)
+	PHP_FE(cairo_offload_send, arginfo_cairo_offload_send)
+	PHP_FE(cairo_offload_done, arginfo_cairo_offload_done)
 	PHP_FE(cairo_fiber_call, arginfo_cairo_fiber_call)
+	PHP_FE(cairo_op_cancel, arginfo_cairo_op_cancel)
 	PHP_FE(cairo_go_call, arginfo_cairo_go_call)
 	PHP_FE(cairo_guard, arginfo_cairo_guard)
 	PHP_FE(cairo_local_register, arginfo_cairo_local_register)
-	PHP_FE(cairo_local_bind, arginfo_cairo_local_bind)
+	PHP_FE(cairo_fiber_context, arginfo_cairo_fiber_context)
+	PHP_FE(cairo_fiber_bind, arginfo_cairo_fiber_bind)
+	PHP_FE(cairo_fiber_reuse, arginfo_cairo_fiber_reuse)
+	PHP_FE(cairo_fiber_idle, arginfo_cairo_fiber_idle)
+	PHP_FE(cairo_ready, arginfo_cairo_ready)
+	PHP_FE(cairo_run_ready, arginfo_cairo_run_ready)
+	PHP_FE(cairo_park, arginfo_cairo_park)
+	PHP_FE(cairo_wake, arginfo_cairo_wake)
+	PHP_FE(cairo_parked, arginfo_cairo_parked)
+	PHP_FE(cairo_parked_under, arginfo_cairo_parked_under)
 	PHP_FE(cairo_local_end, arginfo_cairo_local_end)
 	PHP_FE_END
 };
@@ -537,6 +464,9 @@ static PHP_MINIT_FUNCTION(cairo)
 		return FAILURE;
 	}
 	cairo_fiber_local_startup();
+	if (cairo_fibers_startup() == FAILURE) {
+		return FAILURE;
+	}
 	cairo_fiber_slot = zend_get_resource_handle("cairo");
 	if (cairo_fiber_slot >= 0) {
 		zend_observer_fiber_switch_register(cairo_fiber_switch);
@@ -827,6 +757,7 @@ int cairo_thread_run(int tid, const char *runtime_file)
 	int status = run_file(runtime_file);
 	cairo_interrupt_unregister();
 	php_request_shutdown(NULL);
+	cairo_sockets_thread_end();
 	cairo_extensions_thread_end();   // after the request closed what it held
 	ts_free_thread();
 	return status;
@@ -855,7 +786,7 @@ static void *cairo_thread_main(void *p)
 	int tid = arg->tid;
 	free(arg->file);
 	free(arg);
-	goThreadDone(tid, status);
+	cairo_outbox_exit(tid, status);
 	return NULL;
 }
 

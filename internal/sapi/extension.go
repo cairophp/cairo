@@ -7,7 +7,7 @@
 package sapi
 
 /*
-#cgo CFLAGS: -D_GNU_SOURCE -I${SRCDIR}/../core
+#cgo CFLAGS: -D_GNU_SOURCE -O2 -I${SRCDIR}/../core
 #cgo LDFLAGS: -lphp -lcurl
 #include "extension.h"
 */

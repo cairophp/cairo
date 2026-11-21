@@ -25,7 +25,7 @@ namespace Cairo {
         public const CONNECT = 4;
         /** gethostbyname(), gethostbynamel(), through Go's resolver */
         public const DNS = 8;
-        /** PDO pgsql: Cairo's Go-backed driver runs each query on the fiber's goroutine */
+        /** PDO pgsql: Cairo's Go-backed driver runs each query as a Go operation of the fiber */
         public const PGSQL = 32;
         public const ALL = self::SLEEP | self::SOCKETS | self::CONNECT | self::DNS | self::CURL | self::PGSQL;
     }
@@ -46,7 +46,7 @@ namespace Cairo\Internal {
             if (!self::on(\Cairo\Hook::SLEEP)) {
                 return false;
             }
-            Scheduler::instance()->op(['op' => 'sleep', 'seconds' => $seconds]);
+            Scheduler::instance()->waits->sleep($seconds);
             return true;
         }
 
@@ -64,8 +64,7 @@ namespace Cairo\Internal {
             if ($scheduler->waitHere($fd, $write)) {
                 return 1;
             }
-            $result = $scheduler->submitted(\cairo_fiber_wait(Context::current()->fiberId, $fd, $write, $timeout));
-            return $result === 'timeout' ? -1 : 1;
+            return $scheduler->waits->socket(Context::current(), $fd, $write, $timeout) ? 1 : -1;
         }
 
         /**
@@ -81,7 +80,7 @@ namespace Cairo\Internal {
             if (!self::on(\Cairo\Hook::CURL)) {
                 return 0;
             }
-            Scheduler::instance()->submitted(\cairo_fiber_waitset(Context::current()->fiberId, $read, $write, $timeout));
+            Scheduler::instance()->waits->sockets(Context::current(), $read, $write, $timeout);
             return 1;
         }
 
@@ -150,8 +149,8 @@ namespace Cairo\Internal {
         }
 
         /**
-         * One request of Cairo's PDO pgsql driver (JSON in, JSON out), run on
-         * the fiber's goroutine. Null lets the driver wait for Go instead.
+         * One request of Cairo's PDO pgsql driver (JSON in, JSON out), run as
+         * a Go operation of the fiber. Null lets the driver wait for Go instead.
          */
         public static function pg(string $request): ?string
         {
@@ -191,7 +190,7 @@ namespace Cairo\Internal {
         {
             return Scheduler::running()
                 && (Scheduler::instance()->app()->hookFlags() & $hook) !== 0
-                && Context::current()->fiberId !== 0;
+                && Context::current()->requestId !== 0;
         }
     }
 }

@@ -7,13 +7,14 @@
  *     Cairo\Revolt\Driver::install();   // in server.php, after vendor/autoload.php
  *
  * Revolt's own drivers run a loop in a fiber of their own. Under Cairo every
- * request and async() task already is a fiber whose waits Go serves, so this
- * driver maps Revolt onto Cairo instead of running a second loop:
+ * request and async() task already is a fiber whose waits Cairo serves, so
+ * this driver maps Revolt onto Cairo instead of running a second loop:
  *
  * - each callback runs in a Cairo async() task: defer() and queue() as soon as
- *   the fiber that made them yields, delay() and repeat() after a timer in Go,
- *   onReadable() and onWritable() when Go's poller sees the socket ready;
- * - a Suspension parks its fiber in Go until resume() or throw().
+ *   the fiber that made them yields, delay() and repeat() after a timer of
+ *   the thread, onReadable() and onWritable() when the thread's loop finds
+ *   the socket ready;
+ * - a Suspension parks its fiber on the thread until resume() or throw().
  *
  * A callback belongs to the fiber that made it, so it ends with that request,
  * as everything else the request started does. onSignal() is not supported:
@@ -66,8 +67,8 @@ final class Callback
 
 /**
  * @internal the onReadable()/onWritable() callbacks of one socket. One task
- * waits for all of them at once, since Go's poller takes one waiter per
- * descriptor.
+ * waits for all of them at once, since a socket has one waiter at a time
+ * (Waits::sockets()).
  */
 final class Watch
 {
@@ -419,17 +420,12 @@ final class Driver implements EventLoop\Driver
                 if (!is_resource($watch->stream)) {
                     return;   // closed without canceling its callbacks first
                 }
-                // PHP may already hold buffered data, which the poller cannot see.
+                // PHP may already hold buffered data, which the kernel does not report.
                 [$canRead, $canWrite] = $this->ready($watch->stream, $read, $write);
                 if (!$canRead && !$canWrite) {
                     $context = $watch->context = Context::current()->withCancel();
                     try {
-                        $context->run(static fn () => Scheduler::instance()->op([
-                            'op' => 'waitset',
-                            'read' => $read ? [$watch->fd] : [],
-                            'write_fds' => $write ? [$watch->fd] : [],
-                            'timeout' => -1.0,
-                        ]));
+                        Scheduler::instance()->waits->sockets($context, $read ? [$watch->fd] : [], $write ? [$watch->fd] : [], -1.0);
                     } catch (\Cairo\Context\Canceled $e) {
                         if ($watch->context === $context) {
                             throw $e;   // not rewatch(): the request itself ended
@@ -520,7 +516,7 @@ final class Driver implements EventLoop\Driver
     private function spawn(\Closure $fn): void
     {
         $root = Context::current()->root();
-        if (!Scheduler::running() || $root->fiberId === 0) {
+        if (!Scheduler::running() || $root->requestId === 0) {
             throw new \Error('Cairo\Revolt\Driver: callbacks can only be scheduled inside a request or an async() task');
         }
         Scheduler::instance()->later(static function () use ($root, $fn): void {
@@ -534,16 +530,17 @@ final class Driver implements EventLoop\Driver
      */
     private function park(Waiter $waiter, float $timeout): bool
     {
-        $event = Scheduler::instance()->park($waiter, $timeout);
+        $ctx = Context::current();
+        $ended = Scheduler::instance()->waits->park($ctx, $timeout, $waiter);
         if ($waiter->done) {
             if ($waiter->error !== null) {
                 throw $waiter->error;
             }
             return true;
         }
-        if (isset($event['error'])) {
-            Context::current()->ended((string) $event['error']);
-            throw $event['error'] === 'canceled' ? new \Cairo\Context\Canceled() : new \Cairo\Context\DeadlineExceeded();
+        if ($ended !== null) {
+            $ctx->ended($ended);
+            throw $ended === 'canceled' ? new \Cairo\Context\Canceled() : new \Cairo\Context\DeadlineExceeded();
         }
         return false;
     }
@@ -588,8 +585,9 @@ final class Suspension implements EventLoop\Suspension
             throw new \Error('Must not call suspend() from another fiber');
         }
         $waiter = $this->waiter = new Waiter();
+        $ctx = Context::current();
         try {
-            $event = Scheduler::instance()->park($waiter, -1.0);
+            $ended = Scheduler::instance()->waits->park($ctx, -1.0, $waiter) ?? 'canceled';
         } finally {
             $this->waiter = null;
         }
@@ -599,9 +597,8 @@ final class Suspension implements EventLoop\Suspension
             }
             return $waiter->result[1];
         }
-        $error = (string) ($event['error'] ?? 'canceled');
-        Context::current()->ended($error);
-        throw $error === 'deadline_exceeded' ? new \Cairo\Context\DeadlineExceeded() : new \Cairo\Context\Canceled();
+        $ctx->ended($ended);
+        throw $ended === 'deadline_exceeded' ? new \Cairo\Context\DeadlineExceeded() : new \Cairo\Context\Canceled();
     }
 
     public function resume(mixed $value = null): void

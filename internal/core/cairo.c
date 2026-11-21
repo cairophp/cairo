@@ -33,6 +33,7 @@
 
 #include "cairo.h"
 #include "extension.h"
+#include "outbox.h"
 #include "wire.h"
 #include "waitops.h"
 #include "fiber_local.h"
@@ -115,7 +116,10 @@ PHP_FUNCTION(cairo_respond)
 		zend_value_error("cairo_respond(): the answer is larger than 2 GB");
 		RETURN_THROWS();
 	}
-	goRespond(cairo_tid, (long long)id, json, (int)len, body, (int)blen);
+	if (cairo_answer(id, json, len, body, blen) != 0) {
+		zend_throw_error(NULL, "cairo_respond(): no memory for the answer");
+		RETURN_THROWS();
+	}
 }
 
 // cairo_retire(string $reason): void. Asks Go to replace this request thread
@@ -858,7 +862,7 @@ static void *cairo_thread_main(void *p)
 	int tid = arg->tid;
 	free(arg->file);
 	free(arg);
-	goThreadDone(tid, status);
+	cairo_outbox_exit(tid, status);
 	return NULL;
 }
 

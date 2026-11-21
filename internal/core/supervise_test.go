@@ -2,7 +2,7 @@ package core
 
 import "testing"
 
-// A thread that dies answers for the calls it took. Those still queued wait
+// A thread that dies answers for the calls it read. Those still queued wait
 // for its replacement, unless the thread was retiring: then nothing will
 // take them, and they are answered too.
 func TestFailCalls(t *testing.T) {
@@ -16,8 +16,13 @@ func TestFailCalls(t *testing.T) {
 			th := e.newThread(0, poolWorker, 0)
 			taken := &call{id: 1, thread: th, resp: make(chan *reply, 1)}
 			waiting := &call{id: 2, thread: th, resp: make(chan *reply, 1)}
+			t.Cleanup(func() { e.failCalls(th, true) })
+			// begin lets go of the thread, as after acquire.
+			th.sendMu.RLock()
+			if err := th.begin(waiting, []byte("event")); err != nil {
+				t.Fatal(err)
+			}
 			th.calls[taken.id] = taken
-			th.inbox <- event{call: waiting}
 			th.inflight.Store(2)
 
 			if n := e.failCalls(th, tc.queued); n != tc.want {
@@ -32,8 +37,11 @@ func TestFailCalls(t *testing.T) {
 			if left := th.inflight.Load(); left != int64(2-tc.want) {
 				t.Errorf("%d calls in flight, want %d", left, 2-tc.want)
 			}
-			if len(th.calls) != 0 {
-				t.Errorf("%d calls left in the thread's table", len(th.calls))
+			if left := len(th.calls); left != 2-tc.want {
+				t.Errorf("%d calls left in the thread's table, want %d", left, 2-tc.want)
+			}
+			if n := len(th.queuedCalls()); n != 2-tc.want {
+				t.Errorf("%d calls left in the thread's inbox, want %d", n, 2-tc.want)
 			}
 		})
 	}

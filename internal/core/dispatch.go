@@ -13,20 +13,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"github.com/cairophp/cairo/internal/wire"
 )
 
-// event is one message for a PHP thread. call is set for a request or an
-// offload job, so Go knows when PHP has taken it.
-type event struct {
-	data  []byte
-	call  *call
-	probe Probe // of the request it resumes, when requests are probed
-}
-
-// call is one unit of work sent to a PHP thread, waiting for cairo_respond().
+// call is one unit of work sent to a PHP thread, waiting for its answer
+// (cairo_answer() in extension.h).
 // resp receives the call's own reply, or nil when the thread died before
 // answering.
 type call struct {
@@ -129,16 +121,11 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 		deadline = float64(dl.UnixNano()) / 1e9
 	}
 	r.buf = ev.AppendWire(r.buf[:0], id, deadline)
-	select {
-	case t.inbox <- event{data: r.buf, call: c, probe: p}:
-		t.sendMu.RUnlock()
-		t.mark()
-	case <-ctx.Done():
-		t.sendMu.RUnlock()
+	if err := t.begin(c, r.buf); err != nil {
 		t.inflight.Add(-1)
 		release()
 		r.free()
-		return nil, nil, ctx.Err()
+		return nil, nil, err
 	}
 	for {
 		select {
@@ -251,7 +238,7 @@ func leastBusy(ts []atomic.Pointer[thread], now int64) *thread {
 // awakeWait: it is early in a stretch of PHP, and its stretches are short
 // enough for what its inbox already holds.
 func (t *thread) backSoon(ran int64) bool {
-	return ran < int64(awakeWait) && (int64(len(t.inbox))+1)*t.box.stretch.Load() < int64(awakeWait)
+	return ran < int64(awakeWait) && (t.queued()+1)*t.box.stretch.Load() < int64(awakeWait)
 }
 
 // EachBusyThread calls fn for every request thread that is running PHP, with
@@ -275,55 +262,56 @@ func (e *Engine) InterruptThread(tid int) {
 }
 
 // acquire picks the least busy thread that still takes work and returns it
-// with sendMu held for reading: the caller queues its event, then unlocks.
-func acquire(ts []atomic.Pointer[thread]) *thread {
+// with sendMu held for reading: the caller queues its event, then unlocks
+// (begin). While that thread's inbox is full, it waits, holding nothing,
+// for as long as ctx lasts.
+func acquire(ctx context.Context, ts []atomic.Pointer[thread]) (*thread, error) {
 	for {
 		t := leastBusy(ts, time.Now().UnixNano())
 		t.sendMu.RLock()
-		if !t.retired {
-			return t
+		full := t.queued() >= inboxSize
+		if !t.retired && !full {
+			return t, nil
 		}
+		retired := t.retired
 		t.sendMu.RUnlock()
-		runtime.Gosched() // its replacement is being put in place
+		if retired {
+			runtime.Gosched() // its replacement is being put in place
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(inboxRetry):
+		}
 	}
 }
 
+// begin queues the event that begins call c on thread t, which the caller
+// holds as acquire returned it, and lets go of the thread. The call and its
+// request's fiber are in the thread's tables before the thread can answer
+// or ask for either.
+func (t *thread) begin(c *call, data []byte) error {
+	defer t.sendMu.RUnlock()
+	t.mu.Lock()
+	t.calls[c.id] = c
+	if c.fiber != nil {
+		t.fibers[c.id] = c.fiber
+	}
+	t.mu.Unlock()
+	err := t.push(eventCall, c.id, data)
+	if err != nil {
+		t.mu.Lock()
+		delete(t.calls, c.id)
+		delete(t.fibers, c.id)
+		t.mu.Unlock()
+	}
+	return err
+}
+
+// post queues an event that begins no call for thread t.
 func (e *Engine) post(t *thread, ev any) {
-	t.send(event{data: wire.Encode(ev)})
-}
-
-//export goRespond
-func goRespond(tid C.int, id C.longlong, data *C.char, n C.int, body *C.char, bn C.int) {
-	t := engine.own(tid)
-	if t == nil {
-		return
+	if err := t.send(eventOther, 0, wire.Encode(ev)); err != nil {
+		e.log.Error("event not sent to its php thread", "thread", t.id, "err", err)
 	}
-	t.box.handed = 1
-	c, ok := t.calls[int64(id)]
-	if !ok {
-		return
-	}
-	delete(t.calls, c.id)
-	delete(t.fibers, c.id)
-	t.inflight.Add(-1)
-	// The request's probe is done as soon as the answer arrives, before
-	// this stretch of PHP ends at the thread's loop: report it up to now.
-	if t.running != nil {
-		t.running.Ran(time.Duration(time.Now().UnixNano() - t.box.since.Load()))
-	}
-	c.reply.meta = C.GoBytes(unsafe.Pointer(data), n)
-	if bn > 0 {
-		c.reply.body = C.GoBytes(unsafe.Pointer(body), bn)
-	}
-	c.resp <- &c.reply
-}
-
-// Respond is goRespond for an extension whose C code answers the requests
-// of its server: cgo exports a Go function to the C code of its own package
-// only, so the extension exports one that calls this. tid is the PHP thread
-// that answers (cairo_thread_id() in extension.h). meta (what the server
-// makes of the answer) and body are C memory, n and bn bytes long, copied
-// before Respond returns.
-func Respond(tid int, id int64, meta unsafe.Pointer, n int, body unsafe.Pointer, bn int) {
-	goRespond(C.int(tid), C.longlong(id), (*C.char)(meta), C.int(n), (*C.char)(body), C.int(bn))
 }

@@ -111,8 +111,12 @@ static PHP_FUNCTION(cairo_respond_http)
 		}
 		RETURN_THROWS();
 	}
-	goRespondHTTP(cairo_thread_id(), (long long)id, ZSTR_VAL(meta.s), (int)ZSTR_LEN(meta.s), body, (int)blen);
+	int queued = cairo_answer(id, ZSTR_VAL(meta.s), ZSTR_LEN(meta.s), body, blen);
 	smart_str_free(&meta);
+	if (queued != 0) {
+		zend_throw_error(NULL, "cairo_respond_http(): no memory for the answer");
+		RETURN_THROWS();
+	}
 }
 
 static const zend_function_entry cairo_http_answer_functions[] = {

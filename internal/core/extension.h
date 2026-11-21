@@ -1,6 +1,9 @@
 #ifndef CAIRO_EXTENSION_H
 #define CAIRO_EXTENSION_H
 
+#include <stddef.h>
+#include <stdint.h>
+
 // The C side of an extension: what the SAPI module (cairo.c) does on its
 // behalf, so that the module names no extension. An extension defines one
 // and its Go file adds it from init() with RegisterC. Every member may be
@@ -31,8 +34,15 @@ int cairo_extension_add(const cairo_extension *ext);
 // The id of the calling PHP thread, or -1 on a thread that runs no requests
 // or offload jobs (the declare phase). The engine looks up what a thread
 // asks for in the thread's own tables, so C passes this with every such
-// call: an extension with what it answers (Respond in dispatch.go).
+// call.
 int cairo_thread_id(void);
+
+// Answers call id, which the calling PHP thread took: meta is what the
+// call's server makes of the answer (n bytes), body an HTTP response's body
+// (bn bytes), neither longer than INT_MAX. Both are copied, and Go gets
+// them without this thread running Go code (outbox.h). Returns -1 when
+// one is longer or there is no memory for the copy.
+int cairo_answer(int64_t id, const char *meta, size_t n, const char *body, size_t bn);
 
 // For the SAPI module.
 int cairo_extensions_startup(void);   // SUCCESS or FAILURE

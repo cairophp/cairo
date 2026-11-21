@@ -74,14 +74,12 @@ func TestLeastBusyPrefersAwakeThread(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			asleep := &thread{id: 0, box: &mailbox{}}
-			awake := &thread{id: 1, inbox: make(chan event, 8), box: &mailbox{}}
+			awake := &thread{id: 1, box: &mailbox{}}
 			now := time.Now().UnixNano()
 			awake.box.since.Store(now - tc.ran)
 			awake.box.stretch.Store(tc.stretch)
 			awake.inflight.Store(tc.inflight)
-			for range tc.queued {
-				awake.inbox <- event{}
-			}
+			awake.box.pushed.Store(int64(tc.queued))
 			ts := make([]atomic.Pointer[thread], 2)
 			ts[0].Store(asleep)
 			ts[1].Store(awake)
@@ -89,5 +87,33 @@ func TestLeastBusyPrefersAwakeThread(t *testing.T) {
 				t.Errorf("chose thread %d, want the awake thread: %v", got.id, tc.wantAwake)
 			}
 		})
+	}
+}
+
+// A call waits for a thread whose inbox is full, for as long as its context
+// lasts, and holds nothing of the thread meanwhile: the thread can still be
+// retired. With room, acquire returns the thread held for reading.
+func TestAcquireWaitsForRoom(t *testing.T) {
+	th := &thread{id: 0, box: &mailbox{}}
+	ts := make([]atomic.Pointer[thread], 1)
+	ts[0].Store(th)
+
+	got, err := acquire(context.Background(), ts)
+	if err != nil || got != th {
+		t.Fatalf("acquire: thread %v, error %v", got, err)
+	}
+	if th.sendMu.TryLock() {
+		t.Fatal("acquire returned a thread it does not hold")
+	}
+	th.sendMu.RUnlock()
+
+	th.box.pushed.Store(inboxSize)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*inboxRetry)
+	defer cancel()
+	if got, err := acquire(ctx, ts); err != context.DeadlineExceeded {
+		t.Fatalf("acquire with a full inbox: thread %v, error %v", got, err)
+	}
+	if !th.sendMu.TryLock() {
+		t.Fatal("acquire kept the thread it gave up on")
 	}
 }

@@ -122,7 +122,9 @@ func (e *Engine) runOp(f *fiber, o op) {
 	if f.probe != nil {
 		f.probe.WaitEnd(o.Op, began)
 	}
-	f.thread.send(event{data: wire.Encode(ev), probe: f.probe})
+	if err := f.thread.send(eventOther, f.id, wire.Encode(ev)); err != nil {
+		e.log.Error("result not sent to its php thread", "thread", f.thread.id, "op", o.Op, "err", err)
+	}
 }
 
 // CtxError is how an operation tells PHP that its context ended, which PHP
@@ -167,6 +169,8 @@ func (e *Engine) fiber(tid C.int, id int64) *fiber {
 	if t == nil {
 		return nil
 	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	return t.fibers[id]
 }
 
@@ -177,7 +181,7 @@ func (e *Engine) openFiber(tid C.int, parent int64, timeout float64) C.longlong 
 	}
 	pctx := context.Background()
 	var p Probe
-	if pf := t.fibers[parent]; pf != nil {
+	if pf := e.fiber(tid, parent); pf != nil {
 		pctx, p = pf.ctx, pf.probe
 	}
 	var ctx context.Context
@@ -191,7 +195,9 @@ func (e *Engine) openFiber(tid C.int, parent int64, timeout float64) C.longlong 
 		id: e.nextID.Add(1), ctx: ctx, cancel: cancel, thread: t,
 		ops: make(chan op, 1), closed: make(chan struct{}), probe: p,
 	}
+	t.mu.Lock()
 	t.fibers[f.id] = f
+	t.mu.Unlock()
 	// The goroutine lives as long as the fiber, even after its context ends:
 	// operations then fail fast with the context's error, so the fiber always wakes.
 	go func() {
@@ -215,7 +221,9 @@ func goFiberClose(tid C.int, id C.longlong) {
 	if f == nil || f.closed == nil {
 		return // a request's fiber ends with its call
 	}
+	f.thread.mu.Lock()
 	delete(f.thread.fibers, f.id)
+	f.thread.mu.Unlock()
 	f.cancel()
 	close(f.closed)
 }

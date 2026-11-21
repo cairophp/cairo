@@ -122,6 +122,17 @@ change the PHP API; patch versions do not.
   has nothing else to run watches for a few microseconds whether the answer
   is there before it sleeps, which that of a short operation is: about a
   third off the time of a Go operation when nothing else runs on the thread.
+- Requests and answers cross between Go and the PHP threads in queues that
+  neither side calls the other for. A thread used to call into Go for its
+  next event and to hand over an answer, and each call held one of Go's
+  processors, which Go's scheduler then took back and gave out again: a
+  route that computes for 350 µs cost 5.7 thread switches per request. A
+  thread now sleeps and wakes in C, and one goroutine collects the answers
+  of all threads. Measured at 64 connections: 8% more requests per second
+  on a route that answers at once and on one MySQL query, 10% more on the
+  route that computes. `offload()` and a Go operation of a thread with
+  nothing else to do take longer for now (about 28 µs and 6 µs), and one
+  PostgreSQL query per request does 3% fewer requests.
 
 ## [0.4.0] - 2026-11-19
 

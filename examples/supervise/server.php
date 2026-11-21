@@ -10,6 +10,7 @@
 declare(strict_types=1);
 
 use Cairo\App;
+use Cairo\Context\Canceled;
 use Cairo\Http\Response;
 
 use function Cairo\async;
@@ -67,6 +68,42 @@ $http->get('/slow-async', function (): Response {
 
 // A fatal error: PHP ends the whole thread, not only this request.
 $http->get('/crash', fn (): Response => exhaust_memory());
+
+// exit() ends the whole thread too. The task is waiting when it does: PHP
+// unwinds it, its cleanup throws, and it catches that, as a framework's
+// error handler would.
+$http->get('/exit', function (): never {
+    async(function (): void {
+        try {
+            try {
+                sleep(5);
+            } finally {
+                throw new RuntimeException('cleanup failed');
+            }
+        } catch (Throwable) {
+        }
+    });
+    exit(1);
+});
+
+// Its client leaves, and it still has work to do: PHP for a while, then a
+// question to Go, which answers that the request is over. A server that is
+// told to stop meanwhile lets it finish.
+$http->get('/left', function (): Response {
+    try {
+        sleep(30);
+        return Response::text(Boot::$id);
+    } finally {
+        $until = hrtime(true) + 500_000_000;
+        while (hrtime(true) < $until) {
+        }
+        try {
+            gethostbyname('localhost');
+        } catch (Canceled) {
+        }
+        error_log('left: cleaned up');
+    }
+});
 
 $http->get('/offload/boot', fn (): Response => Response::text(offload('boot_id')));
 

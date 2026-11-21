@@ -233,7 +233,8 @@ PHP_FUNCTION(cairo_fiber_reuse)
 // cairo_fiber_idle(): mixed
 // The running fiber has done its job: it lets go of its context and its
 // request, and waits for the next job, which cairo_fiber_reuse() returns
-// here. Null when enough fibers are idle already: this one ends.
+// here. Null when enough fibers are idle already, or when PHP is destroying
+// this one (its thread ends, and what it ran caught the exit): it ends.
 PHP_FUNCTION(cairo_fiber_idle)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
@@ -245,7 +246,7 @@ PHP_FUNCTION(cairo_fiber_idle)
 	release_orphans();
 	set_context(fiber, NULL);
 	cairo_local_bind_fiber(fiber, 0);
-	if (EG(exception) != NULL || nidle >= CAIRO_IDLE_FIBERS) {
+	if (EG(exception) != NULL || nidle >= CAIRO_IDLE_FIBERS || (fiber->flags & ZEND_FIBER_FLAG_DESTROYED)) {
 		return;
 	}
 	GC_ADDREF(&fiber->std);

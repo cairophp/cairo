@@ -52,11 +52,12 @@ static int64_t mono_ns(void)
 	return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
 }
 
-// look is what a thread does before it sleeps: it watches its mailbox for
-// look_ns, and not past wait, and returns how long it did. Sleeping at once
-// costs two wake-ups of threads where this costs none: the thread stays out
-// of Go, so Go takes over the operation it just handed it, and the answer
-// of a short one is there before the thread would have slept.
+// look is what a thread does before it sleeps, when it gave Go an operation
+// or an answer on its way here: it watches its mailbox for look_ns, and not
+// past wait, and returns how long it did. Sleeping at once costs two
+// wake-ups of threads where this costs none: the thread stays out of Go, so
+// Go takes over what it was given, and the answer of a short operation is
+// there before the thread would have slept.
 static int64_t look(cairo_mailbox *box, int64_t wait)
 {
 	int64_t limit = wait < 0 || wait > look_ns ? look_ns : wait;
@@ -102,7 +103,9 @@ PHP_FUNCTION(cairo_next_event)
 	char *buf = NULL;
 	int len = 0;
 	int marked = __atomic_load_n(&box->pending, __ATOMIC_SEQ_CST) != 0;
-	if (wait != 0 && !marked) {
+	int handed = box->handed;   // only this thread reads and writes it, here and in its calls into Go
+	box->handed = 0;
+	if (wait != 0 && !marked && handed) {
 		int64_t spent = look(box, wait);
 		now += spent;
 		if (wait > 0) {

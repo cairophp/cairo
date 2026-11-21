@@ -24,7 +24,13 @@ type mailbox struct {
 	// to its loop, in nanoseconds: what a call queued behind others waits
 	// for each of them.
 	stretch atomic.Int64
-	_       [48]byte // the thread's fields and the senders' share no cache line
+	// 1 when the thread gave Go an operation or an answer since it last
+	// came to its loop: a goroutine has to take that over, and the thread
+	// looks before it sleeps (look). Not after a socket wait: the thread
+	// watched the socket itself before it asked Go. Only the thread itself
+	// reads and writes it, in C and in its calls into Go.
+	handed int32
+	_      [44]byte // the thread's fields and the senders' share no cache line
 	// 1 while the inbox may hold an event: set after every send, cleared by
 	// the thread when it finds the inbox empty. A thread whose fibers keep
 	// each other busy calls Go for an event only when this says so.
@@ -41,8 +47,8 @@ var (
 	_ [uintptr(C.cairo_mailbox_pending_at) - unsafe.Offsetof(mailbox{}.pending)]struct{}
 )
 
-// look is how long a thread watches its mailbox before it sleeps (look() in
-// loop.c). It has to outlast the wake-up of the Go thread that takes over
+// look is how long a thread watches its mailbox before it sleeps, when it
+// handed Go something on its way (look() in loop.c). It has to outlast the wake-up of the Go thread that takes over
 // the operation the PHP thread just handed to Go, a few microseconds; what
 // it costs is that much CPU for each sleep that it did not spare.
 const look = 6 * time.Microsecond

@@ -298,6 +298,7 @@ func goRespond(tid C.int, id C.longlong, data *C.char, n C.int, body *C.char, bn
 	if t == nil {
 		return
 	}
+	t.box.handed = 1
 	c, ok := t.calls[int64(id)]
 	if !ok {
 		return

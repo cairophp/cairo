@@ -118,10 +118,10 @@ change the PHP API; patch versions do not.
   instead of on a goroutine: nothing crosses to Go, and a sleep or a channel
   hand-over between two fibers costs about a microsecond where it cost 35 to
   70. A thread whose fibers keep each other busy still takes new requests
-  and Go's answers every 64 fibers. Before it sleeps, an idle thread also
-  watches for a few microseconds whether Go has an answer for it, which a
-  short Go operation has by then: about a third off the time of a Go
-  operation when nothing else runs on the thread.
+  and Go's answers every 64 fibers. A thread that gave Go an operation and
+  has nothing else to run watches for a few microseconds whether the answer
+  is there before it sleeps, which that of a short operation is: about a
+  third off the time of a Go operation when nothing else runs on the thread.
 
 ## [0.4.0] - 2026-11-19
 

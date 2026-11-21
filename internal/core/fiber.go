@@ -241,5 +241,8 @@ func (e *Engine) submit(tid C.int, id int64, o op) C.longlong {
 	}
 	o.ID = e.nextID.Add(1)
 	f.ops <- o
+	if o.Op != "wait" && o.Op != "waitset" {
+		f.thread.box.handed = 1
+	}
 	return C.longlong(o.ID)
 }

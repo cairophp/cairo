@@ -13,9 +13,10 @@
 typedef struct {
 	int64_t since;   // when the thread last came back to its loop, in unix ns; 0 while it sleeps
 	int64_t stretch; // a moving average of how long it runs PHP between two visits, in ns
+	int32_t handed;  // 1 when the thread gave Go an operation or an answer since its last visit
 	// What the thread writes at every visit and what senders write share no
 	// cache line, with each other or with another thread's mailbox.
-	char pad[48];
+	char pad[44];
 	int32_t pending; // 1 while the thread's inbox, a Go channel, may hold an event
 	char end[60];
 } cairo_mailbox;

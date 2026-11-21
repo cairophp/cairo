@@ -20,8 +20,14 @@ namespace Cairo {
      */
     final class Channel implements \IteratorAggregate, \Countable
     {
-        /** @var \SplQueue<mixed> */
-        private \SplQueue $buffer;
+        /**
+         * The buffered values, the oldest at key $head and each new one at the
+         * next key: taking a value is an unset, with nothing to move.
+         *
+         * @var array<int, mixed>
+         */
+        private array $buffer = [];
+        private int $head = 0;
         private bool $closed = false;
         /** @var array<int, array{Internal\Waiter, int|string}> waiting receivers: object id => [waiter, case key] */
         private array $receivers = [];
@@ -34,7 +40,6 @@ namespace Cairo {
             if ($capacity < 0) {
                 throw new \InvalidArgumentException('capacity must be 0 or more');
             }
-            $this->buffer = new \SplQueue();
         }
 
         /** @internal the channel behind Context::done() */
@@ -47,34 +52,50 @@ namespace Cairo {
 
         public function send(mixed $value): void
         {
-            select([[$this, $value]]);
+            // The commonest case by itself: room, and no receiver to hand the
+            // value to. select() is only for the wait.
+            if (!$this->closed && $this->receivers === [] && count($this->buffer) < $this->capacity) {
+                $this->buffer[] = $value;
+            } elseif (!$this->pollSend($value)) {
+                select([[$this, $value]]);
+            }
         }
 
         /** The next value; throws Channel\Closed once the channel is closed and drained. */
         public function recv(): mixed
         {
-            [, $value, $ok] = select([$this]);
-            if (!$ok) {
+            // The commonest case by itself: a value, and no sender who waits
+            // for the room it leaves.
+            if ($this->buffer !== [] && $this->senders === []) {
+                $value = $this->buffer[$this->head];
+                unset($this->buffer[$this->head++]);
+                return $value;
+            }
+            $got = $this->pollRecv();
+            if (!$got[0]) {
+                $got = select([$this]);
+            }
+            if (!$got[2]) {
                 throw new Channel\Closed();
             }
-            return $value;
+            return $got[1];
         }
 
         /** Like recv() without waiting: false when no value is ready. */
         public function tryRecv(mixed &$value = null): bool
         {
-            [$key, $v, $ok] = select([$this], 0);
-            if ($key === null || !$ok) {
+            $got = $this->pollRecv();
+            if (!$got[0] || !$got[2]) {
                 return false;
             }
-            $value = $v;
+            $value = $got[1];
             return true;
         }
 
         /** Like send() without waiting: false when the value cannot be taken now. */
         public function trySend(mixed $value): bool
         {
-            return select([[$this, $value]], 0)[0] !== null;
+            return $this->pollSend($value);
         }
 
         public function close(): void
@@ -103,7 +124,7 @@ namespace Cairo {
         /** Values buffered now. */
         public function count(): int
         {
-            return $this->buffer->count();
+            return count($this->buffer);
         }
 
         public function capacity(): int
@@ -115,11 +136,14 @@ namespace Cairo {
         public function getIterator(): \Generator
         {
             while (true) {
-                [, $value, $ok] = select([$this]);
-                if (!$ok) {
+                $got = $this->pollRecv();
+                if (!$got[0]) {
+                    $got = select([$this]);
+                }
+                if (!$got[2]) {
                     return;
                 }
-                yield $value;
+                yield $got[1];
             }
         }
 
@@ -141,16 +165,17 @@ namespace Cairo {
         /** @internal try to receive now: [true, value, ok] or [false] */
         public function pollRecv(): array
         {
-            if (!$this->buffer->isEmpty()) {
-                $value = $this->buffer->dequeue();
+            if ($this->buffer !== []) {
+                $value = $this->buffer[$this->head];
+                unset($this->buffer[$this->head++]);
                 // Room now: the longest waiting sender fills it.
-                if (($s = $this->takeSender()) !== null) {
-                    $this->buffer->enqueue($s[2]);
+                if ($this->senders !== [] && ($s = $this->takeSender()) !== null) {
+                    $this->buffer[] = $s[2];
                     $s[0]->wake($s[1], null, true);
                 }
                 return [true, $value, true];
             }
-            if (($s = $this->takeSender()) !== null) {
+            if ($this->senders !== [] && ($s = $this->takeSender()) !== null) {
                 $s[0]->wake($s[1], null, true);
                 return [true, $s[2], true];
             }
@@ -169,15 +194,42 @@ namespace Cairo {
             if ($this->closed) {
                 throw new Channel\Closed();
             }
-            if (($r = $this->takeReceiver()) !== null) {
+            if ($this->receivers !== [] && ($r = $this->takeReceiver()) !== null) {
                 $r[0]->wake($r[1], $value, true);
                 return true;
             }
-            if ($this->buffer->count() < $this->capacity) {
-                $this->buffer->enqueue($value);
+            if (count($this->buffer) < $this->capacity) {
+                $this->buffer[] = $value;
                 return true;
             }
             return false;
+        }
+
+        /**
+         * @internal Do the first of select()'s $cases that can go now, tried in
+         * a random order: [key, value, ok], or null when none can.
+         *
+         * @param array<int|string, Channel|array{Channel, mixed}> $cases
+         * @return array{int|string, mixed, bool}|null
+         */
+        public static function firstReady(array $cases): ?array
+        {
+            $keys = array_keys($cases);
+            if (isset($keys[1])) {
+                shuffle($keys);
+            }
+            foreach ($keys as $key) {
+                $case = $cases[$key];
+                if ($case instanceof self) {
+                    $r = $case->pollRecv();
+                    if ($r[0]) {
+                        return [$key, $r[1], $r[2]];
+                    }
+                } elseif ($case[0]->pollSend($case[1])) {
+                    return [$key, null, true];
+                }
+            }
+            return null;
         }
 
         /** @internal */
@@ -248,23 +300,7 @@ namespace Cairo {
                 throw new \InvalidArgumentException("select() case '$key' must be a Channel or [Channel, value]");
             }
         }
-        $poll = static function () use ($cases): ?array {
-            $keys = array_keys($cases);
-            shuffle($keys);
-            foreach ($keys as $key) {
-                $case = $cases[$key];
-                if ($case instanceof Channel) {
-                    $r = $case->pollRecv();
-                    if ($r[0]) {
-                        return [$key, $r[1], $r[2]];
-                    }
-                } elseif ($case[0]->pollSend($case[1])) {
-                    return [$key, null, true];
-                }
-            }
-            return null;
-        };
-        if (($ready = $poll()) !== null) {
+        if (($ready = Channel::firstReady($cases)) !== null) {
             return $ready;
         }
         if ($timeout !== null && $timeout <= 0) {
@@ -317,7 +353,7 @@ namespace Cairo {
             if ($ended !== null) {
                 $ctx->ended($ended);
                 // A done() channel among the cases is now closed.
-                if (($ready = $poll()) !== null) {
+                if (($ready = Channel::firstReady($cases)) !== null) {
                     return $ready;
                 }
                 throw $ended === 'canceled' ? new Context\Canceled() : new Context\DeadlineExceeded();
@@ -325,7 +361,7 @@ namespace Cairo {
             if (!$forDone) {
                 return [null, null, false];   // timeout
             }
-            if (($ready = $poll()) !== null) {
+            if (($ready = Channel::firstReady($cases)) !== null) {
                 return $ready;
             }
         }

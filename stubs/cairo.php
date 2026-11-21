@@ -564,6 +564,17 @@ namespace Cairo {
         {
         }
 
+        /**
+         * @internal Do the first of select()'s $cases that can go now, tried in
+         * a random order: [key, value, ok], or null when none can.
+         *
+         * @param array<int|string, Channel|array{Channel, mixed}> $cases
+         * @return array{int|string, mixed, bool}|null
+         */
+        public static function firstReady(array $cases): ?array
+        {
+        }
+
         /** @internal */
         public function addReceiver(Internal\Waiter $waiter, int|string $key): void
         {

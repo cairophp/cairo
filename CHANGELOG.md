@@ -165,6 +165,11 @@ change the PHP API; patch versions do not.
   `OffloadException` (it was `Context\Canceled`), and a result that cannot
   be serialized is an `OffloadException` for its caller instead of the end
   of the offload thread.
+- `Cairo\Channel`: `send()` into a channel with room and `recv()` of a
+  buffered value no longer go through `select()`, and neither do `trySend()`
+  and `tryRecv()`: a send and a receive with nobody waiting take 0.1 µs
+  instead of 1.2 µs, and a `select()` that finds a channel ready less than
+  half its time. Nothing changes in what they do.
 
 ## [0.4.0] - 2026-11-19
 

@@ -47,6 +47,25 @@ func TestChannels(t *testing.T) {
 	}
 }
 
+// A buffered channel is first in, first out through many rounds, takes the
+// value of a sender that waited for room in its turn, hands a value straight
+// to a receiver that waits, and does not grow with the values that passed.
+func TestChannelBuffer(t *testing.T) {
+	got := getJSON(t, "/chan/buffered")
+	want := map[string]any{
+		"in_order":          true,
+		"refused_when_full": true,
+		"taken":             []any{"a", 2.0, "b", "c"},
+		"handed":            []any{0.0, "x"},
+		// 200,000 values through two that stay: their sum without the last
+		// two, the two left, and the older of them next.
+		"steady": []any{199998.0 * 199999.0 / 2, 2.0, true, 199999.0, true},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("/chan/buffered = %v, want %v", got, want)
+	}
+}
+
 // Fibers waiting on channels suspend, so one PHP thread serves many at once.
 func TestChannelHandoffDoesNotBlockThread(t *testing.T) {
 	const n = 100

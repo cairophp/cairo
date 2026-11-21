@@ -187,6 +187,10 @@ change the PHP API; patch versions do not.
   could log `FiberError: Cannot suspend in a force-closed fiber` for each
   (seen under Laravel when a stop met a MySQL connect in flight). The same
   line after a handler's `exit()` is gone too.
+- PDO PostgreSQL with `cairo_pool=N`: a statement on a PDO object that was
+  just taken from a `Cairo\Pool` could fail with "the connection is busy
+  with another query" while the request that had the object before gave its
+  server connection back (7 in 490,000 requests in a benchmark).
 
 ## [0.4.0] - 2026-11-19
 

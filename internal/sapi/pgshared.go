@@ -186,12 +186,8 @@ func pgAttach(ctx context.Context, pc *pgConn) error {
 // pgDetachIf gives the handle's connection back when the request it was
 // bound to (generation gen) ended and no later request took it over.
 func pgDetachIf(pc *pgConn, gen int64) {
-	pc.releasing.Store(true)
 	pc.mu.Lock()
-	defer func() {
-		pc.releasing.Store(false)
-		pc.mu.Unlock()
-	}()
+	defer pc.mu.Unlock()
 	if pc.gen != gen {
 		return
 	}

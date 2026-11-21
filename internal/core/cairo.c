@@ -60,19 +60,6 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_respond, 0, 0, 2)
 	ZEND_ARG_INFO(0, body)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_fiber_open, 0, 0, 1)
-	ZEND_ARG_INFO(0, parent)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_fiber_close, 0, 0, 1)
-	ZEND_ARG_INFO(0, fiber)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_fiber_op, 0, 0, 2)
-	ZEND_ARG_INFO(0, fiber)
-	ZEND_ARG_INFO(0, json)
-ZEND_END_ARG_INFO()
-
 // cairo_info(): string (JSON: mode, server file, thread id)
 PHP_FUNCTION(cairo_info)
 {
@@ -154,66 +141,6 @@ PHP_FUNCTION(cairo_stream_fd)
 	RETURN_LONG(-1);
 }
 
-// cairo_fiber_open(int $parentFiber): int. Gives a new fiber its own
-// goroutine, with a child of the parent fiber's context.
-PHP_FUNCTION(cairo_fiber_open)
-{
-	zend_long parent;
-	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_LONG(parent)
-	ZEND_PARSE_PARAMETERS_END();
-	RETURN_LONG((zend_long)goFiberOpen(cairo_tid, (long long)parent));
-}
-
-// cairo_fiber_close(int $fiber): void
-PHP_FUNCTION(cairo_fiber_close)
-{
-	zend_long fiber;
-	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_LONG(fiber)
-	ZEND_PARSE_PARAMETERS_END();
-	goFiberClose(cairo_tid, (long long)fiber);
-}
-
-// cairo_context_open(int $parent, float $timeout): int. A derived context
-// (Context::withTimeout(), withCancel()) with its own goroutine, like a fiber's;
-// $timeout < 0 means none.
-PHP_FUNCTION(cairo_context_open)
-{
-	zend_long parent;
-	double timeout;
-	ZEND_PARSE_PARAMETERS_START(2, 2)
-		Z_PARAM_LONG(parent)
-		Z_PARAM_DOUBLE(timeout)
-	ZEND_PARSE_PARAMETERS_END();
-	RETURN_LONG((zend_long)goContextOpen(cairo_tid, (long long)parent, timeout));
-}
-
-// cairo_context_cancel(int $id): void. Cancels a context; its goroutine stays
-// until cairo_fiber_close(), answering operations with the error.
-PHP_FUNCTION(cairo_context_cancel)
-{
-	zend_long id;
-	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_LONG(id)
-	ZEND_PARSE_PARAMETERS_END();
-	goContextCancel(cairo_tid, (long long)id);
-}
-
-// cairo_fiber_op(int $fiber, string $json): int. Asks the fiber's goroutine
-// to perform an operation; returns its id (or -1). The caller then suspends.
-PHP_FUNCTION(cairo_fiber_op)
-{
-	zend_long fiber;
-	char *json;
-	size_t len;
-	ZEND_PARSE_PARAMETERS_START(2, 2)
-		Z_PARAM_LONG(fiber)
-		Z_PARAM_STRING(json, len)
-	ZEND_PARSE_PARAMETERS_END();
-	RETURN_LONG((zend_long)goFiberOp(cairo_tid, (long long)fiber, json, (int)len));
-}
-
 // cairo_go_call(string $op, array $args): array. Runs a Go operation on
 // this thread, outside a fiber; returns ['result' => ...] or ['error' => ...].
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_go_call, 0, 0, 2)
@@ -264,22 +191,17 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_next_event, 0, 0, 1)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_wait_began, 0, 0, 1)
-	ZEND_ARG_INFO(0, fiber)
+	ZEND_ARG_INFO(0, request)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_wait_ended, 0, 0, 3)
-	ZEND_ARG_INFO(0, fiber)
+	ZEND_ARG_INFO(0, request)
 	ZEND_ARG_INFO(0, parked)
 	ZEND_ARG_INFO(0, began)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_stream_fd, 0, 0, 1)
 	ZEND_ARG_INFO(0, stream)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_context_open, 0, 0, 2)
-	ZEND_ARG_INFO(0, parent)
-	ZEND_ARG_INFO(0, timeout)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_guard, 0, 0, 1)
@@ -295,15 +217,11 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_respond, arginfo_cairo_respond)
 	PHP_FE(cairo_stream_fd, arginfo_cairo_stream_fd)
 	PHP_FE(cairo_retire, arginfo_cairo_retire)
-	PHP_FE(cairo_fiber_open, arginfo_cairo_fiber_open)
-	PHP_FE(cairo_fiber_close, arginfo_cairo_fiber_close)
-	PHP_FE(cairo_context_open, arginfo_cairo_context_open)
-	PHP_FE(cairo_context_cancel, arginfo_cairo_fiber_close)
-	PHP_FE(cairo_fiber_op, arginfo_cairo_fiber_op)
 	PHP_FE(cairo_fiber_wait, arginfo_cairo_fiber_wait)
 	PHP_FE(cairo_wait_here, arginfo_cairo_wait_here)
 	PHP_FE(cairo_fiber_waitset, arginfo_cairo_fiber_waitset)
 	PHP_FE(cairo_fiber_call, arginfo_cairo_fiber_call)
+	PHP_FE(cairo_op_cancel, arginfo_cairo_op_cancel)
 	PHP_FE(cairo_go_call, arginfo_cairo_go_call)
 	PHP_FE(cairo_guard, arginfo_cairo_guard)
 	PHP_FE(cairo_local_register, arginfo_cairo_local_register)

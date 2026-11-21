@@ -150,7 +150,7 @@ static void cairo_tls_connect_sync(php_netstream_data_t *sock, php_stream_xport_
 }
 
 // Connects through Go (Cairo\Internal\Hooks::connect): the name lookup, the
-// connect and, for TLS, the handshake run on the fiber's goroutine with Go's
+// connect and, for TLS, the handshake run as a Go operation of the fiber with Go's
 // resolver and netpoller. Returns 1 when handled (xparam filled in), 0 to let
 // PHP connect itself. TLS streams are always handled: PHP only sees a plain
 // socket to Go, which encrypts and decrypts.

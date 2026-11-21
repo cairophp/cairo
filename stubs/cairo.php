@@ -236,20 +236,29 @@ namespace Cairo {
 
 namespace Cairo {
     /**
-     * The Go context.Context of the current fiber, as PHP sees it.
+     * What the current fiber runs under: a deadline, a cancellation and
+     * values, as Go's context.Context is for a goroutine.
      *
-     * Every fiber is served by its own goroutine, which owns this context: the
-     * request's root fiber by the goroutine that accepted the request, and each
-     * async() fiber by a child goroutine with a child context.
+     * A request's fiber gets the context of its request, and an async() task
+     * a child of the context that started it. A context lives on its PHP
+     * thread: its deadline is a time that the thread's own waits watch.
+     * When a fiber asks Go for an operation, the operation runs under the
+     * Go context of its request, narrowed to this context's deadline.
      */
     final class Context
     {
-        /** @internal */
+        /** @internal This context or one above it came from withTimeout() and friends. */
+        public readonly bool $scoped;
+
+        /**
+         * @internal
+         * @param int $requestId the request this context belongs to; 0 outside any
+         */
         public function __construct(
             public readonly int $requestId,
-            public readonly int $fiberId,
             private readonly ?float $deadline,
             private readonly ?self $parent = null,
+            private readonly bool $derived = false,
         )
         {
         }
@@ -269,8 +278,8 @@ namespace Cairo {
         {
         }
 
-        /** @internal the context of a child fiber served by goroutine $fiberId */
-        public function child(int $fiberId): self
+        /** @internal the context of a fiber that code under this one starts */
+        public function child(): self
         {
         }
 
@@ -385,6 +394,27 @@ namespace Cairo {
         }
 
         /**
+         * @internal What a Go operation asked for under this scoped context
+         * runs under, besides its request's own context: the deadline as a
+         * Unix time, INF when there is none (Go takes 0.0 for a context that
+         * is not scoped). Throws when the context has ended, which Go would
+         * not know.
+         */
+        public function goScope(): float
+        {
+        }
+
+        /** @internal Go operation $id began under this context: cancel() ends it. */
+        public function goOpBegan(int $id): void
+        {
+        }
+
+        /** @internal Go operation $id, begun under this context, is over. */
+        public function goOpEnded(int $id): void
+        {
+        }
+
+        /**
          * End this context (and the ones derived from it): Cairo calls running
          * under it throw Context\Canceled, and its done() channel closes. Only
          * contexts made with withTimeout(), withDeadline() or withCancel() can
@@ -399,10 +429,6 @@ namespace Cairo {
          * returns what $fn returns. `$ctx->withTimeout(0.5)->run(fn () => $client->get($url))`.
          */
         public function run(callable $fn): mixed
-        {
-        }
-
-        public function __destruct()
         {
         }
 
@@ -685,7 +711,7 @@ namespace Cairo {
         public const CONNECT = 4;
         /** gethostbyname(), gethostbynamel(), through Go's resolver */
         public const DNS = 8;
-        /** PDO pgsql: Cairo's Go-backed driver runs each query on the fiber's goroutine */
+        /** PDO pgsql: Cairo's Go-backed driver runs each query as a Go operation of the fiber */
         public const PGSQL = 32;
         public const ALL = self::SLEEP | self::SOCKETS | self::CONNECT | self::DNS | self::CURL | self::PGSQL;
     }

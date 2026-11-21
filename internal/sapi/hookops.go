@@ -15,8 +15,8 @@ import (
 )
 
 // What PHP's hooked functions (connect, TLS on and off, gethostbyname) ask Go
-// for. Inside a fiber they are fiber operations, run on the fiber's goroutine
-// so the request's deadline ends them; outside one (or with hooks off) the
+// for. Inside a fiber they are fiber operations, run under the request's
+// context so its deadline ends them; outside one (or with hooks off) the
 // PHP thread calls goDialTLS, goStartTLS and goStopTLS below and waits.
 
 func init() {

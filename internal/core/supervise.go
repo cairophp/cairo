@@ -16,9 +16,10 @@ import (
 // A PHP thread can die: a fatal error (memory_limit, a stack overflow caught
 // by PHP, exit() outside a handler) ends the PHP request the thread runs in,
 // and with it every fiber on the thread. The supervisor then answers the
-// requests the thread had taken with ErrThreadStopped, closes its fibers'
-// goroutines and starts a fresh thread under the same id and with it the
-// same inbox, so requests still queued for it are served by the new one.
+// requests the thread had taken with ErrThreadStopped, which ends their
+// contexts and with them what their fibers had asked Go for, and starts a
+// fresh thread under the same id and with it the same inbox, so requests
+// still queued for it are served by the new one.
 //
 // A request thread can also be recycled on purpose, after App::maxRequests()
 // requests or once its memory passes App::maxMemory(). PHP asks with
@@ -71,6 +72,7 @@ func (e *Engine) shuttingDown() bool {
 // threadExited runs once the PHP thread has left PHP and Go has all that
 // the thread answered before (collect).
 func (e *Engine) threadExited(t *thread, status int) {
+	t.endWorkers()
 	if e.shuttingDown() {
 		return
 	}
@@ -82,7 +84,6 @@ func (e *Engine) threadExited(t *thread, status int) {
 	t.retired, t.gone = t.retired || retiring, retiring
 	failed := e.failCalls(t, retiring)
 	t.sendMu.Unlock()
-	e.closeFibers(t)
 
 	if retiring && status == 0 {
 		e.releaseTid(t)
@@ -117,6 +118,9 @@ func (e *Engine) threadExited(t *thread, status int) {
 		delay = min(100*time.Millisecond<<t.crashes, 5*time.Second)
 	}
 	t.bootMark = t.box.served.Load()
+	t.mu.Lock()
+	t.ended = false
+	t.mu.Unlock()
 	go func() {
 		time.Sleep(delay)
 		if err := e.startThread(t); err != nil {
@@ -146,28 +150,13 @@ func (e *Engine) failCalls(t *thread, queued bool) int {
 		if waiting[id] {
 			continue
 		}
-		// Out of the tables before the answer: Dispatch then reuses both.
+		// Out of the table before the answer: Dispatch then reuses the call.
 		delete(t.calls, id)
-		delete(t.fibers, id)
 		c.resp <- nil
 		n++
 	}
 	t.inflight.Add(int64(-n))
 	return n
-}
-
-// closeFibers ends the goroutines of the async() fibers that lived on t.
-// Request fibers end with their call.
-func (e *Engine) closeFibers(t *thread) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	for id, f := range t.fibers {
-		if f.closed != nil {
-			f.cancel()
-			close(f.closed)
-			delete(t.fibers, id)
-		}
-	}
 }
 
 // retire replaces request thread old with a fresh one, then lets old finish

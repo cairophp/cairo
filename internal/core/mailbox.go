@@ -84,7 +84,7 @@ var errNoMemory = errors.New("cairo: no memory to queue an event for a PHP threa
 
 // send queues an event (internal/wire) for the thread, which is copied, and
 // wakes the thread when it sleeps. kind says whether the event begins a
-// call; id is that call, or the fiber the event is for, or 0. An event for a
+// call; id is that call, or the request the event is for, or 0. An event for a
 // thread that has ended is dropped: its thread id may be another's by now.
 func (t *thread) send(kind int, id int64, data []byte) error {
 	t.sendMu.RLock()
@@ -123,14 +123,12 @@ func (t *thread) queuedCalls() map[int64]bool {
 }
 
 // goTook is the loop taking an event, when requests are probed: id is the
-// fiber it is for, whose request the stretch of PHP that begins belongs to.
+// request it is for, which the stretch of PHP that begins belongs to.
 //
 //export goTook
 func goTook(tid C.int, id C.longlong) {
-	t := engine.table[int(tid)].Load()
-	t.running = nil
-	if f := engine.fiber(tid, int64(id)); f != nil {
-		t.running = f.probe
+	if t, p := engine.probeOf(tid, int64(id)); t != nil {
+		t.running = p
 	}
 }
 

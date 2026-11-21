@@ -44,7 +44,7 @@ namespace Cairo\Internal {
          */
         public function park(Context $ctx, float $seconds, ?Waiter $waiter = null): ?string
         {
-            if ($ctx->fiberId === 0) {
+            if ($ctx->requestId === 0) {
                 throw new \LogicException('Cairo I/O must run inside a request handler or an async() task');
             }
             if (($ended = $ctx->endedAs()) !== null) {
@@ -64,12 +64,12 @@ namespace Cairo\Internal {
             if ($at !== PHP_INT_MAX) {
                 $this->setTimer($id, $at);
             }
-            $began = \cairo_wait_began($ctx->fiberId);
+            $began = \cairo_wait_began($ctx->requestId);
             self::$waiting++;
             \Fiber::suspend();
             self::$waiting--;
             if ($began !== 0) {
-                \cairo_wait_ended($ctx->fiberId, $waiter !== null, $began);
+                \cairo_wait_ended($ctx->requestId, $waiter !== null, $began);
             }
             if ($at !== PHP_INT_MAX) {
                 $this->timed--;

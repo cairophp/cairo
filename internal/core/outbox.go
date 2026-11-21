@@ -60,9 +60,8 @@ func (t *thread) answer(m *C.cairo_msg) {
 	id := int64(m.id)
 	t.mu.Lock()
 	c, ok := t.calls[id]
-	// Out of the tables before the answer: Dispatch then reuses both.
+	// Out of the table before the answer: Dispatch then reuses the call.
 	delete(t.calls, id)
-	delete(t.fibers, id)
 	t.mu.Unlock()
 	if !ok {
 		return

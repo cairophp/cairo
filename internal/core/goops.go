@@ -13,8 +13,8 @@ import (
 )
 
 // GoOp is a Go operation that PHP APIs (Cairo\Http\Client, ...) call through
-// Cairo\Internal\Go::call(). Inside a request fiber it runs on the fiber's
-// goroutine with the request's context while the fiber is suspended;
+// Cairo\Internal\Go::call(). Inside a request fiber it runs in a goroutine
+// of its own with the request's context while the fiber is suspended;
 // elsewhere (the declare phase, offload threads) the PHP thread waits for it
 // with a background context. The payload is the array PHP passed, in
 // internal/wire's form: wire.Unmarshal reads it as encoding/json would its
@@ -31,8 +31,8 @@ func RegisterOp(name string, fn GoOp) {
 }
 
 // FiberOp is an operation that only a fiber can ask for: what PHP's hooked
-// functions (connect, TLS, DNS, PDO pgsql) do on the fiber's goroutine while
-// the fiber is suspended. It returns what the fiber wakes up with: a result,
+// functions (connect, TLS, DNS, PDO pgsql) do in a goroutine while the fiber
+// is suspended. It returns what the fiber wakes up with: a result,
 // or the text of an error. Unlike a GoOp it decides itself what the end of
 // the context means, because a socket that did connect must still reach PHP,
 // which owns it from then on.

@@ -78,14 +78,12 @@ namespace Cairo\Internal {
 
     use Cairo\Context;
 
-/** @internal async(), with the parent context given: start $fn in a new fiber with its own goroutine. */
+/** @internal async(), with the parent context given: start $fn in a new fiber. */
     function spawnTask(Context $parent, callable $fn): \Cairo\Task
     {
         $task = new \Cairo\Task();
-        // Go starts the goroutine that will serve this fiber.
-        $goroutine = \cairo_fiber_open($parent->fiberId);
-        $context = $parent->child($goroutine);
-        Scheduler::instance()->startFiber(static function () use ($fn, $task, $goroutine, $context): void {
+        $context = $parent->child();
+        Scheduler::instance()->startFiber(static function () use ($fn, $task, $context): void {
             try {
                 $task->result = \cairo_guard($fn);
             } catch (\Throwable $e) {
@@ -93,7 +91,6 @@ namespace Cairo\Internal {
                 Scheduler::instance()->taskFailed();
             } finally {
                 $context->finish();
-                \cairo_fiber_close($goroutine);
             }
             $task->done = true;
             foreach ($task->waiters as $waiter) {

@@ -29,8 +29,8 @@ import (
 //
 // A pool belongs to the process, not to a PHP thread: Db::open() runs on
 // every thread with the same DSN and options and gets the same *sql.DB, so
-// max_open bounds the connections of the whole server. Queries run on the
-// calling fiber's goroutine, so only the fiber waits, and the request's
+// max_open bounds the connections of the whole server. Queries run as Go
+// operations of the calling fiber, so only the fiber waits, and the request's
 // deadline cancels them.
 //
 // Values cross as JSON. Binary values (bytea, BLOB) travel as

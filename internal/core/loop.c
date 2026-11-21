@@ -233,33 +233,33 @@ PHP_FUNCTION(cairo_next_event)
 	}
 }
 
-// cairo_wait_began(int $fiber): int
-// A fiber starts a wait that stays on the thread (Waits in waits.php), which
+// cairo_wait_began(int $request): int
+// A fiber of the request starts a wait that stays on the thread (Waits in waits.php), which
 // Go does not see. Returns what cairo_wait_ended() takes back; 0 when
 // requests are not probed, and then neither function calls Go.
 PHP_FUNCTION(cairo_wait_began)
 {
-	zend_long fiber;
+	zend_long request;
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_LONG(fiber)
+		Z_PARAM_LONG(request)
 	ZEND_PARSE_PARAMETERS_END();
 	if (!__atomic_load_n(&probed, __ATOMIC_SEQ_CST)) {
 		RETURN_LONG(0);
 	}
-	RETURN_LONG((zend_long)goWaitBegan(cairo_thread_id(), (long long)fiber));
+	RETURN_LONG((zend_long)goWaitBegan(cairo_thread_id(), (long long)request));
 }
 
-// cairo_wait_ended(int $fiber, bool $parked, int $began): void
+// cairo_wait_ended(int $request, bool $parked, int $began): void
 // The wait that cairo_wait_began() answered $began for is over; $parked
 // tells a wait in select() from a sleep.
 PHP_FUNCTION(cairo_wait_ended)
 {
-	zend_long fiber, began;
+	zend_long request, began;
 	bool parked;
 	ZEND_PARSE_PARAMETERS_START(3, 3)
-		Z_PARAM_LONG(fiber)
+		Z_PARAM_LONG(request)
 		Z_PARAM_BOOL(parked)
 		Z_PARAM_LONG(began)
 	ZEND_PARSE_PARAMETERS_END();
-	goWaitEnded(cairo_thread_id(), (long long)fiber, parked ? 1 : 0, (long long)began);
+	goWaitEnded(cairo_thread_id(), (long long)request, parked ? 1 : 0, (long long)began);
 }

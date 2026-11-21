@@ -1,19 +1,19 @@
 // Package core is Cairo's core engine: it embeds a thread-safe (ZTS) PHP
 // into the Go process and moves work between Go and PHP threads.
 //
-// The model, in one paragraph: every PHP Fiber has exactly one Go goroutine.
-// A request's root fiber belongs to the goroutine that accepted the request
-// (Engine.Dispatch); fibers started with Cairo\async() get a child goroutine.
-// That goroutine owns the fiber's context.Context and performs every I/O
-// operation the fiber asks for, then wakes the fiber on its PHP thread. So
-// one PHP thread can hold thousands of requests, each waiting on its own
-// goroutine. CPU-heavy work goes to a separate pool of PHP threads through
-// Cairo\offload(), so it never stalls the fibers on a request thread.
+// The model, in one paragraph: a request runs in a PHP fiber on one PHP
+// thread, and fibers it starts with Cairo\async() run next to it on the same
+// thread. A fiber is PHP's alone: its context, its deadline and its waits
+// for a sleep or a channel stay on the thread. When a fiber asks for an I/O
+// operation, it suspends, and a goroutine performs the operation under the
+// request's context.Context and then wakes the fiber. So one PHP thread can
+// hold thousands of requests, and a goroutine exists only for as long as an
+// operation runs. CPU-heavy work goes to a separate pool of PHP threads
+// through Cairo\offload(), so it never stalls the fibers on a request thread.
 //
 // What Go has for a PHP thread and what a thread answers cross in queues
 // that neither side calls the other for (loop.h, outbox.h): a PHP thread
-// calls into Go only for what a goroutine has to do, an operation of one of
-// its fibers.
+// calls into Go only for an operation of one of its fibers.
 //
 // Everything else is an extension: a server, a client, a database driver, a
 // hook, a diagnostic. An extension joins from its own package with the
@@ -91,7 +91,7 @@ type Engine struct {
 	// extension asked for one.
 	newProbe func() Probe
 
-	nextID atomic.Int64 // ids of calls, fibers and operations
+	nextID atomic.Int64 // ids of calls and operations
 
 	outbox *os.File // what collect waits on; closed once the PHP threads have ended
 
@@ -123,12 +123,15 @@ type thread struct {
 	// running; only the thread itself uses it (goTook, goWaitEnded, goRan).
 	running Probe
 	// The calls queued for this thread or taken by it and not answered
-	// (requests, offload jobs), and the fibers that live on it, by id. The
-	// goroutine that queues a call puts it in, the thread's PHP asks for
-	// its fibers (see own), and collect takes out what the thread answered.
+	// (requests, offload jobs), by id, and the contexts made for single
+	// operations, by the operation's id (submit). The goroutine that queues
+	// a call puts it in, the thread's PHP asks for what an operation runs
+	// under (see own), and collect takes out what the thread answered.
 	mu     sync.Mutex
 	calls  map[int64]*call
-	fibers map[int64]*fiber
+	scoped map[int64]context.CancelFunc
+	idle   []opWorker // goroutines that wait for an operation (opworker.go)
+	ended  bool       // the thread ended: a goroutine that finishes an operation does not wait
 
 	// Supervision (see supervise.go).
 	sendMu   sync.RWMutex // held for reading while an event is queued; taken to set retired and gone
@@ -208,7 +211,7 @@ func Start(opts Options) (*Engine, error) {
 		return nil, fmt.Errorf("too many PHP threads: %d (at most %d)", nw+no, maxThreads/2)
 	}
 	if os.Getenv("GOMAXPROCS") == "" {
-		// A PHP thread calling into Go (to start I/O, to open a fiber)
+		// A PHP thread calling into Go (for an operation of one of its fibers)
 		// needs a free P. With only one P per CPU, net/http's goroutines hold
 		// them all under load and PHP threads queue for one.
 		runtime.GOMAXPROCS(runtime.GOMAXPROCS(0) + nw + no)
@@ -264,7 +267,7 @@ func Start(opts Options) (*Engine, error) {
 func (e *Engine) newThread(tid int, p pool, slot int) *thread {
 	t := &thread{
 		id: tid, pool: p, slot: slot, box: mailboxOf(tid),
-		calls: map[int64]*call{}, fibers: map[int64]*fiber{},
+		calls: map[int64]*call{}, scoped: map[int64]context.CancelFunc{},
 	}
 	// The mailbox is the thread id's: a thread that had the id before left
 	// its count.

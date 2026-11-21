@@ -25,8 +25,11 @@ type call struct {
 	id     int64
 	thread *thread
 	resp   chan *reply
-	fiber  *fiber // a request's root fiber; nil for an offload job
-	reply  reply
+	// A request's context and probe, which the operations of its fibers
+	// run under and report to (submit); nil for an offload job.
+	ctx   context.Context
+	probe Probe
+	reply reply
 }
 
 // reply is PHP's answer to a call: its metadata (JSON) and, for an HTTP
@@ -37,18 +40,15 @@ type reply struct {
 }
 
 // request is what Dispatch needs for one request and keeps for the next:
-// the call and the root fiber with their channels, and the event's buffer.
+// the call with its channel, and the event's buffer.
 type request struct {
-	call  call
-	fiber fiber
-	buf   []byte
+	call call
+	buf  []byte
 }
 
 var requests = sync.Pool{New: func() any {
 	r := &request{buf: make([]byte, 0, eventBuf)}
 	r.call.resp = make(chan *reply, 1)
-	r.call.fiber = &r.fiber
-	r.fiber.ops = make(chan op, 1)
 	return r
 }}
 
@@ -61,14 +61,9 @@ const (
 
 // free gives r back for another request. Nothing may hold it any more: its
 // event was never queued, or its thread answered the call, which drops the
-// call and the fiber from the thread's tables first.
+// call from the thread's table first.
 func (r *request) free() {
-	select {
-	case <-r.fiber.ops: // sent as PHP answered: its fiber ended with the request
-	default:
-	}
-	r.call.thread, r.call.reply = nil, reply{}
-	r.fiber = fiber{ops: r.fiber.ops}
+	r.call = call{resp: r.call.resp}
 	if cap(r.buf) > maxEventBuf {
 		r.buf = make([]byte, 0, eventBuf)
 	}
@@ -78,17 +73,15 @@ func (r *request) free() {
 // Dispatch runs one request on a PHP request thread and returns PHP's answer:
 // its metadata (JSON) and, for HTTP, the response body.
 //
-// The calling goroutine becomes the request's root fiber: until PHP answers,
-// it performs that fiber's I/O under ctx. ev carries the "type" that the
-// server's PHP file answers (Scheduler::answerWith()); Dispatch gives it the
-// "id" and "deadline". If ctx ends first, Dispatch returns ctx.Err() and a
-// helper goroutine keeps answering the fiber (with the context's error)
-// until PHP finishes.
+// ev carries the "type" that the server's PHP file answers
+// (Scheduler::answerWith()); Dispatch gives it the "id" and "deadline". The
+// calling goroutine only waits: what the request's fibers ask Go for runs in
+// goroutines of its own, under ctx. If ctx ends first, Dispatch returns
+// ctx.Err(), and a helper goroutine waits for PHP to finish.
 //
-// The request's fibers wait under ctx itself, so ctx must end once the
-// caller is done with the request, as a server's request context does: that
-// is what ends the waits of a fiber the request left running (an async()
-// that nobody awaited).
+// ctx must end once the caller is done with the request, as a server's
+// request context does: that is what ends the waits of a fiber the request
+// left running (an async() that nobody awaited).
 func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte, err error) {
 	var p Probe
 	if e.newProbe != nil {
@@ -111,9 +104,8 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 	}
 	id := e.nextID.Add(1)
 	r := requests.Get().(*request)
-	c, f := &r.call, &r.fiber
-	c.id, c.thread = id, t
-	*f = fiber{id: id, ctx: ctx, thread: t, ops: f.ops, probe: p}
+	c := &r.call
+	c.id, c.thread, c.ctx, c.probe = id, t, ctx, p
 	t.inflight.Add(1)
 
 	var deadline float64
@@ -127,54 +119,53 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 		r.free()
 		return nil, nil, err
 	}
+	select {
+	case answer := <-c.resp:
+		release()
+		if answer == nil {
+			r.free()
+			return nil, nil, ErrThreadStopped
+		}
+		meta, body = answer.meta, answer.body
+		r.free()
+		if p != nil {
+			p.Done(ev, "")
+		}
+		return meta, body, nil
+	case <-ctx.Done():
+		go e.abandon(ctx, r, release)
+		if p != nil {
+			p.Done(ev, CtxError(ctx))
+		}
+		return nil, nil, ctx.Err()
+	}
+}
+
+// abandon sees a request through whose context ended before PHP answered:
+// Dispatch has returned, and PHP still runs. The operations of its fibers
+// end with ctx by themselves; the fibers that wait on the thread itself (a
+// sleep, a channel) have no goroutine that sees it end, so PHP ends them.
+// Past the deadline it also interrupts the thread until PHP answers: PHP
+// code that never waits is stopped where it runs.
+func (e *Engine) abandon(ctx context.Context, r *request, release func()) {
+	c := &r.call
+	t := c.thread
+	e.post(t, map[string]any{"type": "cancel", "id": c.id, "error": CtxError(ctx)})
+	var tick <-chan time.Time
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		C.cairo_interrupt(C.int(t.id))
+		ticker := time.NewTicker(interruptEvery)
+		defer ticker.Stop()
+		tick = ticker.C
+	}
 	for {
 		select {
-		case answer := <-c.resp:
-			release()
-			if answer == nil {
-				r.free()
-				return nil, nil, ErrThreadStopped
-			}
-			meta, body = answer.meta, answer.body
+		case <-c.resp:
+			release() // the slot is free once PHP is done with the request
 			r.free()
-			if p != nil {
-				p.Done(ev, "")
-			}
-			return meta, body, nil
-		case o := <-f.ops:
-			e.runOp(f, o)
-		case <-ctx.Done():
-			// Past the deadline, interrupt the thread until PHP answers: PHP
-			// code that never waits on Go is stopped where it runs.
-			deadline := errors.Is(ctx.Err(), context.DeadlineExceeded)
-			go func() {
-				// The fibers that wait on the thread itself (a sleep, a
-				// channel) have no goroutine that sees ctx end: PHP ends them.
-				e.post(t, map[string]any{"type": "cancel", "id": id, "error": CtxError(ctx)})
-				var tick <-chan time.Time
-				if deadline {
-					C.cairo_interrupt(C.int(t.id))
-					ticker := time.NewTicker(interruptEvery)
-					defer ticker.Stop()
-					tick = ticker.C
-				}
-				for {
-					select {
-					case <-c.resp:
-						release() // the slot is free once PHP is done with the request
-						r.free()
-						return
-					case o := <-f.ops:
-						e.runOp(f, o)
-					case <-tick:
-						C.cairo_interrupt(C.int(t.id))
-					}
-				}
-			}()
-			if p != nil {
-				p.Done(ev, CtxError(ctx))
-			}
-			return nil, nil, ctx.Err()
+			return
+		case <-tick:
+			C.cairo_interrupt(C.int(t.id))
 		}
 	}
 }
@@ -288,22 +279,17 @@ func acquire(ctx context.Context, ts []atomic.Pointer[thread]) (*thread, error) 
 }
 
 // begin queues the event that begins call c on thread t, which the caller
-// holds as acquire returned it, and lets go of the thread. The call and its
-// request's fiber are in the thread's tables before the thread can answer
-// or ask for either.
+// holds as acquire returned it, and lets go of the thread. The call is in
+// the thread's table before the thread can answer it or ask for it.
 func (t *thread) begin(c *call, data []byte) error {
 	defer t.sendMu.RUnlock()
 	t.mu.Lock()
 	t.calls[c.id] = c
-	if c.fiber != nil {
-		t.fibers[c.id] = c.fiber
-	}
 	t.mu.Unlock()
 	err := t.push(eventCall, c.id, data)
 	if err != nil {
 		t.mu.Lock()
 		delete(t.calls, c.id)
-		delete(t.fibers, c.id)
 		t.mu.Unlock()
 	}
 	return err

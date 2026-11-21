@@ -25,26 +25,21 @@ func TestEachBusyThread(t *testing.T) {
 }
 
 // A request's objects go back for the next request with nothing of the last
-// one in them: no answer, no context, no operation left in the channel, and
-// no buffer that one large request grew.
+// one in them: no answer, no context, no probe, and no buffer that one large
+// request grew.
 func TestRequestFree(t *testing.T) {
 	r := requests.Get().(*request)
-	ops, resp := r.fiber.ops, r.call.resp
-	r.call.thread = &thread{}
+	resp := r.call.resp
+	r.call.id, r.call.thread, r.call.ctx = 7, &thread{}, context.Background()
 	r.call.reply = reply{meta: []byte("{}"), body: []byte("body")}
-	r.fiber = fiber{id: 7, ctx: context.Background(), ops: ops}
-	r.fiber.ops <- op{Op: "sleep"}
 	r.buf = make([]byte, 0, maxEventBuf+1)
 
 	r.free()
-	if r.call.thread != nil || r.call.reply.meta != nil || r.call.reply.body != nil {
+	if c := &r.call; c.id != 0 || c.thread != nil || c.ctx != nil || c.probe != nil || c.reply.meta != nil || c.reply.body != nil {
 		t.Errorf("the call kept %+v", r.call)
 	}
-	if r.fiber.id != 0 || r.fiber.ctx != nil || len(r.fiber.ops) != 0 {
-		t.Errorf("the fiber kept id %d, context %v, %d operations", r.fiber.id, r.fiber.ctx, len(r.fiber.ops))
-	}
-	if r.fiber.ops != ops || r.call.resp != resp || r.call.fiber != &r.fiber {
-		t.Error("the channels or the call's fiber were replaced")
+	if r.call.resp != resp {
+		t.Error("the call's channel was replaced")
 	}
 	if cap(r.buf) != eventBuf {
 		t.Errorf("an event buffer of %d bytes was kept", cap(r.buf))

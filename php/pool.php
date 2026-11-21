@@ -179,7 +179,7 @@ namespace Cairo {
         {
             $ctx = Context::current();
             $fiber = \Fiber::getCurrent();
-            if ($fiber === null || $ctx->fiberId === 0 || !Scheduler::running()) {
+            if ($fiber === null || $ctx->requestId === 0 || !Scheduler::running()) {
                 throw new \LogicException('the pool is exhausted and there is no request fiber to wait in');
             }
             $waiter = new PoolWaiter($fiber, $ctx, $this->acquireTimeout === null ? null : new Waiter());

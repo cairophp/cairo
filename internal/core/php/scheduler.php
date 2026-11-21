@@ -177,41 +177,65 @@ namespace Cairo\Internal {
             return self::$instance !== null;
         }
 
-        /** Ask the current fiber's goroutine to perform $op, and suspend until it is done. */
-        public function op(array $op): mixed
-        {
-            return $this->submitted(\cairo_fiber_op(Context::current()->fiberId, json_encode($op, JSON_THROW_ON_ERROR)));
-        }
-
         /**
-         * Ask the current fiber's goroutine to run $op, and suspend until it
-         * is done. A Go operation takes its arguments as an array; what the
-         * hooks ask for takes the string they built.
+         * Ask Go to run $op for the current fiber, and suspend the fiber
+         * until it is done. A Go operation takes its arguments as an array;
+         * what the hooks ask for takes the string they built.
          *
          * @param string|array<string, mixed> $payload
          */
         public function call(string $op, string|array $payload): mixed
         {
-            return $this->submitted(\cairo_fiber_call(Context::current()->fiberId, $op, $payload));
+            $ctx = Context::current();
+            return $this->waitIO($ctx, \cairo_fiber_call($ctx->requestId, $ctx->scoped ? $ctx->goScope() : 0.0, $op, $payload));
         }
 
-        /** Wait for the operation a cairo_fiber_*() call just submitted as $id (-1: refused). */
-        public function submitted(int $id): mixed
+        /**
+         * Suspend the current fiber until socket $fd is readable (or
+         * writable), for $timeout seconds at most (below 0: no limit).
+         * Returns 'ready' or 'timeout'.
+         */
+        public function wait(int $fd, bool $write, float $timeout): string
+        {
+            $ctx = Context::current();
+            return $this->waitIO($ctx, \cairo_fiber_wait($ctx->requestId, $ctx->scoped ? $ctx->goScope() : 0.0, $fd, $write, $timeout));
+        }
+
+        /**
+         * wait() for the first of several sockets.
+         *
+         * @param list<int> $read
+         * @param list<int> $write
+         */
+        public function waitSet(array $read, array $write, float $timeout): string
+        {
+            $ctx = Context::current();
+            return $this->waitIO($ctx, \cairo_fiber_waitset($ctx->requestId, $ctx->scoped ? $ctx->goScope() : 0.0, $read, $write, $timeout));
+        }
+
+        /**
+         * Suspend the current fiber, which runs under $ctx, until Go reports
+         * the operation that a cairo_fiber_*() call just submitted as $id.
+         * Go refuses (-1) what belongs to no request it holds.
+         */
+        private function waitIO(Context $ctx, int $id): mixed
         {
             if ($id < 0) {
+                // A fiber that its request left running: the request's context ended with it.
+                $ctx->throwIfDone();
                 throw new \LogicException('Cairo I/O must run inside a request handler or an async() task');
             }
-            return $this->waitIO($id);
-        }
-
-        /** Suspend the current fiber until Go reports I/O operation $id. */
-        public function waitIO(int $id): mixed
-        {
             $this->io[$id] = \Fiber::getCurrent() ?? throw new \LogicException('I/O must run inside a fiber');
-            $event = \Fiber::suspend();
+            if (!$ctx->scoped) {
+                $event = \Fiber::suspend();
+            } else {
+                $ctx->goOpBegan($id);   // cancel() ends it
+                $event = \Fiber::suspend();
+                $ctx->goOpEnded($id);
+            }
             if (isset($event['error'])) {
                 if ($event['error'] === 'deadline_exceeded' || $event['error'] === 'canceled') {
-                    Context::current()->ended($event['error']);
+                    $ctx->ended($event['error']);
                 }
                 throw match ($event['error']) {
                     'deadline_exceeded' => new Context\DeadlineExceeded(),
@@ -362,8 +386,8 @@ namespace Cairo\Internal {
         /** Run $answer($event) in a fiber of its own, as a request with its context. */
         private function spawn(array $event, \Closure $answer): void
         {
-            $id = (int) $event['id'];   // the request's root fiber is served by the request goroutine
-            $context = new Context($id, $id, isset($event['deadline']) ? (float) $event['deadline'] : null);
+            $id = (int) $event['id'];
+            $context = new Context($id, isset($event['deadline']) ? (float) $event['deadline'] : null);
             $context->setGoValues((array) ($event['values'] ?? []));
             $this->requests[$id] = $context;
             $this->active++;

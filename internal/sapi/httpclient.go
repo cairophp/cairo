@@ -22,7 +22,7 @@ import (
 
 // Cairo\Http\Client sends its requests through Go's net/http: connection
 // pooling, keep-alive, HTTP/2 over TLS and proxies from the environment come
-// with it. Inside a request fiber the request runs on the fiber's goroutine,
+// with it. Inside a request fiber the request runs as a Go operation,
 // so the fiber suspends and the request's deadline cancels it.
 
 func init() {

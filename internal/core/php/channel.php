@@ -272,7 +272,7 @@ namespace Cairo {
         }
         $fiber = \Fiber::getCurrent();
         $ctx = Context::current();
-        if ($fiber === null || $ctx->fiberId === 0 || !Internal\Scheduler::running()) {
+        if ($fiber === null || $ctx->requestId === 0 || !Internal\Scheduler::running()) {
             throw new \LogicException('waiting on a Cairo\Channel must happen inside a request handler or an async() task');
         }
 

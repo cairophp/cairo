@@ -17,9 +17,9 @@ import (
 // probe per request with ProbeRequests; when none asks, a request costs one
 // nil check at each of these points.
 //
-// A request's fibers wait on their own goroutines, so WaitBegin and WaitEnd
-// are called by several goroutines at once, while the request's PHP thread
-// calls Ran.
+// The operations of a request's fibers run in goroutines of their own, so
+// WaitBegin and WaitEnd are called by several goroutines at once, while the
+// request's PHP thread calls Ran.
 type Probe interface {
 	// WaitBegin marks the start of a wait of one of the request's fibers:
 	// an operation it asked Go for, or a wait on its PHP thread ("sleep",
@@ -46,34 +46,50 @@ func (e *Engine) ProbeRequests(fn func() Probe) {
 	C.cairo_loop_probe()
 }
 
-// goWaitBegan is a fiber that starts a wait on its PHP thread, which no
-// goroutine sees: a sleep, or a wait in select(). It returns what
-// goWaitEnded takes back, 0 when the fiber has no probe.
+// probeOf is the probe of request id, which the calling PHP thread holds,
+// with the thread; a nil probe when the request has none or was answered,
+// and a nil thread outside the PHP threads of the pools.
+func (e *Engine) probeOf(tid C.int, id int64) (*thread, Probe) {
+	t := e.own(tid)
+	if t == nil {
+		return nil, nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if c := t.calls[id]; c != nil {
+		return t, c.probe
+	}
+	return t, nil
+}
+
+// goWaitBegan is a fiber of request id that starts a wait on its PHP thread,
+// which no goroutine sees: a sleep, or a wait in select(). It returns what
+// goWaitEnded takes back, 0 when the request has no probe.
 //
 //export goWaitBegan
 func goWaitBegan(tid C.int, id C.longlong) C.longlong {
-	f := engine.fiber(tid, int64(id))
-	if f == nil || f.probe == nil {
+	_, p := engine.probeOf(tid, int64(id))
+	if p == nil {
 		return 0
 	}
-	return C.longlong(f.probe.WaitBegin().UnixNano())
+	return C.longlong(p.WaitBegin().UnixNano())
 }
 
 // goWaitEnded is the end of that wait, as the fiber runs again.
 //
 //export goWaitEnded
 func goWaitEnded(tid C.int, id C.longlong, parked C.int, began C.longlong) {
-	f := engine.fiber(tid, int64(id))
-	if f == nil || f.probe == nil {
+	t, p := engine.probeOf(tid, int64(id))
+	if p == nil {
 		return
 	}
 	op := "sleep"
 	if parked != 0 {
 		op = "park"
 	}
-	f.probe.WaitEnd(op, time.Unix(0, int64(began)))
+	p.WaitEnd(op, time.Unix(0, int64(began)))
 	// A stretch of PHP that no event began is its request's.
-	if f.thread.running == nil {
-		f.thread.running = f.probe
+	if t.running == nil {
+		t.running = p
 	}
 }

@@ -133,6 +133,16 @@ change the PHP API; patch versions do not.
   route that computes. `offload()` and a Go operation of a thread with
   nothing else to do take longer for now (about 28 µs and 6 µs), and one
   PostgreSQL query per request does 3% fewer requests.
+- Performance: a fiber no longer has a goroutine and a context in Go.
+  `async()` and the derived contexts (`withTimeout()`, `withDeadline()`,
+  `withCancel()`) are PHP alone, a Go operation runs under its request's
+  context, narrowed to the deadline of the context that asked, on a
+  goroutine that then waits for the thread's next operation, and `cancel()`
+  ends the operations in flight under the context. `async()` + `await()`
+  takes 1.4 µs instead of 3.6, `withTimeout()` + `cancel()` 0.36 µs instead
+  of 2.9, and the hello benchmark serves 2.0% more requests per second.
+  Derived contexts now also work outside a request thread, and the internal
+  `Context::$fiberId` is gone.
 
 ## [0.4.0] - 2026-11-19
 

@@ -7,18 +7,18 @@ import "C"
 
 import "unsafe"
 
-// The most frequent fiber operations skip goFiberOp's JSON: C passes their
-// fields as arguments. These are the socket waits behind every hooked read,
-// write and curl transfer, and the ops that carry a payload.
+// What PHP submits (submit in operation.go): C passes an operation's fields
+// as arguments. These are the socket waits behind every hooked read, write
+// and curl transfer, and the ops that carry a payload.
 
 //export goFiberWait
-func goFiberWait(tid C.int, id C.longlong, fd C.int, write C.int, timeout C.double) C.longlong {
-	return engine.submit(tid, int64(id), op{Op: "wait", Fd: int(fd), Write: write != 0, Timeout: float64(timeout)})
+func goFiberWait(tid C.int, request C.longlong, scope C.double, fd C.int, write C.int, timeout C.double) C.longlong {
+	return engine.submit(tid, int64(request), float64(scope), op{Op: "wait", Fd: int(fd), Write: write != 0, Timeout: float64(timeout)})
 }
 
 //export goFiberWaitSet
-func goFiberWaitSet(tid C.int, id C.longlong, read *C.int, nr C.int, write *C.int, nw C.int, timeout C.double) C.longlong {
-	return engine.submit(tid, int64(id), op{Op: "waitset", Read: cInts(read, nr), WriteFD: cInts(write, nw), Timeout: float64(timeout)})
+func goFiberWaitSet(tid C.int, request C.longlong, scope C.double, read *C.int, nr C.int, write *C.int, nw C.int, timeout C.double) C.longlong {
+	return engine.submit(tid, int64(request), float64(scope), op{Op: "waitset", Read: cInts(read, nr), WriteFD: cInts(write, nw), Timeout: float64(timeout)})
 }
 
 func cInts(p *C.int, n C.int) []int {
@@ -37,6 +37,6 @@ func cInts(p *C.int, n C.int) []int {
 // JSON escaped it once in PHP and unescaped it again here.
 //
 //export goFiberCall
-func goFiberCall(tid C.int, id C.longlong, name *C.char, nn C.int, payload *C.char, np C.int) C.longlong {
-	return engine.submit(tid, int64(id), op{Op: C.GoStringN(name, nn), Payload: C.GoStringN(payload, np)})
+func goFiberCall(tid C.int, request C.longlong, scope C.double, name *C.char, nn C.int, payload *C.char, np C.int) C.longlong {
+	return engine.submit(tid, int64(request), float64(scope), op{Op: C.GoStringN(name, nn), Payload: C.GoStringN(payload, np)})
 }

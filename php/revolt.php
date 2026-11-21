@@ -424,12 +424,11 @@ final class Driver implements EventLoop\Driver
                 if (!$canRead && !$canWrite) {
                     $context = $watch->context = Context::current()->withCancel();
                     try {
-                        $context->run(static fn () => Scheduler::instance()->op([
-                            'op' => 'waitset',
-                            'read' => $read ? [$watch->fd] : [],
-                            'write_fds' => $write ? [$watch->fd] : [],
-                            'timeout' => -1.0,
-                        ]));
+                        $context->run(static fn () => Scheduler::instance()->waitSet(
+                            $read ? [$watch->fd] : [],
+                            $write ? [$watch->fd] : [],
+                            -1.0,
+                        ));
                     } catch (\Cairo\Context\Canceled $e) {
                         if ($watch->context === $context) {
                             throw $e;   // not rewatch(): the request itself ended
@@ -520,7 +519,7 @@ final class Driver implements EventLoop\Driver
     private function spawn(\Closure $fn): void
     {
         $root = Context::current()->root();
-        if (!Scheduler::running() || $root->fiberId === 0) {
+        if (!Scheduler::running() || $root->requestId === 0) {
             throw new \Error('Cairo\Revolt\Driver: callbacks can only be scheduled inside a request or an async() task');
         }
         Scheduler::instance()->later(static function () use ($root, $fn): void {

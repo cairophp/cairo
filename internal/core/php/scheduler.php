@@ -84,7 +84,8 @@ namespace Cairo\Internal {
         private bool $failed = false;
         private float $lastCollect = 0.0;
         private bool $retireAsked = false;
-        private bool $retiring = false;
+        /** No request comes any more: the thread leaves once it holds nothing. */
+        private bool $leaving = false;
 
         public function __construct(private readonly App $app)
         {
@@ -251,8 +252,10 @@ namespace Cairo\Internal {
                     $this->start($this->pending->dequeue());
                     continue;
                 }
-                if ($this->retiring && $this->active === 0 && $idle && $this->pending->isEmpty()) {
-                    return;   // recycled: Go already runs a replacement thread
+                // A fiber that still waits for Go counts too: PHP would destroy
+                // it in the middle of its request when the thread ends.
+                if ($this->leaving && $this->active === 0 && $this->io === [] && $idle && $this->pending->isEmpty()) {
+                    return;
                 }
                 // The thread sleeps there only when this is idle and no fiber is
                 // ready, and no longer than until the next timer of a parked one.
@@ -266,9 +269,7 @@ namespace Cairo\Internal {
                         unset($this->io[$event['io']]);
                         $fiber?->resume($event);
                     } elseif (!isset($this->answers[$type])) {
-                        if (!$this->take($event)) {
-                            return;
-                        }
+                        $this->take($event);
                     } elseif ($this->busy) {
                         $this->pending->enqueue($event);   // isolated mode: one request at a time
                     } else {
@@ -283,12 +284,11 @@ namespace Cairo\Internal {
 
         /**
          * Handle an event from Go that is neither a request nor the end of
-         * an operation, which the loop handles itself; false when it is the
-         * thread's last.
+         * an operation, which the loop handles itself.
          *
          * @param array<string, mixed> $event
          */
-        private function take(array $event): bool
+        private function take(array $event): void
         {
             switch ($event['type']) {
                 case 'cancel':
@@ -304,15 +304,15 @@ namespace Cairo\Internal {
                     $this->jobs->done($event);
                     break;
                 case 'retire':
-                    // Go queues no more requests here; finish the ones held.
-                    $this->retiring = true;
-                    break;
                 case 'shutdown':
-                    return false;
+                    // Go queues no more requests here: a replacement thread
+                    // takes them, or the servers have stopped. The ones held
+                    // are finished first, also those whose client has left.
+                    $this->leaving = true;
+                    break;
                 default:
                     throw new \LogicException("cairo: no server answers '{$event['type']}' events");
             }
-            return true;
         }
 
         public function app(): App

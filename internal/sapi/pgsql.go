@@ -32,16 +32,16 @@ import (
 
 type pgConn struct {
 	mu     sync.Mutex
+	inOp   atomic.Bool    // an operation runs on it: a second one is another fiber's
 	conn   *pgconn.PgConn // nil while a shared-pool handle holds none
 	notify *pgNotifyQueue
 
 	// A handle on a pool shared by all threads (pgshared.go): the request
 	// its connection is bound to, and how to stop the give-back.
-	shared    *pgShared
-	boundTo   context.Context
-	unbind    func()
-	gen       int64
-	releasing atomic.Bool // the give-back holds mu, not another fiber
+	shared  *pgShared
+	boundTo context.Context
+	unbind  func()
+	gen     int64
 }
 
 // pgNotifyQueue holds LISTEN/NOTIFY messages that arrived during any
@@ -126,13 +126,12 @@ func pgDo(ctx context.Context, req pgRequest) map[string]any {
 		return pgFail("08003", "connection is closed")
 	}
 	pc := v.(*pgConn)
-	if !pc.mu.TryLock() {
-		if !pc.releasing.Load() {
-			return pgFail("HY000", "the connection is busy with another query (use one PDO per fiber, e.g. through Cairo\\Pool)")
-		}
-		// The last request's give-back may still hold it for a moment.
-		pc.mu.Lock()
+	if !pc.inOp.CompareAndSwap(false, true) {
+		return pgFail("HY000", "the connection is busy with another query (use one PDO per fiber, e.g. through Cairo\\Pool)")
 	}
+	defer pc.inOp.Store(false)
+	// The last request's give-back may still hold it for a moment.
+	pc.mu.Lock()
 	defer pc.mu.Unlock()
 	if pc.shared != nil {
 		if req.Kind == "notify" {

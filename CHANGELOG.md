@@ -178,6 +178,20 @@ change the PHP API; patch versions do not.
   every wait on the socket, answers 16% more requests per second. Fibers
   that sleep until the same moment wake in the order they went to sleep.
 
+### Fixed
+
+- Stopping the server, or a thread that is recycled, no longer cuts a request
+  off in the middle: a thread finishes what it holds before it ends, also
+  the requests whose client has left and the fibers that still wait for Go.
+  Before, PHP destroyed those fibers where they waited, and fiber mode
+  could log `FiberError: Cannot suspend in a force-closed fiber` for each
+  (seen under Laravel when a stop met a MySQL connect in flight). The same
+  line after a handler's `exit()` is gone too.
+- PDO PostgreSQL with `cairo_pool=N`: a statement on a PDO object that was
+  just taken from a `Cairo\Pool` could fail with "the connection is busy
+  with another query" while the request that had the object before gave its
+  server connection back (7 in 490,000 requests in a benchmark).
+
 ## [0.4.0] - 2026-11-19
 
 ### Added

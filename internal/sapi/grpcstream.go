@@ -31,6 +31,13 @@ type grpcStreamRequest struct {
 	ID int64 `json:"id"`
 }
 
+// grpcServerStreamRequest is what a server's stream is asked: the reply to
+// send stays PHP's array, which grpcserver converts.
+type grpcServerStreamRequest struct {
+	ID      int64    `json:"id"`
+	Message wire.Raw `json:"message"`
+}
+
 type clientStream struct {
 	cs     grpc.ClientStream
 	desc   protoreflect.MethodDescriptor
@@ -46,21 +53,24 @@ var (
 
 func init() {
 	registerPHP("grpc.php")
-	registerPHP("grpc_answer.php")
-	ops := map[string]func(context.Context, grpcStreamRequest) map[string]any{
-		"grpc.server.recv":      grpcServerRecv,
-		"grpc.server.send":      grpcServerSend,
-		"grpc.server.trySend":   grpcServerTrySend,
+	registerStreamOps(map[string]func(context.Context, grpcServerStreamRequest) map[string]any{
+		"grpc.server.recv":    grpcServerRecv,
+		"grpc.server.send":    grpcServerSend,
+		"grpc.server.trySend": grpcServerTrySend,
+	})
+	registerStreamOps(map[string]func(context.Context, grpcStreamRequest) map[string]any{
 		"grpc.stream.open":      grpcStreamOpen,
 		"grpc.stream.send":      grpcStreamSend,
 		"grpc.stream.closeSend": grpcStreamCloseSend,
 		"grpc.stream.recv":      grpcStreamRecv,
 		"grpc.stream.close":     grpcStreamClose,
-	}
+	})
+}
+
+func registerStreamOps[Request any](ops map[string]func(context.Context, Request) map[string]any) {
 	for name, fn := range ops {
-		fn := fn
 		core.RegisterOp(name, func(ctx context.Context, payload []byte) (any, error) {
-			var req grpcStreamRequest
+			var req Request
 			if err := wire.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
@@ -74,7 +84,7 @@ func grpcStatusFail(err error) map[string]any {
 	return grpcFail(int(st.Code()), st.Message())
 }
 
-func grpcServerRecv(_ context.Context, req grpcStreamRequest) map[string]any {
+func grpcServerRecv(_ context.Context, req grpcServerStreamRequest) map[string]any {
 	msg, eof, err := grpcserver.StreamRecv(req.ID)
 	if err != nil {
 		return grpcStatusFail(err)
@@ -85,7 +95,7 @@ func grpcServerRecv(_ context.Context, req grpcStreamRequest) map[string]any {
 	return map[string]any{"ok": true, "message": msg}
 }
 
-func grpcServerSend(_ context.Context, req grpcStreamRequest) map[string]any {
+func grpcServerSend(_ context.Context, req grpcServerStreamRequest) map[string]any {
 	if err := grpcserver.StreamSend(req.ID, req.Message); err != nil {
 		return grpcStatusFail(err)
 	}
@@ -94,7 +104,7 @@ func grpcServerSend(_ context.Context, req grpcStreamRequest) map[string]any {
 
 // grpcServerTrySend runs on the PHP thread (it never waits): queued is
 // false when the reply queue is full and PHP should use grpc.server.send.
-func grpcServerTrySend(_ context.Context, req grpcStreamRequest) map[string]any {
+func grpcServerTrySend(_ context.Context, req grpcServerStreamRequest) map[string]any {
 	queued, err := grpcserver.StreamTrySend(req.ID, req.Message)
 	if err != nil {
 		return grpcStatusFail(err)

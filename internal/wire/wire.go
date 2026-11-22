@@ -44,6 +44,12 @@ const (
 // MaxDepth is how deep lists and maps may nest.
 const MaxDepth = 64
 
+// Raw is one encoded value as it is. Unmarshal gives a Raw the bytes of its
+// value, a part of the data and not a copy, and AppendValue appends them
+// unchanged: how an operation takes or returns a value that something else
+// reads or wrote.
+type Raw []byte
+
 // Event is what Engine.Dispatch sends to a PHP thread. It appends itself as
 // a map, with "id" and, when deadline > 0, "deadline" among its entries.
 type Event interface {
@@ -140,6 +146,11 @@ func AppendValue(b []byte, v any) []byte {
 			return AppendNull(b)
 		}
 		return AppendJSON(b, v)
+	case Raw:
+		if len(v) == 0 {
+			return AppendNull(b)
+		}
+		return append(b, v...)
 	case []string:
 		b = AppendList(b, len(v))
 		for _, s := range v {

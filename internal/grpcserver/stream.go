@@ -1,7 +1,6 @@
 package grpcserver
 
 import (
-	"encoding/json"
 	"errors"
 	"io"
 	"sync"
@@ -10,9 +9,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/types/dynamicpb"
+
+	"github.com/cairophp/cairo/internal/wire"
 )
 
 // Streaming handlers: while PHP runs a streaming method, its gRPC stream is
@@ -22,7 +20,7 @@ import (
 
 type activeStream struct {
 	ss     grpc.ServerStream
-	desc   protoreflect.MethodDescriptor
+	method method
 	recvMu sync.Mutex
 
 	// Replies go through out to one writer goroutine, so PHP can queue a
@@ -31,7 +29,7 @@ type activeStream struct {
 	startOnce sync.Once
 	closeMu   sync.RWMutex // held for reading while a reply is queued
 	closed    bool
-	out       chan *dynamicpb.Message
+	out       chan []byte // encoded replies
 	done      chan struct{}
 	sendErr   atomic.Pointer[error]
 }
@@ -45,9 +43,9 @@ var (
 	nextStreamID atomic.Int64
 )
 
-func openStream(ss grpc.ServerStream, desc protoreflect.MethodDescriptor) int64 {
+func openStream(ss grpc.ServerStream, m method) int64 {
 	id := nextStreamID.Add(1)
-	streams.Store(id, &activeStream{ss: ss, desc: desc})
+	streams.Store(id, &activeStream{ss: ss, method: m})
 	return id
 }
 
@@ -74,7 +72,7 @@ func (st *activeStream) writer() {
 		if st.sendErr.Load() != nil {
 			continue // drain: the client is gone or the stream broke
 		}
-		if err := st.ss.SendMsg(m); err != nil {
+		if err := st.ss.SendMsg(&frame{m}); err != nil {
 			st.sendErr.Store(&err)
 		}
 	}
@@ -83,33 +81,36 @@ func (st *activeStream) writer() {
 // ErrStreamClosed is returned for a stream whose handler has returned.
 var ErrStreamClosed = errors.New("the stream has ended")
 
-// StreamRecv reads the client's next message as protojson; eof is true when
-// the client has finished sending.
-func StreamRecv(id int64) (msg json.RawMessage, eof bool, err error) {
+// StreamRecv reads the client's next message as PHP's array for it; eof is
+// true when the client has finished sending.
+func StreamRecv(id int64) (msg wire.Raw, eof bool, err error) {
 	v, ok := streams.Load(id)
 	if !ok {
 		return nil, false, ErrStreamClosed
 	}
 	st := v.(*activeStream)
-	if !st.desc.IsStreamingClient() {
+	if !st.method.desc.IsStreamingClient() {
 		return nil, false, errors.New("only client-streaming and bidirectional methods receive from the stream")
 	}
 	st.recvMu.Lock()
 	defer st.recvMu.Unlock()
-	in := dynamicpb.NewMessage(st.desc.Input())
-	if err := st.ss.RecvMsg(in); err != nil {
+	var in frame
+	if err := st.ss.RecvMsg(&in); err != nil {
 		if errors.Is(err, io.EOF) {
 			return nil, true, nil
 		}
 		return nil, false, err
 	}
-	b, err := protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(in)
-	return b, false, err
+	msg, err = st.method.in.toPHP(nil, in.data)
+	if err != nil {
+		return nil, false, status.Errorf(codes.Internal, "grpc: failed to unmarshal the received message: %v", err)
+	}
+	return msg, false, nil
 }
 
-// StreamSend queues one reply (protojson), waiting for room in the queue
-// while the stream is open.
-func StreamSend(id int64, msg []byte) error {
+// StreamSend queues one reply, PHP's array for it, waiting for room in the
+// queue while the stream is open.
+func StreamSend(id int64, msg wire.Raw) error {
 	st, out, err := sendable(id, msg)
 	if err != nil {
 		return err
@@ -125,7 +126,7 @@ func StreamSend(id int64, msg []byte) error {
 
 // StreamTrySend queues one reply if there is room, without waiting; queued
 // is false when the queue is full and the caller should use StreamSend.
-func StreamTrySend(id int64, msg []byte) (queued bool, err error) {
+func StreamTrySend(id int64, msg wire.Raw) (queued bool, err error) {
 	st, out, err := sendable(id, msg)
 	if err != nil {
 		return false, err
@@ -139,23 +140,23 @@ func StreamTrySend(id int64, msg []byte) (queued bool, err error) {
 	}
 }
 
-// sendable decodes msg for stream id and returns with closeMu held for
+// sendable encodes msg for stream id and returns with closeMu held for
 // reading, so the queue stays open until the caller has queued msg.
-func sendable(id int64, msg []byte) (*activeStream, *dynamicpb.Message, error) {
+func sendable(id int64, msg wire.Raw) (*activeStream, []byte, error) {
 	v, ok := streams.Load(id)
 	if !ok {
 		return nil, nil, ErrStreamClosed
 	}
 	st := v.(*activeStream)
-	if !st.desc.IsStreamingServer() {
+	if !st.method.desc.IsStreamingServer() {
 		return nil, nil, errors.New("a client-streaming method replies by returning its message")
 	}
 	if err := st.sendErr.Load(); err != nil {
 		return nil, nil, *err
 	}
-	out := dynamicpb.NewMessage(st.desc.Output())
-	if err := protojson.Unmarshal(msg, out); err != nil {
-		return nil, nil, status.Errorf(codes.Internal, "invalid %s: %v", st.desc.Output().FullName(), err)
+	out, err := st.method.out.fromPHP(msg)
+	if err != nil {
+		return nil, nil, status.Errorf(codes.Internal, "invalid %s: %v", st.method.desc.Output().FullName(), err)
 	}
 	st.closeMu.RLock()
 	if st.closed {
@@ -163,7 +164,7 @@ func sendable(id int64, msg []byte) (*activeStream, *dynamicpb.Message, error) {
 		return nil, nil, ErrStreamClosed
 	}
 	st.startOnce.Do(func() {
-		st.out = make(chan *dynamicpb.Message, sendQueue)
+		st.out = make(chan []byte, sendQueue)
 		st.done = make(chan struct{})
 		go st.writer()
 	})

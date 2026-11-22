@@ -20,4 +20,7 @@ int cairo_wire_decode(const char *buf, size_t len, zval *out);
 // allows. The caller frees out either way.
 int cairo_wire_encode(HashTable *args, smart_str *out);
 
+// The same for one value of any type that can cross.
+int cairo_wire_encode_value(zval *value, smart_str *out);
+
 #endif

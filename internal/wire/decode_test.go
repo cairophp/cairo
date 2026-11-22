@@ -219,6 +219,9 @@ func TestUnmarshalRaw(t *testing.T) {
 	if out := Encode(map[string]any{"message": got.Message, "missing": got.Missing}); string(out) != string(Encode(map[string]any{"message": message, "missing": nil})) {
 		t.Fatalf("appended as % x", out)
 	}
+	if out := Encode([]Raw{got.Message, got.Missing}); string(out) != string(Encode([]any{message, nil})) {
+		t.Fatalf("a list of them appended as % x", out)
+	}
 	cut := Encode(map[string]any{"message": message})
 	if err := Unmarshal(cut[:len(cut)-3], &got); err == nil {
 		t.Fatal("a value cut short filled a Raw")

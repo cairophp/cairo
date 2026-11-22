@@ -52,6 +52,38 @@ return function ($http): void {
         return Response::json($out);
     });
 
+    // Replies arrive faster than they are read here, and Go reads them
+    // ahead: none is lost, their order holds, and a status that ends the
+    // stream comes after the replies before it.
+    $http->get('/grpc-stream/ahead', function (Request $req): Response {
+        $greeter = new GreeterClient((string) $req->query('target'), ['timeout' => 20]);
+        $count = (int) $req->query('count');
+        $read = 0;
+        $ordered = true;
+        foreach ($greeter->CountUp(new CountRequest(name: 'n', count: $count)) as $reply) {
+            $ordered = $ordered && $reply->message === 'n ' . ++$read;
+            if ($read === 1) {
+                \Cairo\sleep(0.2);
+            }
+        }
+
+        $chat = $greeter->Chat();
+        foreach (['a', 'b', ''] as $name) {
+            $chat->send(new HelloRequest(name: $name));
+        }
+        $chatReplies = [$chat->recv()->message];
+        \Cairo\sleep(0.2);   // the second reply and the status are both there now
+        try {
+            while (($reply = $chat->recv()) !== null) {
+                $chatReplies[] = $reply->message;
+            }
+            $chatReplies[] = 'no status';
+        } catch (GrpcException $e) {
+            $chatReplies[] = 'status ' . $e->getCode();
+        }
+        return Response::json(['read' => $read, 'ordered' => $ordered, 'chat' => $chatReplies]);
+    });
+
     // A server stream that takes about 1s; many overlap on one PHP thread.
     $http->get('/grpc-stream/slow', function (Request $req): Response {
         $greeter = new GreeterClient((string) $req->query('target'));

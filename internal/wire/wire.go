@@ -151,6 +151,12 @@ func AppendValue(b []byte, v any) []byte {
 			return AppendNull(b)
 		}
 		return append(b, v...)
+	case []Raw:
+		b = AppendList(b, len(v))
+		for _, x := range v {
+			b = AppendValue(b, x)
+		}
+		return b
 	case []string:
 		b = AppendList(b, len(v))
 		for _, s := range v {

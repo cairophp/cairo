@@ -116,6 +116,9 @@ namespace Cairo\Grpc {
      */
     final class ServerStream implements \IteratorAggregate
     {
+        /** @var list<mixed> messages that Go read ahead of recv() */
+        private array $ahead = [];
+
         /** @internal */
         public function __construct(private readonly int $id, private readonly ?string $class = null)
         {
@@ -124,11 +127,14 @@ namespace Cairo\Grpc {
         /** @return TRequest|null */
         public function recv(): array|object|null
         {
-            $r = Stream::call('grpc.server.recv', ['id' => $this->id]);
-            if (!empty($r['eof'])) {
-                return null;
+            if ($this->ahead === []) {
+                // One operation brings all that has arrived.
+                $this->ahead = Stream::call('grpc.server.recv', ['id' => $this->id])['messages'] ?? [];
+                if ($this->ahead === []) {
+                    return null;
+                }
             }
-            return Stream::decode($r['message'], $this->class);
+            return Stream::decode(array_shift($this->ahead), $this->class);
         }
 
         /** @param TReply $message */

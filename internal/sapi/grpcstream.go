@@ -38,7 +38,10 @@ type clientStream struct {
 	method *grpcMethod
 	cancel context.CancelFunc
 	sendMu sync.Mutex
-	recvMu sync.Mutex
+
+	// The replies are read ahead of PHP, from its first recv.
+	readOnce sync.Once
+	ahead    *grpcserver.ReadAhead
 }
 
 var (
@@ -78,15 +81,15 @@ func grpcStatusFail(err error) map[string]any {
 	return grpcFail(int(st.Code()), st.Message())
 }
 
-func grpcServerRecv(_ context.Context, req grpcServerStreamRequest) map[string]any {
-	msg, eof, err := grpcserver.StreamRecv(req.ID)
+func grpcServerRecv(ctx context.Context, req grpcServerStreamRequest) map[string]any {
+	msgs, eof, err := grpcserver.StreamRecv(ctx, req.ID)
 	if err != nil {
 		return grpcStatusFail(err)
 	}
 	if eof {
 		return map[string]any{"ok": true, "eof": true}
 	}
-	return map[string]any{"ok": true, "message": msg}
+	return map[string]any{"ok": true, "messages": msgs}
 }
 
 func grpcServerSend(_ context.Context, req grpcServerStreamRequest) map[string]any {
@@ -186,32 +189,36 @@ func grpcStreamCloseSend(_ context.Context, req grpcStreamRequest) map[string]an
 	return map[string]any{"ok": true}
 }
 
-// grpcStreamRecv reads the next reply; at the end of a successful call it
-// returns "eof" with the headers and trailers, and a failed call returns its
-// status.
+// grpcStreamRecv returns the replies that have arrived, waiting for the
+// first when there is none. Once all are taken, a successful call returns
+// "eof" with the headers and trailers, and a failed call its status.
 func grpcStreamRecv(ctx context.Context, req grpcStreamRequest) map[string]any {
 	st, fail := loadClientStream(req.ID)
 	if fail != nil {
 		return fail
 	}
-	st.recvMu.Lock()
-	defer st.recvMu.Unlock()
-	var out grpcserver.Frame
-	err := whileWaiting(ctx, st, func() error { return st.cs.RecvMsg(&out) })
-	if errors.Is(err, io.EOF) {
+	st.readOnce.Do(func() { st.ahead = grpcserver.NewReadAhead(st.cs.Context(), st.recv) })
+	msgs, err := st.ahead.Take(ctx)
+	switch {
+	case err == nil:
+		return map[string]any{"ok": true, "messages": msgs}
+	case errors.Is(err, io.EOF):
 		header, _ := st.cs.Header()
 		return map[string]any{"ok": true, "eof": true, "headers": mdMap(header), "trailers": mdMap(st.cs.Trailer())}
+	case ctx.Err() != nil:
+		// The request was cancelled or ran out of time while it waited:
+		// its stream ends with it.
+		st.cancel()
 	}
-	if err != nil {
-		res := grpcStatusFail(err)
-		res["trailers"] = mdMap(st.cs.Trailer())
-		return res
+	return grpcStatusFail(err)
+}
+
+func (st *clientStream) recv() (wire.Raw, error) {
+	var out grpcserver.Frame
+	if err := st.cs.RecvMsg(&out); err != nil {
+		return nil, err
 	}
-	msg, fail := st.method.reply(out.Data)
-	if fail != nil {
-		return fail
-	}
-	return map[string]any{"ok": true, "message": msg}
+	return st.method.reply(out.Data)
 }
 
 func grpcStreamClose(_ context.Context, req grpcStreamRequest) map[string]any {

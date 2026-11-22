@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
@@ -235,10 +236,10 @@ func (m *grpcMethod) request(value wire.Raw) ([]byte, map[string]any) {
 var emptyList = wire.AppendList(nil, 0)
 
 // reply returns PHP's array for an encoded reply.
-func (m *grpcMethod) reply(data []byte) (wire.Raw, map[string]any) {
+func (m *grpcMethod) reply(data []byte) (wire.Raw, error) {
 	msg, err := m.out.ToPHP(make([]byte, 0, 2*len(data)+64), data)
 	if err != nil {
-		return nil, grpcFail(13, "grpc: failed to unmarshal the received message: "+err.Error())
+		return nil, status.Errorf(codes.Internal, "grpc: failed to unmarshal the received message: %v", err)
 	}
 	return msg, nil
 }
@@ -279,9 +280,9 @@ func grpcCall(ctx context.Context, req grpcCallRequest) map[string]any {
 		res["trailers"] = mdMap(trailer)
 		return res
 	}
-	msg, fail := m.reply(out.Data)
-	if fail != nil {
-		return fail
+	msg, err := m.reply(out.Data)
+	if err != nil {
+		return grpcStatusFail(err)
 	}
 	return map[string]any{"ok": true, "message": msg, "headers": mdMap(header), "trailers": mdMap(trailer)}
 }

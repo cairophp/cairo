@@ -231,8 +231,8 @@ change the PHP API; patch versions do not.
 - Performance: a read or a write on a hooked socket (PDO MySQL, streams) is
   tried at once, and the fiber waits only when the socket is not ready.
   Before, each one first asked the kernel whether the socket was ready. A
-  request with two MySQL queries makes 15.7 system calls instead of 19.3 and
-  takes 4% less CPU.
+  request with two MySQL queries makes 4 system calls fewer, of 20; its
+  requests per second do not change measurably.
 - A thread that is recycled (`maxRequests()`, `maxMemory()`) serves until
   its replacement has run `server.php`. Before, the new thread took its
   place while it still booted, and requests waited behind the boot: with

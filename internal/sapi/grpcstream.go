@@ -2,10 +2,8 @@ package sapi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,9 +11,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/cairophp/cairo/internal/core"
 	"github.com/cairophp/cairo/internal/grpcserver"
@@ -31,12 +26,24 @@ type grpcStreamRequest struct {
 	ID int64 `json:"id"`
 }
 
+// grpcServerStreamRequest is what a server's stream is asked: the reply to
+// send stays PHP's array, which grpcserver converts.
+type grpcServerStreamRequest struct {
+	ID      int64    `json:"id"`
+	Message wire.Raw `json:"message"`
+}
+
 type clientStream struct {
 	cs     grpc.ClientStream
-	desc   protoreflect.MethodDescriptor
+	method *grpcMethod
 	cancel context.CancelFunc
-	sendMu sync.Mutex
-	recvMu sync.Mutex
+
+	// The requests wait here for their writer, in the order PHP sent them.
+	sends *grpcserver.SendQueue
+
+	// The replies are read ahead of PHP, from its first recv.
+	readOnce sync.Once
+	ahead    *grpcserver.ReadAhead
 }
 
 var (
@@ -46,21 +53,23 @@ var (
 
 func init() {
 	registerPHP("grpc.php")
-	registerPHP("grpc_answer.php")
-	ops := map[string]func(context.Context, grpcStreamRequest) map[string]any{
-		"grpc.server.recv":      grpcServerRecv,
-		"grpc.server.send":      grpcServerSend,
-		"grpc.server.trySend":   grpcServerTrySend,
+	registerStreamOps(map[string]func(context.Context, grpcServerStreamRequest) map[string]any{
+		"grpc.server.recv": grpcServerRecv,
+		"grpc.server.send": grpcServerSend,
+	})
+	registerStreamOps(map[string]func(context.Context, grpcStreamRequest) map[string]any{
 		"grpc.stream.open":      grpcStreamOpen,
 		"grpc.stream.send":      grpcStreamSend,
 		"grpc.stream.closeSend": grpcStreamCloseSend,
 		"grpc.stream.recv":      grpcStreamRecv,
 		"grpc.stream.close":     grpcStreamClose,
-	}
+	})
+}
+
+func registerStreamOps[Request any](ops map[string]func(context.Context, Request) map[string]any) {
 	for name, fn := range ops {
-		fn := fn
 		core.RegisterOp(name, func(ctx context.Context, payload []byte) (any, error) {
-			var req grpcStreamRequest
+			var req Request
 			if err := wire.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
@@ -74,53 +83,33 @@ func grpcStatusFail(err error) map[string]any {
 	return grpcFail(int(st.Code()), st.Message())
 }
 
-func grpcServerRecv(_ context.Context, req grpcStreamRequest) map[string]any {
-	msg, eof, err := grpcserver.StreamRecv(req.ID)
+func grpcServerRecv(ctx context.Context, req grpcServerStreamRequest) map[string]any {
+	msgs, eof, err := grpcserver.StreamRecv(ctx, req.ID)
 	if err != nil {
 		return grpcStatusFail(err)
 	}
 	if eof {
 		return map[string]any{"ok": true, "eof": true}
 	}
-	return map[string]any{"ok": true, "message": msg}
+	return map[string]any{"ok": true, "messages": msgs}
 }
 
-func grpcServerSend(_ context.Context, req grpcStreamRequest) map[string]any {
+func grpcServerSend(_ context.Context, req grpcServerStreamRequest) map[string]any {
 	if err := grpcserver.StreamSend(req.ID, req.Message); err != nil {
 		return grpcStatusFail(err)
 	}
 	return map[string]any{"ok": true}
 }
 
-// grpcServerTrySend runs on the PHP thread (it never waits): queued is
-// false when the reply queue is full and PHP should use grpc.server.send.
-func grpcServerTrySend(_ context.Context, req grpcStreamRequest) map[string]any {
-	queued, err := grpcserver.StreamTrySend(req.ID, req.Message)
-	if err != nil {
-		return grpcStatusFail(err)
-	}
-	return map[string]any{"ok": true, "queued": queued}
-}
-
 // grpcStreamOpen starts a streaming call. The stream is not tied to the
 // opening fiber (an async() task may hand it on), but keeps the request's
 // deadline, and its own timeout when one is given.
 func grpcStreamOpen(ctx context.Context, req grpcStreamRequest) map[string]any {
-	files, err := grpcRegistry(req.Protos, req.Descriptors)
-	if err != nil {
-		return grpcFail(13, err.Error())
+	m, fail := grpcMethodOf(&req.grpcCallRequest)
+	if fail != nil {
+		return fail
 	}
-	name := strings.TrimPrefix(req.Method, "/")
-	svc, meth, _ := strings.Cut(name, "/")
-	d, err := files.FindDescriptorByName(protoreflect.FullName(svc))
-	sd, isSvc := d.(protoreflect.ServiceDescriptor)
-	if err != nil || !isSvc {
-		return grpcFail(12, "service "+svc+" is not in the client's descriptors")
-	}
-	md := sd.Methods().ByName(protoreflect.Name(meth))
-	if md == nil {
-		return grpcFail(12, "method "+meth+" is not in "+svc)
-	}
+	md := m.desc
 	conn, err := grpcConn(req.Target, req.TLS)
 	if err != nil {
 		return grpcFail(14, err.Error())
@@ -141,13 +130,14 @@ func grpcStreamOpen(ctx context.Context, req grpcStreamRequest) map[string]any {
 	if len(req.Metadata) > 0 {
 		sctx = metadata.NewOutgoingContext(sctx, metadata.MD(lowerKeys(req.Metadata)))
 	}
-	cs, err := conn.NewStream(sctx, &grpc.StreamDesc{ServerStreams: md.IsStreamingServer(), ClientStreams: md.IsStreamingClient()}, "/"+name)
+	cs, err := conn.NewStream(sctx, &grpc.StreamDesc{ServerStreams: md.IsStreamingServer(), ClientStreams: md.IsStreamingClient()}, m.path)
 	if err != nil {
 		cancel()
 		return grpcStatusFail(err)
 	}
 	id := clientNextID.Add(1)
-	clientStreams.Store(id, &clientStream{cs: cs, desc: md, cancel: cancel})
+	sends := grpcserver.NewSendQueue(func(in []byte) error { return cs.SendMsg(&grpcserver.Frame{Data: in}) })
+	clientStreams.Store(id, &clientStream{cs: cs, method: m, cancel: cancel, sends: sends})
 	return map[string]any{"ok": true, "id": id}
 }
 
@@ -159,82 +149,104 @@ func loadClientStream(id int64) (*clientStream, map[string]any) {
 	return v.(*clientStream), nil
 }
 
-// whileWaiting cancels the stream if the calling fiber's context ends while
-// it waits (the request was cancelled or ran out of time).
-func whileWaiting(ctx context.Context, st *clientStream, fn func() error) error {
-	stop := context.AfterFunc(ctx, st.cancel)
-	defer stop()
-	return fn()
+// trySend queues one request of stream id if the queue has room, without
+// waiting. It runs on the PHP thread (goGrpcClientSend).
+func (st *clientStream) trySend(msg wire.Raw) (queued bool, err error) {
+	in, err := st.method.request(msg)
+	if err != nil {
+		return false, err
+	}
+	queued, err = st.sends.TryPut(in)
+	return queued || sendEnded(err), sent(err)
 }
 
+// A write that failed with io.EOF means the server ended the call: its
+// status comes with the next recv, and what PHP still sends goes nowhere.
+func sendEnded(err error) bool { return errors.Is(err, io.EOF) }
+
+func sent(err error) error {
+	if sendEnded(err) {
+		return nil
+	}
+	return err
+}
+
+// grpcStreamSend queues one request, waiting for room in the queue. If the
+// calling fiber's context ends while it waits (the request was cancelled or
+// ran out of time), its stream ends with it.
 func grpcStreamSend(ctx context.Context, req grpcStreamRequest) map[string]any {
 	st, fail := loadClientStream(req.ID)
 	if fail != nil {
 		return fail
 	}
-	in := dynamicpb.NewMessage(st.desc.Input())
-	if len(req.Message) > 0 && string(req.Message) != "null" && string(req.Message) != "[]" {
-		if err := protojson.Unmarshal(req.Message, in); err != nil {
-			return grpcFail(3, "request does not match "+string(st.desc.Input().FullName())+": "+err.Error())
-		}
-	}
-	st.sendMu.Lock()
-	defer st.sendMu.Unlock()
-	err := whileWaiting(ctx, st, func() error { return st.cs.SendMsg(in) })
-	if errors.Is(err, io.EOF) {
-		// The server ended the call; its status comes with the next recv.
-		return map[string]any{"ok": true, "ended": true}
+	in, err := st.method.request(req.Message)
+	if err == nil {
+		err = sent(st.sends.Put(ctx, in))
 	}
 	if err != nil {
+		if ctx.Err() != nil {
+			st.cancel()
+		}
 		return grpcStatusFail(err)
 	}
 	return map[string]any{"ok": true}
 }
 
-func grpcStreamCloseSend(_ context.Context, req grpcStreamRequest) map[string]any {
+// grpcStreamCloseSend returns once the requests that were queued are
+// written, with the status of one that could not be.
+func grpcStreamCloseSend(ctx context.Context, req grpcStreamRequest) map[string]any {
 	st, fail := loadClientStream(req.ID)
 	if fail != nil {
 		return fail
 	}
-	st.sendMu.Lock()
-	defer st.sendMu.Unlock()
+	stop := context.AfterFunc(ctx, st.cancel) // a writer that waits on a cancelled request's stream
+	defer stop()
+	if err := sent(st.sends.Close()); err != nil {
+		return grpcStatusFail(err)
+	}
 	if err := st.cs.CloseSend(); err != nil {
 		return grpcStatusFail(err)
 	}
 	return map[string]any{"ok": true}
 }
 
-// grpcStreamRecv reads the next reply; at the end of a successful call it
-// returns "eof" with the headers and trailers, and a failed call returns its
-// status.
+// grpcStreamRecv returns the replies that have arrived, waiting for the
+// first when there is none. Once all are taken, a successful call returns
+// "eof" with the headers and trailers, and a failed call its status.
 func grpcStreamRecv(ctx context.Context, req grpcStreamRequest) map[string]any {
 	st, fail := loadClientStream(req.ID)
 	if fail != nil {
 		return fail
 	}
-	st.recvMu.Lock()
-	defer st.recvMu.Unlock()
-	out := dynamicpb.NewMessage(st.desc.Output())
-	err := whileWaiting(ctx, st, func() error { return st.cs.RecvMsg(out) })
-	if errors.Is(err, io.EOF) {
+	st.readOnce.Do(func() { st.ahead = grpcserver.NewReadAhead(st.cs.Context(), st.recv) })
+	msgs, err := st.ahead.Take(ctx)
+	switch {
+	case err == nil:
+		return map[string]any{"ok": true, "messages": msgs}
+	case errors.Is(err, io.EOF):
 		header, _ := st.cs.Header()
 		return map[string]any{"ok": true, "eof": true, "headers": mdMap(header), "trailers": mdMap(st.cs.Trailer())}
+	case ctx.Err() != nil:
+		// The request was cancelled or ran out of time while it waited:
+		// its stream ends with it.
+		st.cancel()
 	}
-	if err != nil {
-		res := grpcStatusFail(err)
-		res["trailers"] = mdMap(st.cs.Trailer())
-		return res
+	return grpcStatusFail(err)
+}
+
+func (st *clientStream) recv() (wire.Raw, error) {
+	var out grpcserver.Frame
+	if err := st.cs.RecvMsg(&out); err != nil {
+		return nil, err
 	}
-	msg, err := protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(out)
-	if err != nil {
-		return grpcFail(13, err.Error())
-	}
-	return map[string]any{"ok": true, "message": json.RawMessage(msg)}
+	return st.method.reply(out.Data)
 }
 
 func grpcStreamClose(_ context.Context, req grpcStreamRequest) map[string]any {
 	if v, ok := clientStreams.LoadAndDelete(req.ID); ok {
-		v.(*clientStream).cancel()
+		st := v.(*clientStream)
+		st.cancel()
+		_ = st.sends.Close() // ends the writer; what it had left has no stream to go to
 	}
 	return map[string]any{"ok": true}
 }

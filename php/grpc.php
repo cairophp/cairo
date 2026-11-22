@@ -116,6 +116,9 @@ namespace Cairo\Grpc {
      */
     final class ServerStream implements \IteratorAggregate
     {
+        /** @var list<mixed> messages that Go read ahead of recv() */
+        private array $ahead = [];
+
         /** @internal */
         public function __construct(private readonly int $id, private readonly ?string $class = null)
         {
@@ -124,25 +127,28 @@ namespace Cairo\Grpc {
         /** @return TRequest|null */
         public function recv(): array|object|null
         {
-            $r = Stream::call('grpc.server.recv', ['id' => $this->id]);
-            if (!empty($r['eof'])) {
-                return null;
+            if ($this->ahead === []) {
+                // One operation brings all that has arrived.
+                $this->ahead = Stream::call('grpc.server.recv', ['id' => $this->id])['messages'] ?? [];
+                if ($this->ahead === []) {
+                    return null;
+                }
             }
-            return Stream::decode($r['message'], $this->class);
+            return Stream::decode(array_shift($this->ahead), $this->class);
         }
 
         /** @param TReply $message */
         public function send(array|object $message): void
         {
-            // Queued without a fiber switch while Go's reply queue has room;
-            // a full queue waits in a Go operation instead.
-            $payload = ['id' => $this->id, 'message' => Stream::encode($message)];
-            $r = \Cairo\Internal\Go::callNow('grpc.server.trySend', $payload);
-            if (!is_array($r) || !($r['ok'] ?? false)) {
-                throw new Exception((int) ($r['code'] ?? Code::UNKNOWN), (string) ($r['error'] ?? 'stream failed'));
+            // Queued by one call into Go, without a fiber switch, while the
+            // reply queue has room; a full queue waits in a Go operation.
+            $message = Stream::encode($message);
+            $queued = \cairo_grpc_send($this->id, $message);
+            if (is_array($queued)) {
+                throw new Exception($queued[0], $queued[1]);
             }
-            if (!($r['queued'] ?? false)) {
-                Stream::call('grpc.server.send', $payload);
+            if (!$queued) {
+                Stream::call('grpc.server.send', ['id' => $this->id, 'message' => $message]);
             }
         }
 

@@ -10,14 +10,13 @@
 // The driver registers as "pgsql" when PHP has no pdo_pgsql of its own.
 
 #include <errno.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <php.h>
 #include <zend_exceptions.h>
 #include <zend_smart_str.h>
-#include <ext/json/php_json.h>
-#include <ext/standard/base64.h>
 #include <ext/standard/file.h>
 #include <ext/pdo/php_pdo.h>
 #include <ext/pdo/php_pdo_driver.h>
@@ -25,6 +24,7 @@
 #include <main/php_memory_streams.h>
 
 #include "pgsql.h"
+#include "wire.h"
 #include "_cgo_export.h"
 
 void cairo_pg_result_free(cairo_pg_result *r)
@@ -71,44 +71,52 @@ typedef struct {
 
 // ---- talking to Go ---------------------------------------------------------
 
-// Sends one request. Returns 1 with *out set to the decoded response array,
-// or 0 when an exception is pending (the request's deadline passed). Every
-// reply from a connection carries its transaction status, kept on H (NULL
-// while connecting) so inTransaction() costs no call to Go.
-static int pg_call(cairo_pg_dbh *H, zval *req, zval *out)
+// Runs one request on this thread, which waits for Go: outside a request
+// fiber, with the hook off, or for what does no I/O worth suspending for.
+// *out is the response array, or undefined when the request or the response
+// could not cross (an exception is then pending for the request).
+static void pg_sync(zval *req, zval *out)
 {
-	smart_str json = {0};
-	php_json_encode(&json, req, 0);
-	smart_str_0(&json);
+	smart_str wire = {0};
 	ZVAL_UNDEF(out);
-
-	if (EG(active_fiber) != NULL) {
-		zval fname, arg, retval;
-		ZVAL_STRING(&fname, "Cairo\\Internal\\Hooks::pg");
-		ZVAL_STR_COPY(&arg, json.s);
-		ZVAL_UNDEF(&retval);
-		int rc = call_user_function(NULL, NULL, &fname, &retval, 1, &arg);
-		zval_ptr_dtor(&fname);
-		zval_ptr_dtor(&arg);
-		if (EG(exception) != NULL) {
-			zval_ptr_dtor(&retval);
-			smart_str_free(&json);
-			return 0;
+	if (cairo_wire_encode(Z_ARRVAL_P(req), &wire) == SUCCESS && ZSTR_LEN(wire.s) <= INT_MAX) {
+		int n = 0;
+		char *res = goPgSync(ZSTR_VAL(wire.s), (int)ZSTR_LEN(wire.s), &n);
+		if (res == NULL || cairo_wire_decode(res, (size_t)n, out) == FAILURE) {
+			ZVAL_UNDEF(out);
 		}
-		if (rc == SUCCESS && Z_TYPE(retval) == IS_STRING) {
-			php_json_decode_ex(out, Z_STRVAL(retval), Z_STRLEN(retval), PHP_JSON_OBJECT_AS_ARRAY, 64);
-		}
-		zval_ptr_dtor(&retval);
-	}
-	if (Z_TYPE_P(out) != IS_ARRAY) {
-		zval_ptr_dtor(out);
-		char *res = goPgSync(ZSTR_VAL(json.s), (int)ZSTR_LEN(json.s));
-		php_json_decode_ex(out, res, strlen(res), PHP_JSON_OBJECT_AS_ARRAY, 64);
 		free(res);
 	}
-	smart_str_free(&json);
+	smart_str_free(&wire);
+}
+
+// Sends one request. Returns 1 with *out set to the response array, or 0
+// when an exception is pending (the request's deadline passed). The request
+// and the response cross as arrays in internal/wire's form, so a parameter
+// and a large object's bytes are sent as they are. Every reply from a
+// connection carries its transaction status, kept on H (NULL while
+// connecting) so inTransaction() costs no call to Go.
+static int pg_call(cairo_pg_dbh *H, zval *req, zval *out)
+{
+	ZVAL_UNDEF(out);
+	if (EG(active_fiber) != NULL) {
+		zval fname;
+		ZVAL_STRING(&fname, "Cairo\\Internal\\Hooks::pg");
+		call_user_function(NULL, NULL, &fname, out, 1, req);
+		zval_ptr_dtor(&fname);
+		if (EG(exception) != NULL) {
+			zval_ptr_dtor(out);
+			return 0;
+		}
+	}
 	if (Z_TYPE_P(out) != IS_ARRAY) {
 		zval_ptr_dtor(out);
+		pg_sync(req, out);
+		if (EG(exception) != NULL) {
+			return 0;
+		}
+	}
+	if (Z_TYPE_P(out) != IS_ARRAY) {
 		array_init(out);
 		add_assoc_bool(out, "ok", 0);
 		add_assoc_string(out, "sqlstate", "HY000");
@@ -199,7 +207,8 @@ static cairo_pg_result *pg_query(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zend_string *
 		if (params == NULL || Z_TYPE(params[i]) != IS_STRING) {
 			add_next_index_null(&list);
 		} else {
-			add_next_index_str(&list, php_base64_encode((unsigned char *)Z_STRVAL(params[i]), Z_STRLEN(params[i])));
+			Z_TRY_ADDREF(params[i]);
+			add_next_index_zval(&list, &params[i]);
 		}
 	}
 	add_assoc_zval(&req, "params", &list);
@@ -538,13 +547,10 @@ static void pg_close(pdo_dbh_t *dbh)
 		return;
 	}
 	if (H->conn > 0) {
-		zval req;
+		zval req, resp;
 		pg_request(&req, "close", H->conn);
-		smart_str json = {0};
-		php_json_encode(&json, &req, 0);
-		smart_str_0(&json);
-		free(goPgSync(ZSTR_VAL(json.s), (int)ZSTR_LEN(json.s)));   // no I/O wait worth suspending for
-		smart_str_free(&json);
+		pg_sync(&req, &resp);
+		zval_ptr_dtor(&resp);
 		zval_ptr_dtor(&req);
 	}
 	pefree(H->errmsg, dbh->is_persistent);
@@ -636,14 +642,8 @@ static int pg_status(pdo_dbh_t *dbh, zval *resp)
 	cairo_pg_dbh *H = dbh->driver_data;
 	zval req;
 	pg_request(&req, "status", H->conn);
-	smart_str json = {0};
-	php_json_encode(&json, &req, 0);
-	smart_str_0(&json);
-	char *res = goPgSync(ZSTR_VAL(json.s), (int)ZSTR_LEN(json.s));
-	smart_str_free(&json);
+	pg_sync(&req, resp);
 	zval_ptr_dtor(&req);
-	php_json_decode_ex(resp, res, strlen(res), PHP_JSON_OBJECT_AS_ARRAY, 8);
-	free(res);
 	return Z_TYPE_P(resp) == IS_ARRAY && resp_ok(resp);
 }
 
@@ -769,7 +769,7 @@ static bool pg_copy_in(pdo_dbh_t *dbh, char *sql, zend_string *data)
 	zval req, resp;
 	pg_request(&req, "copy_in", H->conn);
 	add_assoc_string(&req, "sql", sql);
-	add_assoc_str(&req, "data", php_base64_encode((unsigned char *)ZSTR_VAL(data), ZSTR_LEN(data)));
+	add_assoc_str(&req, "data", zend_string_copy(data));
 	efree(sql);
 	if (!pg_method_call(dbh, &req, &resp)) {
 		return false;
@@ -792,7 +792,7 @@ static zend_string *pg_copy_out(pdo_dbh_t *dbh, char *sql)
 	zval *data = zend_hash_str_find(Z_ARRVAL(resp), "data", 4);
 	zend_string *out = NULL;
 	if (data != NULL && Z_TYPE_P(data) == IS_STRING) {
-		out = php_base64_decode((unsigned char *)Z_STRVAL_P(data), Z_STRLEN_P(data));
+		out = zend_string_copy(Z_STR_P(data));
 	}
 	zval_ptr_dtor(&resp);
 	if (out == NULL) {
@@ -1095,7 +1095,7 @@ static ssize_t pg_lob_write(php_stream *stream, const char *buf, size_t count)
 	zval req, resp;
 	pg_lo_request(dbh, &req, "write");
 	add_assoc_long(&req, "fd", L->fd);
-	add_assoc_str(&req, "data", php_base64_encode((const unsigned char *)buf, count));
+	add_assoc_stringl(&req, "data", buf, count);
 	if (!pg_lo_call(dbh, &req, &resp)) {
 		pg_lob_warn(dbh);
 		return -1;
@@ -1121,16 +1121,11 @@ static ssize_t pg_lob_read(php_stream *stream, char *buf, size_t count)
 		return -1;
 	}
 	zval *data = zend_hash_str_find(Z_ARRVAL(resp), "data", 4);
-	zend_string *bytes = data != NULL && Z_TYPE_P(data) == IS_STRING
-		? php_base64_decode((unsigned char *)Z_STRVAL_P(data), Z_STRLEN_P(data)) : NULL;
-	zval_ptr_dtor(&resp);
-	size_t n = bytes != NULL ? MIN(ZSTR_LEN(bytes), count) : 0;
+	size_t n = data != NULL && Z_TYPE_P(data) == IS_STRING ? MIN(Z_STRLEN_P(data), count) : 0;
 	if (n > 0) {
-		memcpy(buf, ZSTR_VAL(bytes), n);
+		memcpy(buf, Z_STRVAL_P(data), n);
 	}
-	if (bytes != NULL) {
-		zend_string_release(bytes);
-	}
+	zval_ptr_dtor(&resp);
 	if (n < count) {
 		stream->eof = 1;   // loread returns less only at the end of the object
 	}

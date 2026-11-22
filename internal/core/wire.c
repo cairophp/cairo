@@ -273,13 +273,20 @@ static int encode_value(smart_str *out, zval *v, int depth)
 	return FAILURE; // a resource
 }
 
+static int encoded(int status)
+{
+	if (status == FAILURE && !EG(exception)) {
+		zend_value_error("what crosses to Go must be null, bool, int, float, string, array or object, nested at most %d deep", WIRE_MAX_DEPTH);
+	}
+	return status;
+}
+
 int cairo_wire_encode(HashTable *args, smart_str *out)
 {
-	if (encode_table(out, args, zend_array_is_list(args), 0) == SUCCESS) {
-		return SUCCESS;
-	}
-	if (!EG(exception)) {
-		zend_value_error("the arguments of a Go operation must be null, bool, int, float, string, array or object, nested at most %d deep", WIRE_MAX_DEPTH);
-	}
-	return FAILURE;
+	return encoded(encode_table(out, args, zend_array_is_list(args), 0));
+}
+
+int cairo_wire_encode_value(zval *value, smart_str *out)
+{
+	return encoded(encode_value(out, value, 0));
 }

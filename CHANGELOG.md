@@ -177,6 +177,36 @@ change the PHP API; patch versions do not.
   ns, and a route that queries MySQL through PDO, which parks its fiber for
   every wait on the socket, answers 16% more requests per second. Fibers
   that sleep until the same moment wake in the order they went to sleep.
+- Performance: a gRPC message goes between protobuf's bytes and PHP's array
+  directly, with no message object and no JSON text in between, in the
+  server and in `Cairo\Grpc\Client`. Handlers and generated classes see the
+  same arrays as before; a message with a `google.protobuf` type, a type
+  that is not proto3 and any unusual value still go through protojson.
+  Unary calls served: 11% more per second (ghz at 64 concurrent calls, 4
+  PHP threads on 2 CPUs); a route that makes one through the client: 3 to
+  8% more.
+- Performance: a gRPC stream no longer costs a Go operation per message, on
+  either side. `send()` of a handler's stream and of a client's stream
+  queues the message in Go with one call, and Go reads what the other side
+  sends ahead of PHP (64 messages or 1 MiB at most), so that one `recv()`
+  brings all that has arrived. With 100 messages per call: a handler that
+  sends them answers 1,539 to 4,337 calls per second and one that reads
+  them 977 to 4,082 (ghz, as above); a route that reads them through the
+  client 802 to 3,140 requests per second and one that sends them 811 to
+  3,244 (wrk at 32 connections).
+- gRPC, at the edges: a reply that holds `NAN`, `INF` or a string that is
+  not UTF-8 ends its call with INTERNAL (the handler's fiber ended with an
+  uncaught exception before). `ClientStream::send()` returns when the
+  request is queued, as `ServerStream::send()` does: a request that could
+  not be written is thrown by the next `send()` or by `closeSend()`, which
+  returns once all are written. A message that cannot be read ends the
+  reading of its stream, where the next `recv()` went on to the message
+  after it.
+- Performance: PDO PostgreSQL sends each request to Go, and gets its
+  answer, as an array in Cairo's binary form instead of JSON text, and the
+  parameters of a statement, COPY data and the bytes of a large object are
+  no longer base64 on the way. A route with one query: 2.6% more requests
+  per second (wrk at 64 connections, 4 PHP threads on 2 CPUs).
 
 ### Removed
 
@@ -211,6 +241,14 @@ change the PHP API; patch versions do not.
   just taken from a `Cairo\Pool` could fail with "the connection is busy
   with another query" while the request that had the object before gave its
   server connection back (7 in 490,000 requests in a benchmark).
+- gRPC: a damaged request no longer stops the server. protobuf-go panics on
+  a map entry whose key comes a second time with another wire type, and in
+  a client-streaming or bidirectional method nothing recovered that panic.
+  Such a message now ends its call with INTERNAL, like any other that
+  cannot be read.
+- `Cairo\Grpc\Client`: the same damaged message in a reply, from a server
+  that an app calls, no longer stops the Cairo process that made the call.
+  The call ends with INTERNAL.
 
 ## [0.4.0] - 2026-11-19
 

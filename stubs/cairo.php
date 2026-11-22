@@ -1237,7 +1237,10 @@ namespace Cairo\Grpc {
         {
         }
 
-        /** No more requests: the server sees the end of the client's stream. */
+        /**
+         * No more requests: the server sees the end of the client's stream.
+         * Returns once the requests that were sent are written.
+         */
         public function closeSend(): void
         {
         }

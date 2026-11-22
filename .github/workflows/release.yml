@@ -48,6 +48,8 @@ jobs:
         with:
           name: cairo-linux-${{ matrix.arch }}
           path: dist/cairo-linux-${{ matrix.arch }}
+          # Only the publish job below reads it; the release keeps the binary.
+          retention-days: 1
 
   publish:
     needs: build

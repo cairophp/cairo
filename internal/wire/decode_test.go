@@ -92,6 +92,20 @@ func TestUnmarshalEmptyAndNull(t *testing.T) {
 	}
 }
 
+// A []byte keeps apart an empty string and null, which is how the pgsql
+// driver's parameters tell ” from SQL NULL.
+func TestUnmarshalEmptyBytes(t *testing.T) {
+	var got struct {
+		Params [][]byte `json:"params"`
+	}
+	if err := Unmarshal(Encode(map[string]any{"params": []any{"", nil, "\x00x"}}), &got); err != nil {
+		t.Fatal(err)
+	}
+	if p := got.Params; len(p) != 3 || p[0] == nil || len(p[0]) != 0 || p[1] != nil || string(p[2]) != "\x00x" {
+		t.Errorf("params: %q", p)
+	}
+}
+
 // An object that PHP's json extension encoded arrives as JSON text.
 func TestUnmarshalJSONValue(t *testing.T) {
 	b := AppendMap(nil, 2)
@@ -185,4 +199,31 @@ func BenchmarkUnmarshal(b *testing.B) {
 			}
 		}
 	})
+}
+
+// A Raw field gets its value's own bytes, whatever the value, and they go
+// back out unchanged.
+func TestUnmarshalRaw(t *testing.T) {
+	message := map[string]any{"list": []any{int64(1), "two"}, "n": 1.5}
+	var got struct {
+		ID      int64 `json:"id"`
+		Message Raw   `json:"message"`
+		Missing Raw   `json:"missing"`
+	}
+	if err := Unmarshal(Encode(map[string]any{"id": int64(7), "message": message}), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != 7 || string(got.Message) != string(Encode(message)) || got.Missing != nil {
+		t.Fatalf("got %+v", got)
+	}
+	if out := Encode(map[string]any{"message": got.Message, "missing": got.Missing}); string(out) != string(Encode(map[string]any{"message": message, "missing": nil})) {
+		t.Fatalf("appended as % x", out)
+	}
+	if out := Encode([]Raw{got.Message, got.Missing}); string(out) != string(Encode([]any{message, nil})) {
+		t.Fatalf("a list of them appended as % x", out)
+	}
+	cut := Encode(map[string]any{"message": message})
+	if err := Unmarshal(cut[:len(cut)-3], &got); err == nil {
+		t.Fatal("a value cut short filled a Raw")
+	}
 }

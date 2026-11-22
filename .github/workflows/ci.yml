@@ -119,7 +119,12 @@ jobs:
           CAIRO_TEST_PGSQL_USER: cairo
           CAIRO_TEST_PGSQL_PASSWORD: cairo
         run: go test ./test -count=1 -v
+      # Kept for main only: a pull request's binary is of no use once its
+      # tests have run, and every one counts against the artifact storage.
+      # Tags upload theirs in release.yml.
       - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
           name: cairo-linux-${{ matrix.arch }}-static
           path: dist/cairo
+          retention-days: 7

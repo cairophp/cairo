@@ -100,6 +100,41 @@ func TestGRPCStreamingHandlers(t *testing.T) {
 	}
 }
 
+// A handler that sends faster than its client reads fills the stream's
+// queue of replies and then waits for room: every reply arrives, in order.
+func TestGRPCStreamToASlowClient(t *testing.T) {
+	g := newGreeter(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	const n = 20000
+	cs, md := g.stream(ctx, t, "CountUp")
+	if err := cs.SendMsg(msg(md.Input(), map[string]any{"name": "n", "count": int32(n)})); err != nil {
+		t.Fatal(err)
+	}
+	_ = cs.CloseSend()
+	got := 0
+	for {
+		out := dynamicpb.NewMessage(md.Output())
+		if err := cs.RecvMsg(out); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		got++
+		if want := fmt.Sprintf("n %d", got); replyText(out) != want {
+			t.Fatalf("reply %d is %q", got, replyText(out))
+		}
+		if got == 1 {
+			// The client is slow here, it waits for nothing: the replies
+			// behind this one outgrow the stream's window and its queue.
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+	if got != n {
+		t.Fatalf("%d of %d replies arrived", got, n)
+	}
+}
+
 // PHP streaming calls through the generated client, against the same
 // server's PHP handlers.
 func TestGRPCStreamingClient(t *testing.T) {

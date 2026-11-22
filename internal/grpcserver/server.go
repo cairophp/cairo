@@ -1,14 +1,15 @@
 // Package grpcserver serves the gRPC servers declared in server.php.
 //
 // Go compiles the declared .proto files at startup, so neither protoc nor
-// generated Go code is needed. For each call, Go decodes the request with the
-// method's descriptor, hands PHP the message as JSON (protojson), and encodes
-// PHP's reply the same way. Health checking and server reflection are built in.
+// generated Go code is needed. For each call, Go converts the request with
+// the method's descriptor into the array protojson has for it, hands PHP that
+// array, and converts PHP's reply the same way (message.go). Health checking
+// and server reflection are built in.
 package grpcserver
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -26,16 +27,16 @@ import (
 	reflectionv1 "google.golang.org/grpc/reflection/grpc_reflection_v1"
 	reflectionv1alpha "google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
-	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/cairophp/cairo/internal/middleware"
 	"github.com/cairophp/cairo/internal/wire"
 )
 
-// Dispatcher sends a call to PHP and returns PHP's JSON response.
+// Dispatcher sends a call to PHP and returns PHP's answer: its status in
+// meta, and its reply or the status's text in body.
 type Dispatcher interface {
 	Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte, err error)
 }
@@ -44,6 +45,7 @@ type method struct {
 	serviceID int
 	name      string
 	desc      protoreflect.MethodDescriptor
+	in, out   Message
 }
 
 // Server is one gRPC listener.
@@ -86,7 +88,10 @@ func New(decl Declaration, php Dispatcher, log *slog.Logger) (*Server, error) {
 		ms := sd.Methods()
 		for i := 0; i < ms.Len(); i++ {
 			md := ms.Get(i)
-			s.methods["/"+sv.Name+"/"+string(md.Name())] = method{serviceID: sv.ID, name: string(md.Name()), desc: md}
+			s.methods["/"+sv.Name+"/"+string(md.Name())] = method{
+				serviceID: sv.ID, name: string(md.Name()), desc: md,
+				in: NewMessage(md.Input()), out: NewMessage(md.Output()),
+			}
 			info.Methods = append(info.Methods, grpc.MethodInfo{Name: string(md.Name())})
 		}
 		s.services[sv.Name] = info
@@ -97,7 +102,8 @@ func New(decl Declaration, php Dispatcher, log *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.grpc = grpc.NewServer(grpc.UnknownServiceHandler(s.handle), grpc.ChainStreamInterceptor(interceptors...))
+	s.grpc = grpc.NewServer(grpc.UnknownServiceHandler(s.handle), grpc.ChainStreamInterceptor(interceptors...),
+		grpc.ForceServerCodecV2(NewCodec()))
 	healthpb.RegisterHealthServer(s.grpc, hs)
 	opts := reflection.ServerOptions{Services: s, DescriptorResolver: resolver{files}}
 	reflectionv1.RegisterServerReflectionServer(s.grpc, reflection.NewServerV1(opts))
@@ -144,10 +150,13 @@ func (s *Server) GetServiceInfo() map[string]grpc.ServiceInfo {
 	return out
 }
 
-type phpResult struct {
-	OK      bool            `json:"ok"`
-	Message json.RawMessage `json:"message"`
-	Code    int             `json:"code"`
+// answer reads what cairo_respond_grpc() (internal/sapi/grpc_answer.c) puts
+// before PHP's answer: whether the call succeeded, and its status code.
+func answer(meta []byte) (ok bool, code codes.Code, err error) {
+	if len(meta) != 5 {
+		return false, 0, fmt.Errorf("an answer of %d bytes", len(meta))
+	}
+	return meta[0] != 0, codes.Code(binary.LittleEndian.Uint32(meta[1:])), nil
 }
 
 // event is a call as PHP receives it.
@@ -156,7 +165,7 @@ type event struct {
 	Service         int
 	Method          string
 	Values          map[string]any
-	Message         json.RawMessage // protojson; PHP decodes it to an array
+	Message         wire.Raw // the request as PHP's array
 	Stream          int64
 	ClientStreaming bool
 	ServerStreaming bool
@@ -187,7 +196,7 @@ func (ev *event) AppendWire(b []byte, id int64, deadline float64) []byte {
 		b = wire.AppendValue(wire.AppendKey(b, "values"), ev.Values)
 	}
 	if ev.Message != nil {
-		b = wire.AppendJSON(wire.AppendKey(b, "message"), ev.Message)
+		b = append(wire.AppendKey(b, "message"), ev.Message...)
 	}
 	if ev.Stream != 0 {
 		b = wire.AppendInt(wire.AppendKey(b, "stream"), ev.Stream)
@@ -215,18 +224,17 @@ func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 	// A client-streaming method's messages are read by PHP through its
 	// stream; every other method starts with one request message.
 	if !m.desc.IsStreamingClient() {
-		in := dynamicpb.NewMessage(m.desc.Input())
-		if err := stream.RecvMsg(in); err != nil {
+		var in Frame
+		if err := stream.RecvMsg(&in); err != nil {
 			return err
 		}
-		reqJSON, err := protojson.MarshalOptions{UseProtoNames: false, EmitUnpopulated: true}.Marshal(in)
-		if err != nil {
-			return status.Errorf(codes.Internal, "encode request: %v", err)
+		var err error
+		if ev.Message, err = m.in.ToPHP(make([]byte, 0, 2*len(in.Data)+64), in.Data); err != nil {
+			return status.Errorf(codes.Internal, "grpc: failed to unmarshal the received message: %v", err)
 		}
-		ev.Message = reqJSON
 	}
 	if m.desc.IsStreamingClient() || m.desc.IsStreamingServer() {
-		id := openStream(stream, m.desc)
+		id := openStream(stream, m)
 		defer closeStream(id)
 		ev.Stream = id
 		ev.ClientStreaming = m.desc.IsStreamingClient()
@@ -239,7 +247,7 @@ func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 		ctx, cancel = context.WithTimeout(ctx, s.maxDuration)
 		defer cancel()
 	}
-	raw, _, err := s.php.Dispatch(ctx, ev)
+	meta, body, err := s.php.Dispatch(ctx, ev)
 	if err != nil {
 		if ctx.Err() == nil {
 			// The PHP thread died with the call (a fatal error).
@@ -247,24 +255,22 @@ func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 		}
 		return status.FromContextError(err).Err()
 	}
-	var res phpResult
-	if err := json.Unmarshal(raw, &res); err != nil {
+	ok, code, err := answer(meta)
+	if err != nil {
 		return status.Errorf(codes.Internal, "decode php response: %v", err)
 	}
-	if !res.OK {
-		var msg string
-		_ = json.Unmarshal(res.Message, &msg)
-		return status.Error(codes.Code(res.Code), msg)
+	if !ok {
+		return status.Error(code, string(body))
 	}
 	if m.desc.IsStreamingServer() {
 		return nil // PHP sent the replies through the stream
 	}
-	out := dynamicpb.NewMessage(m.desc.Output())
-	if err := (protojson.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(res.Message, out); err != nil {
+	out, err := m.out.FromPHP(body)
+	if err != nil {
 		s.log.Error("php returned a message that does not match the proto", "method", full, "err", err)
 		return status.Errorf(codes.Internal, "handler returned an invalid %s: %v", m.desc.Output().FullName(), err)
 	}
-	return stream.SendMsg(out)
+	return stream.SendMsg(&Frame{out})
 }
 
 // CompileProtos compiles .proto files (and their imports) into a registry.
@@ -307,7 +313,14 @@ func registerWithDeps(files *protoregistry.Files, f protoreflect.FileDescriptor)
 			return err
 		}
 	}
-	if err := files.RegisterFile(f); err != nil && !strings.Contains(err.Error(), "already registered") {
+	// The compiler's descriptors answer each question (a field's kind, a
+	// file's syntax) through a wrapper, which dynamicpb and protojson ask
+	// for every field of every message; protobuf-go's own are built once.
+	native, err := protodesc.NewFile(protodesc.ToFileDescriptorProto(f), files)
+	if err != nil {
+		return fmt.Errorf("describe %s: %w", f.Path(), err)
+	}
+	if err := files.RegisterFile(native); err != nil && !strings.Contains(err.Error(), "already registered") {
 		return fmt.Errorf("register %s: %w", f.Path(), err)
 	}
 	return nil

@@ -139,6 +139,8 @@ namespace Cairo\Grpc {
         private array $headers = [];
         /** @var array<string, list<string>> */
         private array $trailers = [];
+        /** @var list<mixed> replies that Go read ahead of recv() */
+        private array $ahead = [];
 
         /** @internal */
         public function __construct(private readonly int $id, private readonly ?string $class = null)
@@ -153,10 +155,22 @@ namespace Cairo\Grpc {
         /** @param TRequest $message */
         public function send(array|object $message): void
         {
-            Stream::call('grpc.stream.send', ['id' => $this->id, 'message' => Stream::encode($message)]);
+            // Queued by one call into Go, without a fiber switch, while the
+            // queue has room; a full queue waits in a Go operation.
+            $message = Stream::encode($message);
+            $queued = \cairo_grpc_client_send($this->id, $message);
+            if (is_array($queued)) {
+                throw new Exception($queued[0], $queued[1]);
+            }
+            if (!$queued) {
+                Stream::call('grpc.stream.send', ['id' => $this->id, 'message' => $message]);
+            }
         }
 
-        /** No more requests: the server sees the end of the client's stream. */
+        /**
+         * No more requests: the server sees the end of the client's stream.
+         * Returns once the requests that were sent are written.
+         */
         public function closeSend(): void
         {
             Stream::call('grpc.stream.closeSend', ['id' => $this->id]);
@@ -165,13 +179,17 @@ namespace Cairo\Grpc {
         /** @return TReply|null */
         public function recv(): array|object|null
         {
-            $r = Stream::call('grpc.stream.recv', ['id' => $this->id]);
-            if (!empty($r['eof'])) {
-                $this->headers = $r['headers'] ?: [];
-                $this->trailers = $r['trailers'] ?: [];
-                return null;
+            if ($this->ahead === []) {
+                // One operation brings all that has arrived.
+                $r = Stream::call('grpc.stream.recv', ['id' => $this->id]);
+                if (!empty($r['eof'])) {
+                    $this->headers = $r['headers'] ?: [];
+                    $this->trailers = $r['trailers'] ?: [];
+                    return null;
+                }
+                $this->ahead = $r['messages'];
             }
-            return Stream::decode($r['message'], $this->class);
+            return Stream::decode(array_shift($this->ahead), $this->class);
         }
 
         /**

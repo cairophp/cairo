@@ -127,7 +127,7 @@ func (r *reader) appendJSON(b []byte, depth int) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		return appendJSONFloat(b, math.Float64frombits(u))
+		return AppendJSONFloat(b, math.Float64frombits(u))
 	case TagString, TagJSON:
 		s, err := r.bytes()
 		if err != nil {
@@ -166,7 +166,9 @@ func (r *reader) appendJSON(b []byte, depth int) ([]byte, error) {
 	return nil, fmt.Errorf("wire: unknown tag %d", tag)
 }
 
-func appendJSONFloat(b []byte, f float64) ([]byte, error) {
+// AppendJSONFloat appends a float as the JSON text that Unmarshal gives a
+// json.RawMessage for it.
+func AppendJSONFloat(b []byte, f float64) ([]byte, error) {
 	if math.IsNaN(f) || math.IsInf(f, 0) {
 		return nil, errors.New("wire: NaN and Inf have no JSON form")
 	}

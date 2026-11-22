@@ -18,10 +18,12 @@ import (
 // its `json` tags: struct fields are matched by tag, then by name; unknown
 // keys are skipped; null leaves a zero value. Three things differ, because
 // the values come from PHP and not from JSON text: a string is binary-safe
-// and fills a []byte as it is; a number fills any numeric field that holds
+// and fills a []byte as it is (an empty one as an empty slice, so that nil
+// is null); a number fills any numeric field that holds
 // it exactly; and an empty list also fills a struct or a map, since PHP has
 // one empty array for both. A json.RawMessage field gets its value as JSON
-// text, which is how an operation passes a part of its arguments on.
+// text, which is how an operation passes a part of its arguments on, and a
+// Raw field gets it as it is.
 //
 // Every length is checked against the buffer and nesting is limited to
 // MaxDepth, as in the C decoder.
@@ -94,9 +96,20 @@ func (r *reader) count(depth int) (int, error) {
 	return n, nil
 }
 
-var rawMessage = reflect.TypeOf(json.RawMessage(nil))
+var (
+	rawMessage = reflect.TypeOf(json.RawMessage(nil))
+	rawValue   = reflect.TypeOf(Raw(nil))
+)
 
 func (r *reader) value(v reflect.Value, depth int) error {
+	if v.Type() == rawValue {
+		start := r.i
+		if err := r.skip(depth); err != nil {
+			return err
+		}
+		v.SetBytes(r.b[start:r.i])
+		return nil
+	}
 	if v.Type() == rawMessage {
 		raw, err := r.appendJSON(nil, depth)
 		if err != nil {
@@ -160,7 +173,8 @@ func (r *reader) value(v reflect.Value, depth int) error {
 		case v.Kind() == reflect.String:
 			v.SetString(string(s))
 		case v.Kind() == reflect.Slice && v.Type().Elem().Kind() == reflect.Uint8:
-			v.SetBytes(append([]byte(nil), s...))
+			// An empty string is an empty slice: nil is what null gives.
+			v.SetBytes(append(make([]byte, 0, len(s)), s...))
 		default:
 			return mismatch("a string", v)
 		}

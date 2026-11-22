@@ -9,7 +9,6 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <poll.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,17 +45,14 @@ static const php_stream_ops *find_orig_ops(const php_stream_ops *hooked)
 	return NULL;
 }
 
-// Asks the runtime to wait (Cairo\Internal\Hooks::wait). Returns 1 when the
-// socket is ready, 0 when the runtime declined (block as usual), -1 on the
-// socket's own timeout, -2 when an exception was thrown (deadline).
+// Asks the runtime to wait (Cairo\Internal\Hooks::wait) for a socket that
+// was just found not ready. Returns 1 when the socket is ready, 0 when the
+// runtime declined (block as usual), -1 on the socket's own timeout, -2 when
+// an exception was thrown (deadline).
 static int cairo_wait_fd(php_netstream_data_t *sock, int write)
 {
 	if (EG(active_fiber) == NULL) {
 		return 0;
-	}
-	struct pollfd pfd = {.fd = sock->socket, .events = write ? POLLOUT : POLLIN};
-	if (poll(&pfd, 1, 0) > 0) {
-		return 1;   // ready now: no need to suspend
 	}
 	double timeout = -1;
 	if (sock->timeout.tv_sec != -1) {
@@ -476,19 +472,46 @@ static int cairo_sock_set_option(php_stream *stream, int option, int value, void
 	return orig->set_option(stream, option, value, ptrparam);
 }
 
+// A read or a write is tried first, without waiting, and the fiber waits only
+// for a socket that is not ready: a query to a database is then a send, a
+// receive that finds nothing, the wait and the receive, where asking the
+// kernel first cost a poll before each of the three.
+static int cairo_not_ready(void)
+{
+	return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
+}
+
+// What PHP's own read does with the bytes of a successful recv().
+static ssize_t cairo_sock_got(php_stream *stream, php_netstream_data_t *sock, ssize_t n)
+{
+	sock->timeout_event = 0;
+	php_stream_notify_progress_increment(PHP_STREAM_CONTEXT(stream), n, 0);
+	return n;
+}
+
 static ssize_t cairo_sock_read(php_stream *stream, char *buf, size_t count)
 {
 	const php_stream_ops *orig = find_orig_ops(stream->ops);
 	php_netstream_data_t *sock = (php_netstream_data_t *)stream->abstract;
 	if (sock != NULL && sock->socket != -1 && sock->is_blocked && !stream->has_buffered_data
 		&& !(sock->timeout.tv_sec == 0 && sock->timeout.tv_usec == 0)) {
-		int r = cairo_wait_fd(sock, 0);
-		if (r == -1) {
-			sock->timeout_event = 1;
-			return -1;
+		ssize_t n = recv(sock->socket, buf, count, MSG_DONTWAIT);
+		if (n > 0) {
+			return cairo_sock_got(stream, sock, n);
 		}
-		if (r == -2) {
-			return -1;
+		// The end of the stream and an error are PHP's own read's to report.
+		if (n < 0 && cairo_not_ready()) {
+			int r = cairo_wait_fd(sock, 0);
+			if (r == -1) {
+				sock->timeout_event = 1;
+				return -1;
+			}
+			if (r == -2) {
+				return -1;
+			}
+			if (r == 1 && (n = recv(sock->socket, buf, count, MSG_DONTWAIT)) > 0) {
+				return cairo_sock_got(stream, sock, n);
+			}
 		}
 	}
 	return orig->read(stream, buf, count);
@@ -499,13 +522,21 @@ static ssize_t cairo_sock_write(php_stream *stream, const char *buf, size_t coun
 	const php_stream_ops *orig = find_orig_ops(stream->ops);
 	php_netstream_data_t *sock = (php_netstream_data_t *)stream->abstract;
 	if (sock != NULL && sock->socket != -1 && sock->is_blocked) {
-		int r = cairo_wait_fd(sock, 1);
-		if (r == -1) {
-			sock->timeout_event = 1;
-			return -1;
+		ssize_t n = send(sock->socket, buf, count, MSG_DONTWAIT);
+		if (n > 0) {
+			php_stream_notify_progress_increment(PHP_STREAM_CONTEXT(stream), n, 0);
+			return n;
 		}
-		if (r == -2) {
-			return -1;
+		// A failed send is sent again by PHP's own write, which reports it.
+		if (n < 0 && cairo_not_ready()) {
+			int r = cairo_wait_fd(sock, 1);
+			if (r == -1) {
+				sock->timeout_event = 1;
+				return -1;
+			}
+			if (r == -2) {
+				return -1;
+			}
 		}
 	}
 	return orig->write(stream, buf, count);

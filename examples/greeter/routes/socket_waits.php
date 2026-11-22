@@ -3,7 +3,8 @@
 // Waits on sockets stay on the PHP thread, in its own epoll: a read ends at
 // the stream's timeout or with its context, the thread still takes
 // everything else while a fiber waits on a socket, and one fiber waits on a
-// socket at a time. ?addr= is a server that reads a number of seconds,
+// socket at a time. A read or a write is tried first and waits only when
+// the socket is not ready. ?addr= is a server that reads a number of seconds,
 // waits that long and answers "pong".
 
 declare(strict_types=1);
@@ -97,6 +98,37 @@ return function ($http): void {
         sleep(0.05);
         $slept = microtime(true) - $start;
         return Response::json(['slowest_call' => round($slowest, 3), 'slept' => round($slept, 3), 'read' => await($reader)]);
+    });
+
+    // A write of 8 MiB to a server that starts reading after 0.3s: the
+    // socket's buffer fills, the fiber waits for room and the thread runs a
+    // sleep of another fiber meanwhile. ?addr= answers how many bytes it got.
+    $http->get('/sockets/write', function (Request $req): Response {
+        $conn = stream_socket_client('tcp://' . $req->query('addr'), $errno, $error, 5);
+        if ($conn === false) {
+            throw new RuntimeException("connect: $error");
+        }
+        $beside = async(function (): float {
+            $start = microtime(true);
+            sleep(0.05);
+            return microtime(true) - $start;
+        });
+        $written = fwrite($conn, str_repeat('x', 8 << 20));
+        stream_socket_shutdown($conn, STREAM_SHUT_WR);
+        return Response::json(['written' => $written, 'got' => (int) fgets($conn), 'slept' => round(await($beside), 3)]);
+    });
+
+    // A server that says one line and closes: the read after it finds the
+    // end of the stream, not a wait.
+    $http->get('/sockets/end', function (Request $req): Response {
+        $conn = stream_socket_client('tcp://' . $req->query('addr'), $errno, $error, 5);
+        if ($conn === false) {
+            throw new RuntimeException("connect: $error");
+        }
+        $line = fgets($conn);
+        $start = microtime(true);
+        $after = fgets($conn);
+        return Response::json(['line' => $line, 'after' => $after, 'eof' => feof($conn), 'took' => round(microtime(true) - $start, 2)]);
     });
 
     // A second fiber that reads a socket another one waits on is refused.

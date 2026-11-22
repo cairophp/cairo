@@ -4,10 +4,10 @@
 package httpserver
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -20,10 +20,12 @@ import (
 	"github.com/cairophp/cairo/internal/wire"
 )
 
-// Dispatcher sends a call to PHP and returns PHP's answer: its metadata
-// (JSON) and the response body.
+// Dispatcher sends a call to PHP and returns PHP's answer: its status and
+// headers (decodeAnswer) and the response body. A large body is lent, not
+// copied: release is then not nil, and frees it. Nothing of the body may be
+// read after that (response.free, response.own).
 type Dispatcher interface {
-	Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte, err error)
+	DispatchLent(ctx context.Context, ev wire.Event) (meta, body []byte, release func(), err error)
 }
 
 // maxBody caps request bodies read into memory for PHP.
@@ -139,7 +141,6 @@ func (ev *event) AppendWire(b []byte, id int64, deadline float64) []byte {
 	b = wire.AppendString(wire.AppendKey(b, "query"), ev.query)
 	b = wire.AppendHeader(wire.AppendKey(b, "headers"), ev.headers)
 	b = wire.AppendValue(wire.AppendKey(b, "params"), ev.params)
-	b = wire.AppendBytes(wire.AppendKey(b, "body"), ev.body)
 	b = wire.AppendString(wire.AppendKey(b, "remote"), ev.remote)
 	b = wire.AppendString(wire.AppendKey(b, "host"), ev.host)
 	b = wire.AppendString(wire.AppendKey(b, "proto"), ev.proto)
@@ -164,8 +165,13 @@ func (ev *event) AppendWire(b []byte, id int64, deadline float64) []byte {
 			b = wire.AppendInt(wire.AppendKey(b, "error"), int64(f.Error))
 		}
 	}
-	return b
+	// The body is last and not in b: Tail.
+	return wire.AppendTail(wire.AppendKey(b, "body"), len(ev.body))
 }
+
+// Tail is the request's body, which the engine copies behind the event
+// (wire.TailEvent).
+func (ev *event) Tail() []byte { return ev.body }
 
 func routeHandler(r Route, php Dispatcher, cache *responseCache, log *slog.Logger) http.Handler {
 	var names []string
@@ -178,35 +184,52 @@ func routeHandler(r Route, php Dispatcher, cache *responseCache, log *slog.Logge
 		policy = newCachePolicy(r.ID, *r.Cache)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// The cache first: a request it answers needs no event, because PHP
+		// does not see it. A multipart request never uses the cache.
+		key, cached := policy.key(req)
+		cached = cached && !isMultipart(req.Header)
+		var stale *response // served while this request's call rebuilds it
+		if cached {
+			resp, refresh := cache.lookup(key, policy, req.Method == http.MethodGet)
+			if resp != nil && !refresh {
+				resp.write(w)
+				return
+			}
+			stale = resp
+			// PHP may answer HEAD without a body, so HEAD only reads what a
+			// GET stored and never fills the cache.
+			cached = req.Method == http.MethodGet
+		}
 		ev, cleanup, ok := newEvent(w, req, r.ID, names)
 		if !ok {
+			if stale != nil {
+				cache.release(key)
+			}
 			return
 		}
 		ev.name = name
 		defer cleanup()
-		key, ok := policy.key(req)
-		if ok && req.Method == http.MethodHead {
-			// PHP may answer HEAD without a body, so HEAD only reads what a
-			// GET stored and never fills the cache.
-			if resp, _ := cache.lookup(key, policy, false); resp != nil {
-				resp.write(w)
-				return
-			}
-			ok = false
-		}
-		if ok && ev.form == nil {
-			resp, err := cache.serve(req, key, policy, func(ctx context.Context) (*response, error) {
-				r, err := callPHP(ctx, php, ev)
-				return &r, err
-			})
+		if !cached {
+			resp, err := callPHP(req.Context(), php, ev)
 			if err != nil {
 				writeError(w, req, err, log)
 				return
 			}
+			defer resp.free()
 			resp.write(w)
 			return
 		}
-		resp, err := callPHP(req.Context(), php, ev)
+		call := func(ctx context.Context) (*response, error) {
+			r, err := callPHP(ctx, php, ev)
+			r.own() // the cache and the requests that share the answer keep it
+			return &r, err
+		}
+		if stale != nil {
+			cache.refresh(req.Context(), key, policy, call)
+			stale.write(w)
+			return
+		}
+		resp, err := cache.fetch(req.Context(), key, policy, call)
 		if err != nil {
 			writeError(w, req, err, log)
 			return
@@ -215,21 +238,32 @@ func routeHandler(r Route, php Dispatcher, cache *responseCache, log *slog.Logge
 	})
 }
 
+// isMultipart reports whether the request's body is a form with parts,
+// which PHP receives as fields and files.
+func isMultipart(h http.Header) bool {
+	const prefix = "multipart/form-data"
+	ct := h.Get("Content-Type")
+	return len(ct) >= len(prefix) && strings.EqualFold(ct[:len(prefix)], prefix)
+}
+
 // newEvent reads req into the event PHP receives. It answers the client
 // itself and returns false when the request is malformed.
 func newEvent(w http.ResponseWriter, req *http.Request, route int, names []string) (*event, func(), bool) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, maxBody))
+	body, err := readBody(w, req)
 	if err != nil {
 		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		return nil, nil, false
 	}
-	params := make(map[string]string, len(names))
-	for _, n := range names {
-		params[n] = req.PathValue(n)
+	var params map[string]string // nil crosses as an empty array, as a route without parameters has
+	if len(names) > 0 {
+		params = make(map[string]string, len(names))
+		for _, n := range names {
+			params[n] = req.PathValue(n)
+		}
 	}
 	cleanup := func() {}
 	var form *multipartForm
-	if strings.HasPrefix(strings.ToLower(req.Header.Get("Content-Type")), "multipart/form-data") {
+	if isMultipart(req.Header) {
 		form, err = parseMultipart(body, req.Header.Get("Content-Type"), os.TempDir())
 		if err != nil {
 			http.Error(w, "malformed multipart body", http.StatusBadRequest)
@@ -255,11 +289,31 @@ func newEvent(w http.ResponseWriter, req *http.Request, route int, names []strin
 	}, cleanup, true
 }
 
-// response is PHP's answer to one request.
+// response is PHP's answer to one request. With release, its body is lent
+// (Dispatcher): the request frees it when it has written it, and what
+// outlives the request takes a copy first.
 type response struct {
-	status int
-	header http.Header
-	body   []byte
+	status  int
+	header  http.Header
+	body    []byte
+	release func()
+}
+
+// free ends the use of a lent body.
+func (r *response) free() {
+	if r.release != nil {
+		r.release()
+		r.body, r.release = nil, nil
+	}
+}
+
+// own makes the body the response's own, so that it can be kept.
+func (r *response) own() {
+	if r.release != nil {
+		body := bytes.Clone(r.body)
+		r.free()
+		r.body = body
+	}
 }
 
 var errBadResponse = errors.New("bad php response")
@@ -267,18 +321,21 @@ var errBadResponse = errors.New("bad php response")
 // callPHP returns a value, not a pointer: uncached routes then allocate
 // nothing for it.
 func callPHP(ctx context.Context, php Dispatcher, ev *event) (response, error) {
-	raw, body, err := php.Dispatch(ctx, ev)
+	raw, body, release, err := php.DispatchLent(ctx, ev)
 	if err != nil {
 		return response{}, err
 	}
 	status, header, err := decodeAnswer(raw)
 	if err != nil {
+		if release != nil {
+			release()
+		}
 		return response{}, fmt.Errorf("%w: %w", errBadResponse, err)
 	}
 	if status == 0 {
 		status = http.StatusOK
 	}
-	return response{status: status, header: header, body: body}, nil
+	return response{status: status, header: header, body: body, release: release}, nil
 }
 
 func writeError(w http.ResponseWriter, req *http.Request, err error, log *slog.Logger) {
@@ -295,13 +352,17 @@ func writeError(w http.ResponseWriter, req *http.Request, err error, log *slog.L
 	// Otherwise the client went away; there is nobody to answer.
 }
 
-// write sends the response; the header map may be shared with the cache, so
-// it is copied, never handed over.
+// write sends the response. Its header may be the cache's, so the map is
+// never handed over; a value slice is, because decodeAnswer left it no room
+// to be appended to in place.
 func (r *response) write(w http.ResponseWriter) {
 	h := w.Header()
 	for k, vs := range r.header {
-		ck := http.CanonicalHeaderKey(k)
-		h[ck] = append(h[ck], vs...)
+		if old, ok := h[k]; ok {
+			h[k] = append(old, vs...)
+			continue
+		}
+		h[k] = vs
 	}
 	w.WriteHeader(r.status)
 	_, _ = w.Write(r.body)

@@ -23,16 +23,16 @@ type fakePHP struct {
 	header http.Header
 }
 
-func (f *fakePHP) Dispatch(ctx context.Context, _ wire.Event) ([]byte, []byte, error) {
+func (f *fakePHP) DispatchLent(ctx context.Context, _ wire.Event) ([]byte, []byte, func(), error) {
 	n := f.calls.Add(1)
 	if f.delay > 0 {
 		select {
 		case <-time.After(f.delay):
 		case <-ctx.Done():
-			return nil, nil, ctx.Err()
+			return nil, nil, nil, ctx.Err()
 		}
 	}
-	return wire.AppendHeader(wire.AppendInt(nil, 200), f.header), []byte(strconv.FormatInt(n, 10)), nil
+	return wire.AppendHeader(wire.AppendInt(nil, 200), f.header), []byte(strconv.FormatInt(n, 10)), nil, nil
 }
 
 func cachedRoute(t *testing.T, php *fakePHP, c RouteCache) func(req *http.Request) string {
@@ -149,6 +149,62 @@ func TestCacheStaleWhileRevalidate(t *testing.T) {
 	}
 	if n := php.calls.Load(); n != 2 {
 		t.Fatalf("PHP ran %d times, want 2 (one rebuild)", n)
+	}
+}
+
+// A request the cache answers is not read for PHP, which does not see it.
+func TestCacheHitLeavesTheBodyUnread(t *testing.T) {
+	php := &fakePHP{}
+	do := cachedRoute(t, php, RouteCache{TTL: 60})
+	do(get("/"))
+	body := &countingReader{}
+	if got := do(httptest.NewRequest("GET", "/", body)); got != "1" {
+		t.Fatalf("got %q, want the cached answer", got)
+	}
+	if body.n != 0 {
+		t.Fatalf("a cache hit read %d bytes of the request's body", body.n)
+	}
+}
+
+type countingReader struct{ n int }
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	r.n += len(p)
+	return len(p), nil
+}
+
+// The request that is to rebuild a stale entry may be refused before PHP is
+// called: the next one must rebuild it then.
+func TestCacheRefusedRequestGivesItsRefreshBack(t *testing.T) {
+	php := &fakePHP{}
+	c := newResponseCache(cacheMaxBytes)
+	h := routeHandler(Route{ID: 1, Method: "GET", Path: "/", Cache: &RouteCache{TTL: 0.02, StaleWhileRevalidate: 60}}, php, c, slog.Default())
+	serve := func(req *http.Request) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w
+	}
+	serve(get("/"))
+	stale := time.Now().Add(20 * time.Millisecond)
+	waitUntil(t, "the entry is stale", func() bool { return time.Now().After(stale) })
+	big := httptest.NewRequest("GET", "/", io.LimitReader(&countingReader{}, maxBody+1))
+	if w := serve(big); w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("a body past the limit got %d, want 413", w.Code)
+	}
+	if n := php.calls.Load(); n != 1 {
+		t.Fatalf("PHP ran %d times, want 1: the refused request must not reach it", n)
+	}
+	serve(get("/"))
+	waitUntil(t, "the stale entry is rebuilt", func() bool { return php.calls.Load() == 2 })
+}
+
+func waitUntil(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(2 * time.Second); !cond(); {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting until %s", what)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

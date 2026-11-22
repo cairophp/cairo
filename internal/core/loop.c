@@ -47,17 +47,40 @@ static long futex(int32_t *word, int op, int32_t val, const struct timespec *tim
 	return syscall(SYS_futex, word, op, val, timeout, NULL, 0);
 }
 
-int cairo_inbox_push(int tid, int kind, int64_t id, const char *data, size_t n)
+// A message for an event of n bytes, which the caller fills, or NULL.
+static cairo_msg *new_event(int kind, int64_t id, size_t n)
 {
 	cairo_msg *m = n > INT32_MAX ? NULL : malloc(sizeof(*m) + n);
+	if (m != NULL) {
+		m->id = id;
+		m->kind = kind;
+		m->len = (uint32_t)n;
+		m->blen = 0;
+	}
+	return m;
+}
+
+int cairo_inbox_push(int tid, int kind, int64_t id, const char *data, size_t n)
+{
+	cairo_msg *m = new_event(kind, id, n);
 	if (m == NULL) {
 		return -1;
 	}
-	m->id = id;
-	m->kind = kind;
-	m->len = (uint32_t)n;
-	m->blen = 0;
 	memcpy(m->data, data, n);
+	cairo_inbox_queue(tid, m);
+	return 0;
+}
+
+int cairo_inbox_call(int tid, int64_t id, const char *data, size_t n, const char *tail, size_t tn)
+{
+	cairo_msg *m = tn > INT32_MAX ? NULL : new_event(CAIRO_EVENT_CALL, id, n + tn);
+	if (m == NULL) {
+		return -1;
+	}
+	memcpy(m->data, data, n);
+	if (tn > 0) {
+		memcpy(m->data + n, tail, tn);
+	}
 	cairo_inbox_queue(tid, m);
 	return 0;
 }

@@ -40,23 +40,35 @@ func (e *Engine) collect(wake *os.File) {
 			}
 			continue
 		}
-		for m := list; m != nil; m = m.next {
+		// A message whose body is lent to its call leaves the list: the
+		// call frees it, perhaps before this loop reads the next one.
+		for m, link := list, &list; m != nil; {
+			next := m.next
 			t := e.table[int(m.tid)].Load()
+			lent := false
 			switch m.kind {
 			case C.CAIRO_MSG_ANSWER:
-				t.answer(m)
+				lent = t.answer(m)
 			case C.CAIRO_MSG_EXIT:
 				e.threadExited(t, int(m.id))
 				e.threadsWG.Done()
 			}
+			if lent {
+				*link = next
+			} else {
+				link = &m.next
+			}
+			m = next
 		}
 		C.cairo_msg_free(list)
 	}
 }
 
 // answer hands PHP's answer to a call that thread t took to the goroutine
-// that waits for it.
-func (t *thread) answer(m *C.cairo_msg) {
+// that waits for it. It reports whether the call now owns m, which a large
+// body is lent from instead of being copied here, by the one goroutine that
+// collects for all threads.
+func (t *thread) answer(m *C.cairo_msg) (lent bool) {
 	id := int64(m.id)
 	t.mu.Lock()
 	c, ok := t.calls[id]
@@ -64,13 +76,19 @@ func (t *thread) answer(m *C.cairo_msg) {
 	delete(t.calls, id)
 	t.mu.Unlock()
 	if !ok {
-		return
+		return false
 	}
 	t.inflight.Add(-1)
 	data := unsafe.Add(unsafe.Pointer(m), C.sizeof_cairo_msg)
 	c.reply.meta = C.GoBytes(data, C.int(m.len))
-	if m.blen > 0 {
-		c.reply.body = C.GoBytes(unsafe.Add(data, m.len), C.int(m.blen))
+	switch body := unsafe.Add(data, m.len); {
+	case m.blen >= lendMin:
+		c.reply.body = unsafe.Slice((*byte)(body), int(m.blen))
+		c.reply.lent = unsafe.Pointer(m)
+		lent = true
+	case m.blen > 0:
+		c.reply.body = C.GoBytes(body, C.int(m.blen))
 	}
 	c.resp <- &c.reply
+	return lent
 }

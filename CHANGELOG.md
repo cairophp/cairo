@@ -207,6 +207,27 @@ change the PHP API; patch versions do not.
   parameters of a statement, COPY data and the bytes of a large object are
   no longer base64 on the way. A route with one query: 2.6% more requests
   per second (wrk at 64 connections, 4 PHP threads on 2 CPUs).
+- Performance, HTTP: a request's way between net/http and PHP allocates
+  less (21 allocations where there were 45, for a request with a browser's
+  headers): PHP's answer is decoded from one copy with one slice for all
+  header values, which the response then shares. A request with 13 headers,
+  two MySQL queries and a 1.5 KB JSON answer: 4% more requests per second.
+- Performance, HTTP: a route with `->cache()` looks in the cache before it
+  reads the request, so a request that the cache answers builds nothing for
+  PHP: 6% more requests per second on a cached page. A GET that carries a
+  body gets the cached answer without the body being read, also a body past
+  the 32 MiB limit, which was answered with 413 before.
+- Performance, HTTP: large bodies are copied less. An upload is read into
+  one buffer sized from its `Content-Length` (of which 1 MiB is taken on
+  trust; past that the buffer grows with what arrives) and copied once on
+  its way to PHP: 1 MB uploads about twice as many per second, 100 KB
+  uploads too. An answer of 32 KiB or more is written to the client from
+  the memory PHP's thread handed over, without a copy in Go: 58% more 1 MB
+  answers per second, 50% more of 100 KB. A request whose `Content-Length`
+  is past the 32 MiB limit is refused with 413 before its body is read.
+- Performance: `Request::header()` finds a name in its usual spelling
+  (`Content-Type`) with one lookup instead of a loop over all headers, and
+  `Request::query()` parses the query string once per request.
 
 ### Removed
 

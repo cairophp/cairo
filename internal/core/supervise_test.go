@@ -19,7 +19,7 @@ func TestFailCalls(t *testing.T) {
 			t.Cleanup(func() { e.failCalls(th, true) })
 			// begin lets go of the thread, as after acquire.
 			th.sendMu.RLock()
-			if err := th.begin(waiting, []byte("event")); err != nil {
+			if err := th.begin(waiting, []byte("event"), nil); err != nil {
 				t.Fatal(err)
 			}
 			th.calls[taken.id] = taken

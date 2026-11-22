@@ -69,6 +69,18 @@ $http->get('/spin-async', function (Request $req, Context $ctx): Response {
     }
 });
 
+// An answer that comes after the deadline has nobody to go to: the client
+// has its 504, and Cairo drops the answer, however large.
+$http->get('/late', function (): Response {
+    try {
+        while (true) {
+        }
+    } catch (Context\DeadlineExceeded) {
+        // Stopped by Cairo, so the request has ended on its side.
+    }
+    return Response::text(str_repeat('late ', 200_000));
+});
+
 // Fast requests are not touched.
 $http->get('/ok', fn (): Response => Response::text("ok\n"));
 

@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"slices"
 	"sort"
 )
 
@@ -54,6 +55,20 @@ type Raw []byte
 // a map, with "id" and, when deadline > 0, "deadline" among its entries.
 type Event interface {
 	AppendWire(b []byte, id int64, deadline float64) []byte
+}
+
+// TailEvent is an Event whose last entry is raw bytes that AppendWire leaves
+// out: it ends with AppendTail, and the engine copies Tail's bytes behind
+// what AppendWire appended, straight into the message for the thread. A
+// large body is then copied once, and not into the event's buffer first.
+type TailEvent interface {
+	Event
+	Tail() []byte
+}
+
+// AppendTail appends the tag and length of n raw bytes that come behind b.
+func AppendTail(b []byte, n int) []byte {
+	return binary.LittleEndian.AppendUint32(append(b, TagString), uint32(n))
 }
 
 func AppendNull(b []byte) []byte { return append(b, TagNull) }
@@ -105,11 +120,12 @@ func AppendKey(b []byte, k string) []byte {
 
 // AppendHeader appends HTTP headers as a map of lists, in key order.
 func AppendHeader(b []byte, h http.Header) []byte {
-	keys := make([]string, 0, len(h))
+	var few [32]string // a request's names fit here, so sorting them allocates nothing
+	keys := few[:0]
 	for k := range h {
 		keys = append(keys, k)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	b = AppendMap(b, len(keys))
 	for _, k := range keys {
 		b = AppendKey(b, k)

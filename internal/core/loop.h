@@ -66,6 +66,11 @@ enum { CAIRO_EVENT = 0, CAIRO_EVENT_CALL = 1, CAIRO_EVENT_JOB = 2, CAIRO_EVENT_D
 // or the request it is for, or 0. Returns -1 when there is no memory for it.
 int cairo_inbox_push(int tid, int kind, int64_t id, const char *data, size_t n);
 
+// The same for the event that begins call id, in two parts that are copied
+// one behind the other: what describes the request, and its body (tn bytes,
+// which may be none).
+int cairo_inbox_call(int tid, int64_t id, const char *data, size_t n, const char *tail, size_t tn);
+
 // The same for a message that its sender allocated and filled (malloc; the
 // thread frees it).
 void cairo_inbox_queue(int tid, cairo_msg *m);

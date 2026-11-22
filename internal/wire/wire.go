@@ -57,6 +57,20 @@ type Event interface {
 	AppendWire(b []byte, id int64, deadline float64) []byte
 }
 
+// TailEvent is an Event whose last entry is raw bytes that AppendWire leaves
+// out: it ends with AppendTail, and the engine copies Tail's bytes behind
+// what AppendWire appended, straight into the message for the thread. A
+// large body is then copied once, and not into the event's buffer first.
+type TailEvent interface {
+	Event
+	Tail() []byte
+}
+
+// AppendTail appends the tag and length of n raw bytes that come behind b.
+func AppendTail(b []byte, n int) []byte {
+	return binary.LittleEndian.AppendUint32(append(b, TagString), uint32(n))
+}
+
 func AppendNull(b []byte) []byte { return append(b, TagNull) }
 
 func AppendBool(b []byte, v bool) []byte {

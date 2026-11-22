@@ -141,7 +141,6 @@ func (ev *event) AppendWire(b []byte, id int64, deadline float64) []byte {
 	b = wire.AppendString(wire.AppendKey(b, "query"), ev.query)
 	b = wire.AppendHeader(wire.AppendKey(b, "headers"), ev.headers)
 	b = wire.AppendValue(wire.AppendKey(b, "params"), ev.params)
-	b = wire.AppendBytes(wire.AppendKey(b, "body"), ev.body)
 	b = wire.AppendString(wire.AppendKey(b, "remote"), ev.remote)
 	b = wire.AppendString(wire.AppendKey(b, "host"), ev.host)
 	b = wire.AppendString(wire.AppendKey(b, "proto"), ev.proto)
@@ -166,8 +165,13 @@ func (ev *event) AppendWire(b []byte, id int64, deadline float64) []byte {
 			b = wire.AppendInt(wire.AppendKey(b, "error"), int64(f.Error))
 		}
 	}
-	return b
+	// The body is last and not in b: Tail.
+	return wire.AppendTail(wire.AppendKey(b, "body"), len(ev.body))
 }
+
+// Tail is the request's body, which the engine copies behind the event
+// (wire.TailEvent).
+func (ev *event) Tail() []byte { return ev.body }
 
 func routeHandler(r Route, php Dispatcher, cache *responseCache, log *slog.Logger) http.Handler {
 	var names []string

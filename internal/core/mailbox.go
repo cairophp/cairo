@@ -102,6 +102,19 @@ func (t *thread) push(kind int, id int64, data []byte) error {
 	return nil
 }
 
+// pushCall is push for the event that begins call id, which is data and then
+// tail: both are copied into the one message.
+func (t *thread) pushCall(id int64, data, tail []byte) error {
+	if t.gone {
+		return nil
+	}
+	if C.cairo_inbox_call(C.int(t.id), C.int64_t(id), (*C.char)(unsafe.Pointer(unsafe.SliceData(data))), C.size_t(len(data)),
+		(*C.char)(unsafe.Pointer(unsafe.SliceData(tail))), C.size_t(len(tail))) != 0 {
+		return errNoMemory
+	}
+	return nil
+}
+
 // queued is how many events wait for the thread.
 func (t *thread) queued() int64 {
 	return t.box.pushed.Load() - t.box.took.Load()

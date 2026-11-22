@@ -172,7 +172,11 @@ func (e *Engine) dispatch(ctx context.Context, ev wire.Event) (reply, error) {
 		deadline = float64(dl.UnixNano()) / 1e9
 	}
 	r.buf = ev.AppendWire(r.buf[:0], id, deadline)
-	if err := t.begin(c, r.buf); err != nil {
+	var tail []byte
+	if te, ok := ev.(wire.TailEvent); ok {
+		tail = te.Tail()
+	}
+	if err := t.begin(c, r.buf, tail); err != nil {
 		t.inflight.Add(-1)
 		release()
 		r.free()
@@ -342,13 +346,14 @@ func acquire(ctx context.Context, ts []atomic.Pointer[thread]) (*thread, error) 
 
 // begin queues the event that begins call c on thread t, which the caller
 // holds as acquire returned it, and lets go of the thread. The call is in
-// the thread's table before the thread can answer it or ask for it.
-func (t *thread) begin(c *call, data []byte) error {
+// the thread's table before the thread can answer it or ask for it. The
+// event is data with tail behind it (wire.TailEvent).
+func (t *thread) begin(c *call, data, tail []byte) error {
 	defer t.sendMu.RUnlock()
 	t.mu.Lock()
 	t.calls[c.id] = c
 	t.mu.Unlock()
-	err := t.push(eventCall, c.id, data)
+	err := t.pushCall(c.id, data, tail)
 	if err != nil {
 		t.mu.Lock()
 		delete(t.calls, c.id)

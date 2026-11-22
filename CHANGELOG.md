@@ -178,6 +178,12 @@ change the PHP API; patch versions do not.
   every wait on the socket, answers 16% more requests per second. Fibers
   that sleep until the same moment wake in the order they went to sleep.
 
+### Removed
+
+- `App::repeatedQueries()`, the repeated query detector. Find N+1 queries
+  with the tools of your framework (Laravel's `preventLazyLoading()`, the
+  Symfony profiler) or the database's own statement log.
+
 ### Fixed
 
 - Stopping the server, or a thread that is recycled, no longer cuts a request

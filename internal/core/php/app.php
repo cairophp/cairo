@@ -20,7 +20,6 @@ namespace Cairo {
         private float $slowRequests = 0.0;
         private float $heavyRoutes = 0.0;
         private int $maxInFlight = 0;
-        private int $repeatedQueries = 0;
         private bool $detectLeaks = false;
         /** @var list<string> "Class::$property" the leak detector skips */
         private array $leaksIgnored = [];
@@ -94,34 +93,6 @@ namespace Cairo {
             }
             $this->detectBlocking = $seconds;
             return $this;
-        }
-
-        /**
-         * Log a warning when one request runs the same statement $times
-         * times or more: the N+1 pattern, a query in a loop where one query
-         * with a join or IN (...) would do.
-         *
-         *     level=WARN msg="repeated query" route="GET /orders" count=50 query="SELECT * FROM items WHERE order_id = ?"
-         *
-         * It counts every statement run through PDO (any driver) and
-         * Cairo\Sql. Statements with the same shape count as one: string and
-         * number literals and IN (...) lists are replaced by ?. Parameters
-         * are never logged. Each route and statement is logged at most once
-         * a minute. 0, the default, turns the detector off.
-         */
-        public function repeatedQueries(int $times = 10): static
-        {
-            if ($times < 0 || $times === 1) {
-                throw new \InvalidArgumentException('repeatedQueries must be 0 (off) or 2 or more');
-            }
-            $this->repeatedQueries = $times;
-            return $this;
-        }
-
-        /** @internal */
-        public function repeatedQueriesAt(): int
-        {
-            return $this->repeatedQueries;
         }
 
         /**

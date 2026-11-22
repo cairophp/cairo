@@ -11,10 +11,10 @@ import (
 
 // App::detectLeaks(): php/leaks.php compares the app's static properties
 // when each request ends and sends the ones that changed again. Go logs
-// each static at most once a minute, like repeated queries, since a leaking
-// static changes on every request.
+// each static at most once a minute, since a leaking static changes on
+// every request.
 
-var leaks repeatedLog
+var leaks logOnce
 
 func init() {
 	registerPHP("leak_watch.php")

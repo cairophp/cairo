@@ -101,9 +101,6 @@ namespace Cairo\Sql {
                     default => $p,
                 };
             }
-            if (\Cairo\Internal\QueryWatch::$on) {
-                \Cairo\Internal\Queries::seen($sql);
-            }
             return Db::call('sql.query', $this->target() + ['sql' => $sql, 'args' => $args, 'exec' => $exec]);
         }
 

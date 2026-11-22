@@ -48,28 +48,6 @@ namespace Cairo {
         }
 
         /**
-         * Log a warning when one request runs the same statement $times
-         * times or more: the N+1 pattern, a query in a loop where one query
-         * with a join or IN (...) would do.
-         *
-         *     level=WARN msg="repeated query" route="GET /orders" count=50 query="SELECT * FROM items WHERE order_id = ?"
-         *
-         * It counts every statement run through PDO (any driver) and
-         * Cairo\Sql. Statements with the same shape count as one: string and
-         * number literals and IN (...) lists are replaced by ?. Parameters
-         * are never logged. Each route and statement is logged at most once
-         * a minute. 0, the default, turns the detector off.
-         */
-        public function repeatedQueries(int $times = 10): static
-        {
-        }
-
-        /** @internal */
-        public function repeatedQueriesAt(): int
-        {
-        }
-
-        /**
          * Development aid: log the static properties that hold request state
          * but are not request-local (see Cairo\RequestLocal), so one request
          * could read another's value:

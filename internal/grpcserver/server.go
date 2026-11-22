@@ -45,7 +45,7 @@ type method struct {
 	serviceID int
 	name      string
 	desc      protoreflect.MethodDescriptor
-	in, out   message
+	in, out   Message
 }
 
 // Server is one gRPC listener.
@@ -90,7 +90,7 @@ func New(decl Declaration, php Dispatcher, log *slog.Logger) (*Server, error) {
 			md := ms.Get(i)
 			s.methods["/"+sv.Name+"/"+string(md.Name())] = method{
 				serviceID: sv.ID, name: string(md.Name()), desc: md,
-				in: newMessage(md.Input()), out: newMessage(md.Output()),
+				in: NewMessage(md.Input()), out: NewMessage(md.Output()),
 			}
 			info.Methods = append(info.Methods, grpc.MethodInfo{Name: string(md.Name())})
 		}
@@ -103,7 +103,7 @@ func New(decl Declaration, php Dispatcher, log *slog.Logger) (*Server, error) {
 		return nil, err
 	}
 	s.grpc = grpc.NewServer(grpc.UnknownServiceHandler(s.handle), grpc.ChainStreamInterceptor(interceptors...),
-		grpc.ForceServerCodecV2(newCodec()))
+		grpc.ForceServerCodecV2(NewCodec()))
 	healthpb.RegisterHealthServer(s.grpc, hs)
 	opts := reflection.ServerOptions{Services: s, DescriptorResolver: resolver{files}}
 	reflectionv1.RegisterServerReflectionServer(s.grpc, reflection.NewServerV1(opts))
@@ -224,12 +224,12 @@ func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 	// A client-streaming method's messages are read by PHP through its
 	// stream; every other method starts with one request message.
 	if !m.desc.IsStreamingClient() {
-		var in frame
+		var in Frame
 		if err := stream.RecvMsg(&in); err != nil {
 			return err
 		}
 		var err error
-		if ev.Message, err = m.in.toPHP(make([]byte, 0, 2*len(in.data)+64), in.data); err != nil {
+		if ev.Message, err = m.in.ToPHP(make([]byte, 0, 2*len(in.Data)+64), in.Data); err != nil {
 			return status.Errorf(codes.Internal, "grpc: failed to unmarshal the received message: %v", err)
 		}
 	}
@@ -265,12 +265,12 @@ func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 	if m.desc.IsStreamingServer() {
 		return nil // PHP sent the replies through the stream
 	}
-	out, err := m.out.fromPHP(body)
+	out, err := m.out.FromPHP(body)
 	if err != nil {
 		s.log.Error("php returned a message that does not match the proto", "method", full, "err", err)
 		return status.Errorf(codes.Internal, "handler returned an invalid %s: %v", m.desc.Output().FullName(), err)
 	}
-	return stream.SendMsg(&frame{out})
+	return stream.SendMsg(&Frame{out})
 }
 
 // CompileProtos compiles .proto files (and their imports) into a registry.

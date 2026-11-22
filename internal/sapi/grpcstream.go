@@ -2,10 +2,8 @@ package sapi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,9 +11,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/cairophp/cairo/internal/core"
 	"github.com/cairophp/cairo/internal/grpcserver"
@@ -40,7 +35,7 @@ type grpcServerStreamRequest struct {
 
 type clientStream struct {
 	cs     grpc.ClientStream
-	desc   protoreflect.MethodDescriptor
+	method *grpcMethod
 	cancel context.CancelFunc
 	sendMu sync.Mutex
 	recvMu sync.Mutex
@@ -105,21 +100,11 @@ func grpcServerSend(_ context.Context, req grpcServerStreamRequest) map[string]a
 // opening fiber (an async() task may hand it on), but keeps the request's
 // deadline, and its own timeout when one is given.
 func grpcStreamOpen(ctx context.Context, req grpcStreamRequest) map[string]any {
-	files, err := grpcRegistry(req.Protos, req.Descriptors)
-	if err != nil {
-		return grpcFail(13, err.Error())
+	m, fail := grpcMethodOf(&req.grpcCallRequest)
+	if fail != nil {
+		return fail
 	}
-	name := strings.TrimPrefix(req.Method, "/")
-	svc, meth, _ := strings.Cut(name, "/")
-	d, err := files.FindDescriptorByName(protoreflect.FullName(svc))
-	sd, isSvc := d.(protoreflect.ServiceDescriptor)
-	if err != nil || !isSvc {
-		return grpcFail(12, "service "+svc+" is not in the client's descriptors")
-	}
-	md := sd.Methods().ByName(protoreflect.Name(meth))
-	if md == nil {
-		return grpcFail(12, "method "+meth+" is not in "+svc)
-	}
+	md := m.desc
 	conn, err := grpcConn(req.Target, req.TLS)
 	if err != nil {
 		return grpcFail(14, err.Error())
@@ -140,13 +125,13 @@ func grpcStreamOpen(ctx context.Context, req grpcStreamRequest) map[string]any {
 	if len(req.Metadata) > 0 {
 		sctx = metadata.NewOutgoingContext(sctx, metadata.MD(lowerKeys(req.Metadata)))
 	}
-	cs, err := conn.NewStream(sctx, &grpc.StreamDesc{ServerStreams: md.IsStreamingServer(), ClientStreams: md.IsStreamingClient()}, "/"+name)
+	cs, err := conn.NewStream(sctx, &grpc.StreamDesc{ServerStreams: md.IsStreamingServer(), ClientStreams: md.IsStreamingClient()}, m.path)
 	if err != nil {
 		cancel()
 		return grpcStatusFail(err)
 	}
 	id := clientNextID.Add(1)
-	clientStreams.Store(id, &clientStream{cs: cs, desc: md, cancel: cancel})
+	clientStreams.Store(id, &clientStream{cs: cs, method: m, cancel: cancel})
 	return map[string]any{"ok": true, "id": id}
 }
 
@@ -171,15 +156,13 @@ func grpcStreamSend(ctx context.Context, req grpcStreamRequest) map[string]any {
 	if fail != nil {
 		return fail
 	}
-	in := dynamicpb.NewMessage(st.desc.Input())
-	if len(req.Message) > 0 && string(req.Message) != "null" && string(req.Message) != "[]" {
-		if err := protojson.Unmarshal(req.Message, in); err != nil {
-			return grpcFail(3, "request does not match "+string(st.desc.Input().FullName())+": "+err.Error())
-		}
+	in, fail := st.method.request(req.Message)
+	if fail != nil {
+		return fail
 	}
 	st.sendMu.Lock()
 	defer st.sendMu.Unlock()
-	err := whileWaiting(ctx, st, func() error { return st.cs.SendMsg(in) })
+	err := whileWaiting(ctx, st, func() error { return st.cs.SendMsg(&grpcserver.Frame{Data: in}) })
 	if errors.Is(err, io.EOF) {
 		// The server ended the call; its status comes with the next recv.
 		return map[string]any{"ok": true, "ended": true}
@@ -213,8 +196,8 @@ func grpcStreamRecv(ctx context.Context, req grpcStreamRequest) map[string]any {
 	}
 	st.recvMu.Lock()
 	defer st.recvMu.Unlock()
-	out := dynamicpb.NewMessage(st.desc.Output())
-	err := whileWaiting(ctx, st, func() error { return st.cs.RecvMsg(out) })
+	var out grpcserver.Frame
+	err := whileWaiting(ctx, st, func() error { return st.cs.RecvMsg(&out) })
 	if errors.Is(err, io.EOF) {
 		header, _ := st.cs.Header()
 		return map[string]any{"ok": true, "eof": true, "headers": mdMap(header), "trailers": mdMap(st.cs.Trailer())}
@@ -224,11 +207,11 @@ func grpcStreamRecv(ctx context.Context, req grpcStreamRequest) map[string]any {
 		res["trailers"] = mdMap(st.cs.Trailer())
 		return res
 	}
-	msg, err := protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(out)
-	if err != nil {
-		return grpcFail(13, err.Error())
+	msg, fail := st.method.reply(out.Data)
+	if fail != nil {
+		return fail
 	}
-	return map[string]any{"ok": true, "message": json.RawMessage(msg)}
+	return map[string]any{"ok": true, "message": msg}
 }
 
 func grpcStreamClose(_ context.Context, req grpcStreamRequest) map[string]any {

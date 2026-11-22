@@ -1,12 +1,12 @@
 package sapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -19,24 +19,23 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
-	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/cairophp/cairo/internal/core"
 	"github.com/cairophp/cairo/internal/grpcserver"
 	"github.com/cairophp/cairo/internal/wire"
 )
 
-// Cairo\Grpc\Client: unary calls through grpc-go. Messages cross as
-// protojson, encoded and decoded with descriptors from the .proto files (or
-// the descriptor set a generated client carries). Connections are shared by
-// all PHP threads, one per target and TLS setting, and multiplex calls over
-// HTTP/2.
+// Cairo\Grpc\Client: unary calls through grpc-go. A message crosses as the
+// array PHP has for it, which is protojson's, and is converted to and from
+// protobuf's bytes with the descriptors of the .proto files (or the
+// descriptor set a generated client carries), as the server's are
+// (grpcserver.Message). Connections are shared by all PHP threads, one per
+// target and TLS setting, and multiplex calls over HTTP/2.
 
 func init() {
 	registerPHP("grpc_client.php")
@@ -63,7 +62,7 @@ type grpcCallRequest struct {
 	Method      string              `json:"method"` // "/pkg.Service/Method"
 	Protos      []string            `json:"protos"`
 	Descriptors string              `json:"descriptors"` // base64 FileDescriptorSet
-	Message     json.RawMessage     `json:"message"`
+	Message     wire.Raw            `json:"message"`     // PHP's array for the request
 	Metadata    map[string][]string `json:"metadata"`
 	Timeout     float64             `json:"timeout"`
 	TLS         grpcClientTLS       `json:"tls"`
@@ -79,7 +78,19 @@ var (
 	grpcConns   = map[grpcConnKey]*grpc.ClientConn{}
 	grpcFilesMu sync.Mutex
 	grpcFiles   = map[string]*protoregistry.Files{}
+	grpcMethods sync.Map // grpcMethodKey -> *grpcMethod
 )
+
+// grpcMethod is what a call needs of its method. A client makes the same
+// calls again and again, so it is worked out once for a client's
+// descriptors and a method's name.
+type grpcMethod struct {
+	path    string // "/pkg.Service/Method"
+	desc    protoreflect.MethodDescriptor
+	in, out grpcserver.Message
+}
+
+type grpcMethodKey struct{ protos, descriptors, method string }
 
 func grpcConn(target string, o grpcClientTLS) (*grpc.ClientConn, error) {
 	key := grpcConnKey{target, o}
@@ -114,7 +125,10 @@ func grpcConn(target string, o grpcClientTLS) (*grpc.ClientConn, error) {
 		}
 		creds = credentials.NewTLS(cfg)
 	}
-	c, err := grpc.NewClient(target, grpc.WithTransportCredentials(creds))
+	// Requests and replies are frames: the bytes grpcserver.Message made
+	// and reads.
+	frames := grpc.WithDefaultCallOptions(grpc.ForceCodecV2(grpcserver.NewCodec()))
+	c, err := grpc.NewClient(target, grpc.WithTransportCredentials(creds), frames)
 	if err != nil {
 		return nil, err
 	}
@@ -174,36 +188,75 @@ func grpcFail(code int, msg string) map[string]any {
 	return map[string]any{"ok": false, "code": code, "error": msg}
 }
 
-// grpcCall makes one unary call. The result has "ok"; a reply carries
-// "message" (protojson), "headers" and "trailers"; a failure carries the
-// status "code" and "error".
-func grpcCall(ctx context.Context, req grpcCallRequest) map[string]any {
+// grpcMethodOf finds the method a request names, or the status that the
+// call fails with. Only a method that exists is remembered, so what PHP
+// passes as a name cannot grow the table.
+func grpcMethodOf(req *grpcCallRequest) (*grpcMethod, map[string]any) {
+	key := grpcMethodKey{strings.Join(req.Protos, "\x00"), req.Descriptors, req.Method}
+	if m, ok := grpcMethods.Load(key); ok {
+		return m.(*grpcMethod), nil
+	}
 	files, err := grpcRegistry(req.Protos, req.Descriptors)
 	if err != nil {
-		return grpcFail(13, err.Error()) // INTERNAL
+		return nil, grpcFail(13, err.Error()) // INTERNAL
 	}
 	name := strings.TrimPrefix(req.Method, "/")
 	svc, meth, ok := strings.Cut(name, "/")
 	if !ok {
-		return grpcFail(12, "method must look like /package.Service/Method") // UNIMPLEMENTED
+		return nil, grpcFail(12, "method must look like /package.Service/Method") // UNIMPLEMENTED
 	}
 	d, err := files.FindDescriptorByName(protoreflect.FullName(svc))
 	sd, isSvc := d.(protoreflect.ServiceDescriptor)
 	if err != nil || !isSvc {
-		return grpcFail(12, "service "+svc+" is not in the client's descriptors")
+		return nil, grpcFail(12, "service "+svc+" is not in the client's descriptors")
 	}
 	md := sd.Methods().ByName(protoreflect.Name(meth))
 	if md == nil {
-		return grpcFail(12, "method "+meth+" is not in "+svc)
+		return nil, grpcFail(12, "method "+meth+" is not in "+svc)
 	}
-	if md.IsStreamingClient() || md.IsStreamingServer() {
+	m := &grpcMethod{path: "/" + name, desc: md, in: grpcserver.NewMessage(md.Input()), out: grpcserver.NewMessage(md.Output())}
+	grpcMethods.Store(key, m)
+	return m, nil
+}
+
+// request returns the encoded request for the array PHP gave. No array, or
+// an empty one, is the message with nothing set.
+func (m *grpcMethod) request(value wire.Raw) ([]byte, map[string]any) {
+	if len(value) == 0 || value[0] == wire.TagNull || bytes.Equal(value, emptyList) {
+		return nil, nil
+	}
+	in, err := m.in.FromPHP(value)
+	if err != nil {
+		return nil, grpcFail(3, "request does not match "+string(m.desc.Input().FullName())+": "+err.Error()) // INVALID_ARGUMENT
+	}
+	return in, nil
+}
+
+var emptyList = wire.AppendList(nil, 0)
+
+// reply returns PHP's array for an encoded reply.
+func (m *grpcMethod) reply(data []byte) (wire.Raw, map[string]any) {
+	msg, err := m.out.ToPHP(make([]byte, 0, 2*len(data)+64), data)
+	if err != nil {
+		return nil, grpcFail(13, "grpc: failed to unmarshal the received message: "+err.Error())
+	}
+	return msg, nil
+}
+
+// grpcCall makes one unary call. The result has "ok"; a reply carries
+// "message" (PHP's array for it), "headers" and "trailers"; a failure
+// carries the status "code" and "error".
+func grpcCall(ctx context.Context, req grpcCallRequest) map[string]any {
+	m, fail := grpcMethodOf(&req)
+	if fail != nil {
+		return fail
+	}
+	if m.desc.IsStreamingClient() || m.desc.IsStreamingServer() {
 		return grpcFail(12, req.Method+" is a streaming method")
 	}
-	in := dynamicpb.NewMessage(md.Input())
-	if len(req.Message) > 0 && string(req.Message) != "null" && string(req.Message) != "[]" {
-		if err := protojson.Unmarshal(req.Message, in); err != nil {
-			return grpcFail(3, "request does not match "+string(md.Input().FullName())+": "+err.Error()) // INVALID_ARGUMENT
-		}
+	in, fail := m.request(req.Message)
+	if fail != nil {
+		return fail
 	}
 	conn, err := grpcConn(req.Target, req.TLS)
 	if err != nil {
@@ -217,20 +270,20 @@ func grpcCall(ctx context.Context, req grpcCallRequest) map[string]any {
 	if len(req.Metadata) > 0 {
 		ctx = metadata.NewOutgoingContext(ctx, metadata.MD(lowerKeys(req.Metadata)))
 	}
-	out := dynamicpb.NewMessage(md.Output())
+	var out grpcserver.Frame
 	var header, trailer metadata.MD
-	err = conn.Invoke(ctx, "/"+name, in, out, grpc.Header(&header), grpc.Trailer(&trailer))
+	err = conn.Invoke(ctx, m.path, &grpcserver.Frame{Data: in}, &out, grpc.Header(&header), grpc.Trailer(&trailer))
 	if err != nil {
 		st := status.Convert(err)
 		res := grpcFail(int(st.Code()), st.Message())
 		res["trailers"] = mdMap(trailer)
 		return res
 	}
-	msg, err := protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(out)
-	if err != nil {
-		return grpcFail(13, err.Error())
+	msg, fail := m.reply(out.Data)
+	if fail != nil {
+		return fail
 	}
-	return map[string]any{"ok": true, "message": json.RawMessage(msg), "headers": mdMap(header), "trailers": mdMap(trailer)}
+	return map[string]any{"ok": true, "message": msg, "headers": mdMap(header), "trailers": mdMap(trailer)}
 }
 
 func lowerKeys(m map[string][]string) map[string][]string {

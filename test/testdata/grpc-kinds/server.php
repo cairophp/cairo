@@ -3,12 +3,18 @@
 // For TestGRPCMessageKinds: a service over messages with every kind of field
 // (internal/pbwire/testdata/kinds.proto). It returns the arrays it gets, and
 // says whether an array is the one json_decode() makes of protojson's text.
+// With CAIRO_KINDS_UPSTREAM it passes each message on to the same service
+// there and returns what comes back, so the messages also cross Cairo's
+// gRPC client both ways.
 
 declare(strict_types=1);
 
 use Cairo\App;
 use Cairo\Context;
+use Cairo\Grpc\Client;
 use Cairo\Grpc\ServerStream;
+
+const KINDS_PROTO = __DIR__ . '/../../../internal/pbwire/testdata/kinds.proto';
 
 final class Kinds
 {
@@ -18,15 +24,31 @@ final class Kinds
      */
     public function Echo(array $request, Context $ctx): array
     {
+        $upstream = self::upstream();
+        if ($upstream !== null) {
+            return self::set($upstream->call('/kinds.Kinds/Echo', self::set($request)));
+        }
         return self::reply($request);
     }
 
     /** @param ServerStream<array<string, mixed>, array<string, mixed>> $stream */
     public function EchoEach(ServerStream $stream, Context $ctx): void
     {
+        $upstream = self::upstream()?->stream('/kinds.Kinds/EchoEach');
         foreach ($stream as $message) {
+            if ($upstream !== null) {
+                $upstream->send(self::set($message));
+                $message = $upstream->recv() ?? throw new RuntimeException('the upstream ended its stream');
+            }
             $stream->send(self::reply($message));
         }
+        $upstream?->closeSend();
+    }
+
+    private static function upstream(): ?Client
+    {
+        $target = (string) getenv('CAIRO_KINDS_UPSTREAM');
+        return $target === '' ? null : new Client($target, ['protos' => [KINDS_PROTO]]);
     }
 
     /**
@@ -84,7 +106,7 @@ final class Kinds
 
 $app = new App();
 $app->grpc(getenv('CAIRO_GRPC') ?: ':9000')
-    ->proto(__DIR__ . '/../../../internal/pbwire/testdata/kinds.proto')
+    ->proto(KINDS_PROTO)
     ->service('kinds.Kinds', Kinds::class);
 
 return $app;

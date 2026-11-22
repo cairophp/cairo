@@ -5,9 +5,11 @@ import (
 	"errors"
 	"io"
 	"math/rand"
+	"net"
 	"os"
 	"os/exec"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,12 +30,13 @@ import (
 )
 
 // startKinds serves testdata/grpc-kinds and returns a connection to it and
-// the service's descriptor.
-func startKinds(t *testing.T) (*grpc.ClientConn, protoreflect.ServiceDescriptor) {
+// the service's descriptor. With an upstream, the server passes its calls
+// on to the same service there, through Cairo's gRPC client.
+func startKinds(t *testing.T, upstream ...string) (*grpc.ClientConn, protoreflect.ServiceDescriptor) {
 	t.Helper()
 	addr := freeAddr()
 	cmd := exec.Command(cairoBin, "serve", "testdata/grpc-kinds/server.php", "--threads", "2")
-	cmd.Env = append(os.Environ(), "CAIRO_GRPC="+addr)
+	cmd.Env = append(os.Environ(), "CAIRO_GRPC="+addr, "CAIRO_KINDS_UPSTREAM="+strings.Join(upstream, ""))
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -71,10 +74,7 @@ func TestGRPCMessageKinds(t *testing.T) {
 	defer cancel()
 	all := svc.Methods().ByName("Echo").Input()
 	check := svc.Methods().ByName("Check")
-	each, err := conn.NewStream(ctx, &grpc.StreamDesc{ServerStreams: true, ClientStreams: true}, "/kinds.Kinds/EchoEach")
-	if err != nil {
-		t.Fatal(err)
-	}
+	calls := openKinds(ctx, t, conn, all)
 	r := rand.New(rand.NewSource(7))
 	for i := 0; i < 300; i++ {
 		m := pbwiretest.Message(r, all, 1)
@@ -94,34 +94,9 @@ func TestGRPCMessageKinds(t *testing.T) {
 			t.Fatalf("PHP got another array than json_decode() of %s:\n%s", text, verdict.Get(check.Output().Fields().ByName("got")).String())
 		}
 
-		// JSON's -0 is PHP's int 0, so a negative zero does not come back.
-		m = dynamicpb.NewMessage(all)
-		if err := protojson.Unmarshal(negativeZero.ReplaceAll(text, []byte("${1}0${2}")), m); err != nil {
-			t.Fatal(err)
-		}
-		echo := dynamicpb.NewMessage(all)
-		if err := conn.Invoke(ctx, "/kinds.Kinds/Echo", m, echo); err != nil {
-			t.Fatalf("Echo %s: %v", text, err)
-		}
-		if !proto.Equal(m, echo) {
-			t.Fatalf("Echo: sent %s\ngot %s", text, protojson.Format(echo))
-		}
-
-		echo = dynamicpb.NewMessage(all)
-		if err := each.SendMsg(m); err != nil {
-			t.Fatalf("EchoEach %s: %v", text, err)
-		}
-		if err := each.RecvMsg(echo); err != nil {
-			t.Fatalf("EchoEach %s: %v", text, err)
-		}
-		if !proto.Equal(m, echo) {
-			t.Fatalf("EchoEach: sent %s\ngot %s", text, protojson.Format(echo))
-		}
+		calls.echoed(ctx, t, text)
 	}
-	_ = each.CloseSend()
-	if err := each.RecvMsg(dynamicpb.NewMessage(all)); !errors.Is(err, io.EOF) {
-		t.Fatalf("EchoEach ended with %v", err)
-	}
+	calls.end(t)
 
 	// A message nested deeper than the binary form goes crosses as JSON
 	// text, both ways.
@@ -133,6 +108,125 @@ func TestGRPCMessageKinds(t *testing.T) {
 	echo := dynamicpb.NewMessage(all)
 	if err := conn.Invoke(ctx, "/kinds.Kinds/Echo", deep, echo); err != nil || !proto.Equal(deep, echo) {
 		t.Fatalf("Echo of 80 nested messages: %v", err)
+	}
+}
+
+// kindsCalls is a connection to a Kinds service with an EchoEach stream open.
+type kindsCalls struct {
+	conn *grpc.ClientConn
+	each grpc.ClientStream
+	all  protoreflect.MessageDescriptor
+}
+
+func openKinds(ctx context.Context, t *testing.T, conn *grpc.ClientConn, all protoreflect.MessageDescriptor) kindsCalls {
+	t.Helper()
+	each, err := conn.NewStream(ctx, &grpc.StreamDesc{ServerStreams: true, ClientStreams: true}, "/kinds.Kinds/EchoEach")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kindsCalls{conn, each, all}
+}
+
+// echoed sends the message of a protojson text through Echo and through the
+// EchoEach stream, and requires it back unchanged from both.
+func (k kindsCalls) echoed(ctx context.Context, t *testing.T, text []byte) {
+	t.Helper()
+	// JSON's -0 is PHP's int 0, so a negative zero does not come back.
+	m := dynamicpb.NewMessage(k.all)
+	if err := protojson.Unmarshal(negativeZero.ReplaceAll(text, []byte("${1}0${2}")), m); err != nil {
+		t.Fatal(err)
+	}
+	echo := dynamicpb.NewMessage(k.all)
+	if err := k.conn.Invoke(ctx, "/kinds.Kinds/Echo", m, echo); err != nil {
+		t.Fatalf("Echo %s: %v", text, err)
+	}
+	if !proto.Equal(m, echo) {
+		t.Fatalf("Echo: sent %s\ngot %s", text, protojson.Format(echo))
+	}
+	echo = dynamicpb.NewMessage(k.all)
+	if err := k.each.SendMsg(m); err != nil {
+		t.Fatalf("EchoEach %s: %v", text, err)
+	}
+	if err := k.each.RecvMsg(echo); err != nil {
+		t.Fatalf("EchoEach %s: %v", text, err)
+	}
+	if !proto.Equal(m, echo) {
+		t.Fatalf("EchoEach: sent %s\ngot %s", text, protojson.Format(echo))
+	}
+}
+
+// end closes the stream, which the server then ends too.
+func (k kindsCalls) end(t *testing.T) {
+	t.Helper()
+	_ = k.each.CloseSend()
+	if err := k.each.RecvMsg(dynamicpb.NewMessage(k.all)); !errors.Is(err, io.EOF) {
+		t.Fatalf("EchoEach ended with %v", err)
+	}
+}
+
+// The same messages through Cairo's gRPC client: a second server passes
+// each call on to the first with Cairo\Grpc\Client, a unary call and a
+// bidirectional stream, so every kind of field is converted from PHP's
+// array for a request and to it for a reply.
+func TestGRPCClientMessageKinds(t *testing.T) {
+	backend, svc := startKinds(t)
+	conn, _ := startKinds(t, backend.Target())
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	all := svc.Methods().ByName("Echo").Input()
+	calls := openKinds(ctx, t, conn, all)
+	r := rand.New(rand.NewSource(8))
+	for i := 0; i < 300; i++ {
+		text, err := protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(pbwiretest.Message(r, all, 1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		calls.echoed(ctx, t, text)
+	}
+	calls.end(t)
+}
+
+// A reply that is no message ends the client's call with INTERNAL and the
+// server that made the call goes on. The upstream here answers every call
+// with the map entry that protobuf-go panics on.
+func TestGRPCClientDamagedReply(t *testing.T) {
+	entry := protowire.AppendString(protowire.AppendTag(nil, 1, protowire.BytesType), "k")
+	entry = protowire.AppendFixed64(protowire.AppendTag(entry, 1, protowire.Fixed64Type), 9)
+	damaged := protowire.AppendBytes(protowire.AppendTag(nil, 41, protowire.BytesType), entry)
+	upstream := grpc.NewServer(grpc.ForceServerCodecV2(bytesCodec{}), grpc.UnknownServiceHandler(func(_ any, stream grpc.ServerStream) error {
+		var request []byte
+		if err := stream.RecvMsg(&request); err != nil {
+			return err
+		}
+		return stream.SendMsg(&damaged)
+	}))
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = upstream.Serve(lis) }()
+	t.Cleanup(upstream.Stop)
+
+	conn, svc := startKinds(t, lis.Addr().String())
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	all := svc.Methods().ByName("Echo").Input()
+	m := dynamicpb.NewMessage(all)
+	m.Set(all.Fields().ByName("f_string"), protoreflect.ValueOfString("x"))
+	for _, call := range []string{"the first call", "the server after it"} {
+		if err := conn.Invoke(ctx, "/kinds.Kinds/Echo", m, dynamicpb.NewMessage(all)); status.Code(err) != codes.Internal {
+			t.Fatalf("%s: %v", call, err)
+		}
+		each, err := conn.NewStream(ctx, &grpc.StreamDesc{ServerStreams: true, ClientStreams: true}, "/kinds.Kinds/EchoEach")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := each.SendMsg(m); err != nil {
+			t.Fatalf("%s, stream: %v", call, err)
+		}
+		if err := each.RecvMsg(dynamicpb.NewMessage(all)); status.Code(err) != codes.Internal {
+			t.Fatalf("%s, stream: %v", call, err)
+		}
 	}
 }
 

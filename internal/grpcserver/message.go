@@ -13,23 +13,23 @@ import (
 	"github.com/cairophp/cairo/internal/wire"
 )
 
-// message converts the messages of one type between protobuf's bytes and
+// Message converts the messages of one type between protobuf's bytes and
 // the array PHP has for them, which is protojson's. pbwire does it directly
 // for the common cases; a type or a value it leaves alone goes through a
 // message object and JSON text, and so does every error, so that what a
 // client and a handler see is protojson's either way.
-type message struct {
+type Message struct {
 	desc protoreflect.MessageDescriptor
 	plan *pbwire.Plan // nil for a type that only protojson converts
 }
 
-func newMessage(desc protoreflect.MessageDescriptor) message {
-	return message{desc, pbwire.Compile(desc)}
+func NewMessage(desc protoreflect.MessageDescriptor) Message {
+	return Message{desc, pbwire.Compile(desc)}
 }
 
-// toPHP appends the array of an encoded message as a value in
+// ToPHP appends the array of an encoded message as a value in
 // internal/wire's form.
-func (m message) toPHP(b, data []byte) ([]byte, error) {
+func (m Message) ToPHP(b, data []byte) ([]byte, error) {
 	if m.plan != nil {
 		if out, ok := m.plan.AppendWire(b, data); ok {
 			return out, nil
@@ -58,8 +58,8 @@ func unmarshal(data []byte, msg proto.Message) (err error) {
 	return proto.Unmarshal(data, msg)
 }
 
-// fromPHP returns the encoding of the message that PHP gave as value.
-func (m message) fromPHP(value wire.Raw) ([]byte, error) {
+// FromPHP returns the encoding of the message that PHP gave as value.
+func (m Message) FromPHP(value wire.Raw) ([]byte, error) {
 	if m.plan != nil {
 		if out, ok := m.plan.AppendProto(make([]byte, 0, len(value)), value); ok {
 			return out, nil

@@ -72,7 +72,7 @@ func (st *activeStream) writer() {
 		if st.sendErr.Load() != nil {
 			continue // drain: the client is gone or the stream broke
 		}
-		if err := st.ss.SendMsg(&frame{m}); err != nil {
+		if err := st.ss.SendMsg(&Frame{m}); err != nil {
 			st.sendErr.Store(&err)
 		}
 	}
@@ -94,14 +94,14 @@ func StreamRecv(id int64) (msg wire.Raw, eof bool, err error) {
 	}
 	st.recvMu.Lock()
 	defer st.recvMu.Unlock()
-	var in frame
+	var in Frame
 	if err := st.ss.RecvMsg(&in); err != nil {
 		if errors.Is(err, io.EOF) {
 			return nil, true, nil
 		}
 		return nil, false, err
 	}
-	msg, err = st.method.in.toPHP(nil, in.data)
+	msg, err = st.method.in.ToPHP(nil, in.Data)
 	if err != nil {
 		return nil, false, status.Errorf(codes.Internal, "grpc: failed to unmarshal the received message: %v", err)
 	}
@@ -154,7 +154,7 @@ func sendable(id int64, msg wire.Raw) (*activeStream, []byte, error) {
 	if err := st.sendErr.Load(); err != nil {
 		return nil, nil, *err
 	}
-	out, err := st.method.out.fromPHP(msg)
+	out, err := st.method.out.FromPHP(msg)
 	if err != nil {
 		return nil, nil, status.Errorf(codes.Internal, "invalid %s: %v", st.method.desc.Output().FullName(), err)
 	}

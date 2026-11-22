@@ -134,12 +134,15 @@ type thread struct {
 	ended  bool       // the thread ended: a goroutine that finishes an operation does not wait
 
 	// Supervision (see supervise.go).
-	sendMu   sync.RWMutex // held for reading while an event is queued; taken to set retired and gone
-	retired  bool         // no new requests may be queued here
-	gone     bool         // the thread has ended and none takes its place: nothing may be queued here
-	retiring atomic.Bool  // a replacement was asked for; the thread exits once idle
-	crashes  int          // crashes in a row without taking work in between
-	bootMark int64        // calls served (mailbox) when the thread last started
+	sendMu   sync.RWMutex  // held for reading while an event is queued; taken to set retired and gone
+	retired  bool          // no new requests may be queued here
+	gone     bool          // the thread has ended and none takes its place: nothing may be queued here
+	retiring atomic.Bool   // a replacement was asked for; the thread exits once idle
+	crashes  int           // crashes in a row without taking work in between
+	bootMark int64         // calls served (mailbox) when the thread last started
+	ready    chan struct{} // closed when the thread first came to its loop, or ended before
+	up       bool          // ready is closed; collect's goroutine alone reads and sets it
+	left     chan struct{} // closed when the thread ended after it asked for a replacement
 }
 
 var (
@@ -271,6 +274,7 @@ func (e *Engine) newThread(tid int, p pool, slot int) *thread {
 	t := &thread{
 		id: tid, pool: p, slot: slot, box: mailboxOf(tid),
 		calls: map[int64]*call{}, scoped: map[int64]context.CancelFunc{},
+		ready: make(chan struct{}), left: make(chan struct{}),
 	}
 	// The mailbox is the thread id's: a thread that had the id before left
 	// its count.

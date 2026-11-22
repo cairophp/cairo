@@ -22,7 +22,7 @@ func openOutbox() (*os.File, error) {
 }
 
 // collect takes what the PHP threads have for Go, the answers to their
-// calls and their own end, for as long as wake is open. A thread hands
+// calls, that they have booted and their own end, for as long as wake is open. A thread hands
 // these over without running Go code: it keeps none of Go's processors, and
 // Go's scheduler wakes nothing on the thread's account.
 func (e *Engine) collect(wake *os.File) {
@@ -49,7 +49,10 @@ func (e *Engine) collect(wake *os.File) {
 			switch m.kind {
 			case C.CAIRO_MSG_ANSWER:
 				lent = t.answer(m)
+			case C.CAIRO_MSG_READY:
+				t.booted()
 			case C.CAIRO_MSG_EXIT:
+				t.booted() // retire does not wait for a thread that ended before its loop
 				e.threadExited(t, int(m.id))
 				e.threadsWG.Done()
 			}

@@ -280,6 +280,13 @@ PHP_FUNCTION(cairo_next_event)
 		zend_throw_error(NULL, "cairo_next_event(): this thread has no events");
 		RETURN_THROWS();
 	}
+	// The thread has run server.php: Go may give it the requests of the
+	// thread it replaces (retire in supervise.go).
+	static __thread bool ready;
+	if (!ready) {
+		ready = 1;
+		cairo_outbox_ready(tid);
+	}
 	cairo_mailbox *box = &boxes[tid];
 	int64_t now = unix_ns();
 	int handed = came_back(box, tid, now);

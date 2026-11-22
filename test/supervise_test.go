@@ -21,14 +21,17 @@ func startSupervise(t *testing.T, env ...string) (fetch func(path string) (int, 
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	client := &http.Client{Timeout: 10 * time.Second}
 	t.Cleanup(func() {
+		// Go's server waits 5s at its stop for a connection that the client
+		// opened and has not used.
+		client.CloseIdleConnections()
 		_ = cmd.Process.Signal(os.Interrupt)
 		_ = cmd.Wait()
 	})
 	if err := waitFor(addr, 10*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
 	return func(path string) (int, string) {
 		resp, err := client.Get("http://" + addr + path)
 		if err != nil {
@@ -150,6 +153,50 @@ func TestMaxRequestsRecyclesThread(t *testing.T) {
 		t.Fatalf("60 requests with maxRequests(5) ran on %d threads, want several", len(seen))
 	}
 	t.Logf("60 concurrent requests ran on %d successive threads, none failed", len(seen))
+}
+
+// A recycled thread serves until its replacement has run server.php: with a
+// boot of 600ms, no request waits for it.
+func TestRecycledThreadServesUntilTheNewOneHasBooted(t *testing.T) {
+	fetch := startSupervise(t, "CAIRO_MAX_REQUESTS=5", "CAIRO_BOOT_MS=600")
+	fetch("/boot") // waits for the first thread's own boot
+	ids := map[string]bool{}
+	var slowest time.Duration
+	for deadline := time.Now().Add(10 * time.Second); len(ids) < 2 && time.Now().Before(deadline); {
+		start := time.Now()
+		code, id := fetch("/boot")
+		if code != 200 {
+			t.Fatalf("/boot during recycling: %d (%q)", code, id)
+		}
+		slowest = max(slowest, time.Since(start))
+		ids[id] = true
+	}
+	if len(ids) < 2 {
+		t.Fatal("the thread was never replaced")
+	}
+	if slowest > 300*time.Millisecond {
+		t.Errorf("a request took %s while the new thread booted for 600ms", slowest.Round(time.Millisecond))
+	}
+}
+
+// A recycled thread that dies while its replacement boots: the requests that
+// come then go to the replacement and wait for its boot only.
+func TestRecycledThreadCrashesWhileTheNewOneBoots(t *testing.T) {
+	fetch := startSupervise(t, "CAIRO_MAX_REQUESTS=5", "CAIRO_BOOT_MS=600")
+	var first string
+	for i := 0; i < 5; i++ { // the fifth asks for the replacement
+		if _, first = fetch("/boot"); first == "" {
+			t.Fatalf("/boot #%d: no answer", i+1)
+		}
+	}
+	if code, body := fetch("/crash"); code != 500 {
+		t.Fatalf("/crash on the recycled thread: %d (%q), want 500", code, body)
+	}
+	start := time.Now()
+	code, second := fetch("/boot")
+	if code != 200 || second == first || time.Since(start) > 3*time.Second {
+		t.Fatalf("/boot after the crash: %d %q after %s (before: %q), want 200 from the new thread", code, second, time.Since(start).Round(time.Millisecond), first)
+	}
 }
 
 // maxMemory: a thread whose PHP memory grows past the limit is replaced.

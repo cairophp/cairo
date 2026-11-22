@@ -48,28 +48,6 @@ namespace Cairo {
         }
 
         /**
-         * Log a warning when one request runs the same statement $times
-         * times or more: the N+1 pattern, a query in a loop where one query
-         * with a join or IN (...) would do.
-         *
-         *     level=WARN msg="repeated query" route="GET /orders" count=50 query="SELECT * FROM items WHERE order_id = ?"
-         *
-         * It counts every statement run through PDO (any driver) and
-         * Cairo\Sql. Statements with the same shape count as one: string and
-         * number literals and IN (...) lists are replaced by ?. Parameters
-         * are never logged. Each route and statement is logged at most once
-         * a minute. 0, the default, turns the detector off.
-         */
-        public function repeatedQueries(int $times = 10): static
-        {
-        }
-
-        /** @internal */
-        public function repeatedQueriesAt(): int
-        {
-        }
-
-        /**
          * Development aid: log the static properties that hold request state
          * but are not request-local (see Cairo\RequestLocal), so one request
          * could read another's value:
@@ -106,7 +84,7 @@ namespace Cairo {
          *
          *     slow request route="GET /orders/{id}" ms=1240 php_ms=40 longest_run_ms=12 sql="38 in 310ms" http="2 in 890ms"
          *
-         * Kinds: sql (PDO pgsql, Cairo\Sql), http (Cairo\Http\Client, curl),
+         * Kinds: sql (PDO pgsql), http (curl),
          * socket (other hooked sockets: PDO MySQL, Redis, streams), connect
          * (DNS, connect, TLS), sleep, wait (channels, select(), Cairo\Pool
          * with acquireTimeout), offload and grpc. Waits of async() tasks run side by side, so the kinds can
@@ -738,12 +716,10 @@ namespace Cairo {
      *
      *     $http->use(Middleware::requestId())
      *          ->use(Middleware::accessLog())
-     *          ->use(Middleware::cors(origins: ['https://app.example']))
-     *          ->use(Middleware::rateLimit(perSecond: 50, burst: 100))
-     *          ->use(Middleware::timeout(30))
-     *          ->use(Middleware::gzip());
+     *          ->use(Middleware::maxBody(8 << 20))
+     *          ->use(Middleware::timeout(30));
      *
-     * gRPC servers take requestId(), accessLog(), rateLimit() and timeout().
+     * gRPC servers take requestId(), accessLog() and timeout().
      */
     final class Middleware
     {
@@ -754,30 +730,6 @@ namespace Cairo {
 
         /** One log line per request: method, path, status, bytes, time, client, request id. */
         public static function accessLog(): self
-        {
-        }
-
-        /**
-         * Cross-origin requests. Preflights are answered in Go; PHP never sees them.
-         * @param list<string> $origins allowed origins, or ['*']
-         */
-        public static function cors(
-            array $origins,
-            array $methods = [],
-            array $headers = [],
-            array $expose = [],
-            bool $credentials = false,
-            int $maxAge = 0,
-        ): self
-        {
-        }
-
-        /**
-         * A token bucket: $perSecond requests a second, bursts up to $burst.
-         * Over the limit, HTTP answers 429 with Retry-After and gRPC answers
-         * RESOURCE_EXHAUSTED. $by is 'ip' (a bucket per client) or 'global'.
-         */
-        public static function rateLimit(float $perSecond, int $burst = 0, string $by = 'ip'): self
         {
         }
 
@@ -793,11 +745,6 @@ namespace Cairo {
          * client gets 504 or DEADLINE_EXCEEDED.
          */
         public static function timeout(float $seconds): self
-        {
-        }
-
-        /** Gzips responses of at least $minBytes for clients that accept it. HTTP only. */
-        public static function gzip(int $minBytes = 1024): self
         {
         }
 
@@ -1089,122 +1036,12 @@ namespace Cairo\Http {
     }
 }
 
-namespace Cairo\Http {
-    /**
-     * An HTTP client backed by Go's net/http: pooled keep-alive connections,
-     * HTTP/2 over TLS, and proxies from HTTP_PROXY/HTTPS_PROXY/NO_PROXY.
-     * Inside a request handler or async() task the fiber suspends while Go
-     * sends the request, and the request's deadline cancels it; elsewhere
-     * the thread waits.
-     *
-     *     $github = new Client(['base_uri' => 'https://api.github.com', 'timeout' => 5]);
-     *     $repo = $github->get('/repos/php/php-src')->json();
-     *
-     * Options (to the constructor, or per request, which wins):
-     *   base_uri         prefix for relative URLs
-     *   headers          array<string, string|list<string>>
-     *   query            array, appended to the URL
-     *   body             string; or json (any value) or form (array)
-     *   timeout          seconds for the whole exchange, 0 for none (default 30)
-     *   follow_redirects bool, or the most redirects to follow (default 5)
-     *   verify           bool, or a CA bundle path (default true)
-     *   cert             client certificate PEM path, or [cert, key]
-     *
-     * Responses of any status are returned; transport failures throw
-     * ClientException (ClientTimeoutException for the timeout option).
-     */
-    final class Client
-    {
-        /** @param array<string, mixed> $options */
-        public function __construct(private readonly array $options = [])
-        {
-        }
-
-        /** @param array<string, mixed> $options */
-        public function get(string $url, array $options = []): ClientResponse
-        {
-        }
-
-        /** @param array<string, mixed> $options */
-        public function post(string $url, array $options = []): ClientResponse
-        {
-        }
-
-        /** @param array<string, mixed> $options */
-        public function put(string $url, array $options = []): ClientResponse
-        {
-        }
-
-        /** @param array<string, mixed> $options */
-        public function patch(string $url, array $options = []): ClientResponse
-        {
-        }
-
-        /** @param array<string, mixed> $options */
-        public function delete(string $url, array $options = []): ClientResponse
-        {
-        }
-
-        /** @param array<string, mixed> $options */
-        public function head(string $url, array $options = []): ClientResponse
-        {
-        }
-
-        /** @param array<string, mixed> $options */
-        public function request(string $method, string $url, array $options = []): ClientResponse
-        {
-        }
-    }
-
-    final class ClientResponse
-    {
-        /** @param array<string, list<string>> $headers canonical names (Content-Type) */
-        public function __construct(
-            public readonly int $status,
-            public readonly string $reason,
-            public readonly array $headers,
-            public readonly string $body,
-            public readonly string $url,
-            public readonly string $protocol,
-        )
-        {
-        }
-
-        /** The first value of a header, by any case of its name. */
-        public function header(string $name): ?string
-        {
-        }
-
-        public function ok(): bool
-        {
-        }
-
-        public function json(bool $assoc = true): mixed
-        {
-        }
-    }
-
-    /** A request that got no response: DNS, connect, TLS, redirects. */
-    class ClientException extends \RuntimeException
-    {
-        /** $kind: connect, tls, timeout, redirects or request */
-        public function __construct(string $message, public readonly string $kind = 'connect')
-        {
-        }
-    }
-
-    /** The request's timeout option ran out. */
-    final class ClientTimeoutException extends ClientException
-    {
-    }
-}
-
 namespace Cairo\Grpc {
     use Cairo\App;
 
     final class Server
     {
-        /** Add Go-side middleware: requestId(), accessLog(), rateLimit(); see Cairo\Middleware. */
+        /** Add Go-side middleware: requestId(), accessLog(), timeout(); see Cairo\Middleware. */
         public function use(\Cairo\Middleware $middleware): static
         {
         }
@@ -1696,163 +1533,6 @@ namespace Cairo\Net {
     }
 }
 
-namespace Cairo\Sql {
-    /**
-     * A SQL query failed. $sqlState is the five-character SQLSTATE code
-     * (e.g. 23505 for a unique violation), when the database sent one.
-     */
-    class SqlException extends \RuntimeException
-    {
-        public function __construct(string $message, public readonly ?string $sqlState = null, public readonly ?string $detail = null)
-        {
-        }
-    }
-
-    /** A binary parameter (bytea, BLOB). Values read back from binary columns are plain strings. */
-    final class Bytes
-    {
-        public function __construct(public readonly string $bytes)
-        {
-        }
-    }
-
-    /** What Db and Tx share: running statements. */
-    abstract class Queryable
-    {
-        /** @return array<string, int> which pool or transaction runs the statement */
-        abstract protected function target(): array;
-
-        /**
-         * Run a query and return every row as column => value. Parameters
-         * are $1, $2, ... for PostgreSQL and ? for MySQL. Only the calling
-         * fiber waits.
-         *
-         * @param list<mixed> $params
-         * @return list<array<string, mixed>>
-         */
-        public function query(string $sql, array $params = []): array
-        {
-        }
-
-        /**
-         * The first row, or null when there is none.
-         *
-         * @param list<mixed> $params
-         * @return array<string, mixed>|null
-         */
-        public function queryRow(string $sql, array $params = []): ?array
-        {
-        }
-
-        /**
-         * The first column of the first row, or null when there is no row.
-         *
-         * @param list<mixed> $params
-         */
-        public function queryValue(string $sql, array $params = []): mixed
-        {
-        }
-
-        /**
-         * Run a statement and return how many rows it changed.
-         *
-         * @param list<mixed> $params
-         */
-        public function exec(string $sql, array $params = []): int
-        {
-        }
-    }
-
-    /**
-     * A PostgreSQL or MySQL connection pool in Go (database/sql with pgx or
-     * go-sql-driver/mysql), shared by every PHP thread: Db::open() with the
-     * same DSN and options returns the same pool on each thread, so max_open
-     * bounds the connections of the whole server.
-     *
-     *     $db = Db::open('postgres://app:secret@127.0.0.1/app', ['max_open' => 20]);
-     *     $users = $db->query('SELECT id, name FROM users WHERE team = $1', [$team]);
-     *
-     *     $db = Db::open('mysql://app:secret@127.0.0.1:3306/app');
-     *     $users = $db->query('SELECT id, name FROM users WHERE team = ?', [$team]);
-     *
-     * Integers, floats, booleans, strings and nulls come back as such; binary
-     * columns as strings, timestamps as RFC 3339 in UTC (MySQL DATE as
-     * Y-m-d), numeric/DECIMAL, json and the rest in the database's text form.
-     */
-    final class Db extends Queryable
-    {
-        /**
-         * $dsn is a postgres:// URL, a PostgreSQL key=value DSN, or
-         * mysql://user:pass@host:port/db (?socket=/path for a Unix socket,
-         * plus the go-sql-driver/mysql parameters such as tls or timeout).
-         *
-         * Options: max_open (connections, 0 for no limit; default 10),
-         * max_idle (default max_open, or 10 with no limit), max_lifetime and
-         * max_idle_time (seconds). Fewer idle than open connections means a
-         * reconnect for most queries under load; max_idle_time closes the
-         * ones a quiet pool does not need. acquire_timeout (seconds) bounds
-         * the wait for a free connection with a Cairo\PoolTimeout; without
-         * it a query waits until its request ends. Connecting is lazy: a bad
-         * DSN shows on the first query.
-         *
-         * Statements that would leave a transaction or a lock on a pooled
-         * connection (BEGIN, START TRANSACTION, SET autocommit, LOCK, XA)
-         * throw a SqlException: use transaction() instead.
-         *
-         * @param array{max_open?: int, max_idle?: int, max_lifetime?: float, max_idle_time?: float, acquire_timeout?: float} $options
-         */
-        public static function open(string $dsn, array $options = []): self
-        {
-        }
-
-        /**
-         * Run $fn in a transaction: committed when $fn returns, rolled back
-         * when it throws (the exception is rethrown). Returns what $fn returns.
-         * A transaction left open when its fiber ends is rolled back.
-         *
-         * @template T
-         * @param callable(Tx): T $fn
-         * @param array{isolation?: 'read committed'|'repeatable read'|'serializable', read_only?: bool} $options
-         * @return T
-         */
-        public function transaction(callable $fn, array $options = []): mixed
-        {
-        }
-
-        /** @return array{max_open: int, open: int, in_use: int, idle: int, wait_count: int, wait_time: float} */
-        public function stats(): array
-        {
-        }
-
-        protected function target(): array
-        {
-        }
-
-        /** @internal */
-        public static function call(string $op, array $payload): mixed
-        {
-        }
-    }
-
-    /** A transaction; see Db::transaction(). */
-    final class Tx extends Queryable
-    {
-        /** @internal */
-        public function __construct(private readonly int $tx)
-        {
-        }
-
-        protected function target(): array
-        {
-        }
-
-        /** @internal commit (true) or roll back */
-        public function end(bool $commit): void
-        {
-        }
-    }
-}
-
 namespace Cairo {
     final class Cache
     {
@@ -1879,7 +1559,7 @@ namespace Cairo {
 }
 
 namespace Cairo {
-    /** Cairo\Pool or Cairo\Sql\Db had no free connection within its acquire timeout. */
+    /** Cairo\Pool had no free connection within its acquire timeout. */
     final class PoolTimeout extends \RuntimeException
     {
     }

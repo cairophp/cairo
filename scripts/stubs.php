@@ -16,8 +16,8 @@ declare(strict_types=1);
 // them. A new one goes here.
 $sources = array_slice($argv, 1) ?: array_map(static fn (string $file): string => __DIR__ . "/../$file.php", [
     'internal/core/php/app', 'internal/core/php/context', 'internal/core/php/channel', 'internal/core/php/async',
-    'internal/core/php/offload', 'php/hooks', 'php/middleware', 'php/http', 'php/http_adapter', 'php/http_client',
-    'php/grpc', 'php/grpc_client', 'php/net', 'php/sql', 'php/cache', 'php/pool', 'internal/core/php/request_local',
+    'internal/core/php/offload', 'php/hooks', 'php/middleware', 'php/http', 'php/http_adapter',
+    'php/grpc', 'php/grpc_client', 'php/net', 'php/cache', 'php/pool', 'internal/core/php/request_local',
 ]);
 
 final class Stubs

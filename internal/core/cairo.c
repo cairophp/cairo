@@ -126,25 +126,6 @@ PHP_FUNCTION(cairo_retire)
 	goThreadRetire(cairo_tid, reason, (int)len);
 }
 
-// cairo_stream_fd(resource $stream): int is the descriptor under a socket or
-// pipe stream, or -1 when it has none. Cairo\Revolt\Driver waits on it.
-PHP_FUNCTION(cairo_stream_fd)
-{
-	zval *zstream;
-	php_stream *stream;
-	php_socket_t fd = -1;
-	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_RESOURCE(zstream)
-	ZEND_PARSE_PARAMETERS_END();
-	php_stream_from_zval(stream, zstream);
-	int as = PHP_STREAM_AS_FD_FOR_SELECT | PHP_STREAM_CAST_INTERNAL;
-	if (php_stream_can_cast(stream, as) == SUCCESS
-		&& php_stream_cast(stream, as, (void **)&fd, 0) == SUCCESS && fd >= 0) {
-		RETURN_LONG((zend_long)fd);
-	}
-	RETURN_LONG(-1);
-}
-
 // cairo_go_call(string $op, array $args): array. Runs a Go operation on
 // this thread, outside a fiber; returns ['result' => ...] or ['error' => ...].
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_go_call, 0, 0, 2)
@@ -193,10 +174,6 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_next_event, 0, 0, 1)
 	ZEND_ARG_INFO(0, turn)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_stream_fd, 0, 0, 1)
-	ZEND_ARG_INFO(0, stream)
-ZEND_END_ARG_INFO()
-
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_guard, 0, 0, 1)
 	ZEND_ARG_INFO(0, fn)
 ZEND_END_ARG_INFO()
@@ -206,7 +183,6 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_spec, arginfo_cairo_spec)
 	PHP_FE(cairo_next_event, arginfo_cairo_next_event)
 	PHP_FE(cairo_respond, arginfo_cairo_respond)
-	PHP_FE(cairo_stream_fd, arginfo_cairo_stream_fd)
 	PHP_FE(cairo_retire, arginfo_cairo_retire)
 	PHP_FE(cairo_socket_arm, arginfo_cairo_socket_arm)
 	PHP_FE(cairo_socket_disarm, arginfo_cairo_socket_disarm)

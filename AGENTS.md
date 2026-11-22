@@ -33,12 +33,11 @@ the operation has for its own length.
 | `internal/core/php/` | The core's PHP files, one per concern, embedded in the binary. Every PHP thread runs `runtime.php`, which loads the core's other files (`app.php`, `context.php`, `channel.php`, `async.php`, `offload.php`, `waits.php`, `scheduler.php`, `go.php`; `request_local.php` on first use) and then the files of the extensions |
 | `internal/core/phpfiles.go` | How an extension's PHP file joins the runtime: `core.RegisterPHP(files, "name.php")` from its Go file's `init()` (`registerPHP("name.php")` in `internal/sapi`), loaded at start, or on first use of the classes it names. The engine writes the files of the core and of every extension into one directory when it starts, so a file name can be taken once |
 | `internal/core/onstart.go`, `probe.go` | What an extension runs when the engine starts (`RegisterStart`), and how it follows requests through the engine: `ProbeRequests` gives each request a `Probe`, which is told of the waits of its fibers and of the stretches of PHP its thread ran. The engine measures nothing itself. `internal/sapi/timing.go` is the one that asks: the request timing behind the slow log (`slowlog.go`) and the heavy routes (`heavy.go`) |
-| `internal/sapi/` | The extensions that are cgo or Go operations: the runtime hooks, the PDO pgsql driver, the clients, `Cairo\Sql`, the diagnostics, how an HTTP answer leaves PHP. Every file joins the core from its `init()` |
+| `internal/sapi/` | The extensions that are cgo or Go operations: the runtime hooks, the PDO pgsql driver, the clients, the diagnostics, how an HTTP answer leaves PHP. Every file joins the core from its `init()` |
 | `php/` | The PHP files of the extensions, one per concern, embedded in the binary |
 | `internal/sapi/blocking.go`, `blocking.c`, `php/blocking.php` | The blocking detector, which watches threads instead of requests: it asks the engine which threads are running PHP (`EachBusyThread`) and interrupts one that has for too long (`InterruptThread`), and that thread reports from the `interrupt` of the detector's `cairo_extension`. Its goroutine ends when the engine does (`Stopping`) |
 | `php/http_answer.php`, `php/grpc_answer.php` | How a request of each server is answered. The scheduler knows no server: a server's PHP file gives it an `Answer` with `Scheduler::answerWith()`, which answers a request in the request's fiber and names its route for the logs. `internal/sapi/http_answer.c` has `cairo_respond_http()`, which sends an HTTP answer to Go (`cairo_answer()`). The form its status and headers cross in is the HTTP server's own: written there, read by `decodeAnswer` in `internal/httpserver/answer.go` |
-| `php/query_watch.php`, `php/leak_watch.php` | How a diagnostic joins the scheduler, which names none: `Scheduler::onStart()` runs it on each request thread that starts, and there it asks to be called after each request (`afterRequest()`) when the app turned it on. The detectors themselves (`queries.php`, `leaks.php`) load on first use |
-| `php/revolt.php` | `Cairo\Revolt\Driver`, loaded when `revolt/event-loop` is installed |
+| `php/leak_watch.php` | How a diagnostic joins the scheduler, which names none: `Scheduler::onStart()` runs it on each request thread that starts, and there it asks to be called after each request (`afterRequest()`) when the app turned it on. The detector itself (`leaks.php`) loads on first use |
 | `php/cache.php`, `php/pool.php` | `Cairo\Cache` and `Cairo\Pool`, each loaded on first use |
 | `internal/spec/` | The declaration that `server.php` sends to Go. This package reads the core's part (threads, the concurrency mode, limits) and keeps what each extension declared as PHP sent it, under the extension's name. `Claims` is what servers must not share: listen addresses and handler ids |
 | `internal/httpserver/`, `internal/grpcserver/` | net/http and grpc-go servers built from the declaration. Each reads and checks its own part of it (`declaration.go`); `cmd/cairo` gives both to the engine to run in the declare phase |
@@ -65,7 +64,7 @@ yes to either makes it core.
 | Side | What it holds |
 |------|---------------|
 | Core | The SAPI and the PHP threads, their supervision, dispatch (fibers and isolated mode), the fiber scheduler and request-local state, the bridge (wire events, the op registry, the answer path), waiting (the threads' epolls, parked fibers, timers), deadlines and the hard stop, the concurrency API (`Context`, `Channel`, `select()`, `async()`, `await()`, `sleep()`, `offload()`, `RequestLocal`), the declaration and boot |
-| Extensions | Servers (HTTP, its response cache, middleware, gRPC), clients (`Http\Client`, `Grpc\Client`, `Cairo\Net`), databases (`Cairo\Sql`, the PDO pgsql driver, `Cairo\Pool`), PHP hooks (streams, sleep, DNS, TLS, curl), bridges (PSR adapters, Revolt), diagnostics (slow log, heavy routes, repeated queries, leaks, blocking), `cairo gen` |
+| Extensions | Servers (HTTP, its response cache, middleware, gRPC), clients (`Grpc\Client`, `Cairo\Net`), databases (the PDO pgsql driver, `Cairo\Pool`), PHP hooks (streams, sleep, DNS, TLS, curl), bridges (PSR adapters), diagnostics (slow log, heavy routes, leaks, blocking), `cairo gen` |
 
 The core is `internal/core` (Go and C) with its PHP files in
 `internal/core/php`, and the two packages it imports, `internal/spec` and
@@ -154,8 +153,7 @@ What the test environment variables do:
 | `PHP_BIN` | A PHP CLI for the tests that need one (stubs, codegen) |
 
 Skipped tests are not passing tests: say which ones skipped when you report
-results. The frameworks and Revolt tests run `composer install` and need the
-network.
+results. The frameworks tests run `composer install` and need the network.
 
 `internal/core`, `internal/sapi` and `cmd/cairo` do not compile without the
 PHP headers. `go vet ./...` only works where `make php` has run.
@@ -230,8 +228,8 @@ one line and move on.
   points, interfaces with one implementation, or "for later" parameters. Add
   them when a second caller needs them.
 - **Reuse before you write.** Search first (`grep -rn`): `Stream::call`,
-  `sqlOp`, `core.RegisterOp`, the test helpers `freeAddr`, `waitFor` and
-  `startSQLScript`, and the existing examples already solve most plumbing.
+  `core.RegisterOp`, the test helpers `freeAddr` and `waitFor`, and the
+  existing examples already solve most plumbing.
   Two copies of the same 10+ lines means extract a function; three means it
   was overdue.
 - **Prefer the standard library.** A new Go module or Composer package needs a
@@ -255,12 +253,11 @@ one line and move on.
 | Function parameters | ≤ 4 | 6 (then pass a struct or options array) |
 | Nesting depth | ≤ 3 | 4 (return early instead) |
 
-- **One file, one concern**, named after it: `sqldb.go`, `grpcstream.go`,
+- **One file, one concern**, named after it: `pgshared.go`, `grpcstream.go`,
   `tls_unix.go`. A new capability gets a new file, never a new section at the
   bottom of a big one.
 - **Existing oversized files** (`internal/sapi/pdo_pgsql.c`,
-  `php/revolt.php`, `test/e2e_test.go`)
-  must not grow by a whole feature. A new PHP subsystem goes in its own file
+  `test/e2e_test.go`) must not grow by a whole feature. A new PHP subsystem goes in its own file
   under `php/`, added to the runtime with `registerPHP` from its Go file and,
   when it has public classes or functions, to the list in `scripts/stubs.php`
   (`php/cache.php` with `internal/sapi/cachepurge.go` is the model). New C goes in its own `.c` file with a
@@ -307,7 +304,7 @@ Cairo is a server: per-request code runs millions of times.
 - **Never trust request input**: headers, bodies, query strings, gRPC
   metadata, proto fields, file names. Validate type, length and range at the
   edge, then pass typed values inward.
-- **SQL only with parameters.** `$1`/`?` placeholders in `Cairo\Sql` and PDO;
+- **SQL only with parameters.** `$1`/`?` placeholders in PDO;
   never build SQL with string concatenation or `sprintf`. Identifiers that
   must be dynamic come from an allow-list.
 - **No shell, no eval.** No `exec.Command` with user input, no `sh -c`, no
@@ -349,7 +346,7 @@ Cairo is a server: per-request code runs millions of times.
   Respect cancellation in loops.
 - **Goroutines** have an owner and an exit: every `go func()` ends when its
   context is cancelled or its work is done. No leaked goroutines (see
-  `sqlBegin`'s cleanup goroutine for the pattern).
+  the blocking detector's goroutine in `blocking.go` for the pattern).
 - **Interfaces** are small and defined where they are used, not where they
   are implemented. Accept interfaces, return concrete types.
 - **Logging** with `log/slog`, structured key/value pairs, no `fmt.Println`
@@ -370,7 +367,7 @@ Cairo is a server: per-request code runs millions of times.
   `@phpstan-ignore` to hide a real type problem.
 - **Fiber-safe by default:** no request state in static properties, globals
   or singletons. Use `Request`, `Context` values and constructor arguments.
-- **Exceptions** are specific classes (`SqlException`, `Grpc\Exception`),
+- **Exceptions** are specific classes (`Grpc\Exception`, `NetException`),
   never bare `\Exception`; never swallow one silently.
 - The PHP floor is 8.1: do not use newer syntax in `internal/core/php/`,
   `php/` or the examples unless guarded by a version check.

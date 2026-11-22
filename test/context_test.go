@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/url"
 	"testing"
 )
 
@@ -55,8 +54,7 @@ func TestContextDoneAtDeadline(t *testing.T) {
 // derives from), does not start under one that has ended, and under a live
 // one it runs to its end.
 func TestContextEndsGoOperation(t *testing.T) {
-	slow := url.QueryEscape("http://" + httpAddr + "/sleep?seconds=0.6")
-	out := getJSON(t, "/ctx/go-operation?url="+slow)
+	out := getJSON(t, "/ctx/go-operation?addr="+pongAfter(t))
 	for _, tc := range []struct {
 		key, how string
 		min, max float64
@@ -74,7 +72,7 @@ func TestContextEndsGoOperation(t *testing.T) {
 			t.Errorf("%s: a 0.6s operation ended as %v after %vs, want %s within %v to %vs", tc.key, got[0], got[1], tc.how, tc.min, tc.max)
 		}
 	}
-	if out["request"] != "answered 200" || out["request_err"] != nil {
+	if out["request"] != "answered pong" || out["request_err"] != nil {
 		t.Errorf("under a live context, with the request's own: %v, %v", out["request"], out["request_err"])
 	}
 }

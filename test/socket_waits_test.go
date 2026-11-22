@@ -3,7 +3,6 @@ package test
 import (
 	"fmt"
 	"net"
-	"net/url"
 	"testing"
 	"time"
 )
@@ -82,13 +81,12 @@ func TestSocketWaitEndsWithItsContext(t *testing.T) {
 // for it and for its timers: next to a fiber that waits a second for a
 // socket, Go operations and a sleep take their own time.
 func TestSocketWaitLeavesTheThreadAwake(t *testing.T) {
-	q := url.Values{"addr": {pongAfter(t)}, "url": {"http://" + httpAddr + "/ctx/value"}}
 	start := time.Now()
-	out := getJSON(t, "/sockets/beside?"+q.Encode())
+	out := getJSON(t, "/sockets/beside?addr="+pongAfter(t))
 	call, _ := out["slowest_call"].(float64)
 	slept, _ := out["slept"].(float64)
 	if call > 0.3 || slept < 0.04 || slept > 0.3 {
-		t.Errorf("next to a 1s wait on a socket, an HTTP call took up to %vs and a 50ms sleep %vs", call, slept)
+		t.Errorf("next to a 1s wait on a socket, a call through Go took up to %vs and a 50ms sleep %vs", call, slept)
 	}
 	if took := time.Since(start); out["read"] != "pong" || took < 900*time.Millisecond || took > 3*time.Second {
 		t.Errorf("the socket's fiber read %q, and the request took %s; want the answer after about 1s", out["read"], took.Round(time.Millisecond))

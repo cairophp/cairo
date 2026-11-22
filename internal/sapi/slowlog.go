@@ -37,7 +37,7 @@ func opKind(op string) waitKind {
 	switch op {
 	case "pg":
 		return waitSQL
-	case "http", "waitset": // waitset: a hooked curl transfer
+	case "waitset": // a hooked curl transfer
 		return waitHTTP
 	case "wait":
 		return waitSocket
@@ -50,10 +50,7 @@ func opKind(op string) waitKind {
 	case "offload":
 		return waitOffload
 	}
-	switch {
-	case strings.HasPrefix(op, "sql."):
-		return waitSQL
-	case strings.HasPrefix(op, "grpc."):
+	if strings.HasPrefix(op, "grpc.") {
 		return waitGRPC
 	}
 	return waitOther

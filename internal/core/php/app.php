@@ -20,7 +20,6 @@ namespace Cairo {
         private float $slowRequests = 0.0;
         private float $heavyRoutes = 0.0;
         private int $maxInFlight = 0;
-        private int $repeatedQueries = 0;
         private bool $detectLeaks = false;
         /** @var list<string> "Class::$property" the leak detector skips */
         private array $leaksIgnored = [];
@@ -97,34 +96,6 @@ namespace Cairo {
         }
 
         /**
-         * Log a warning when one request runs the same statement $times
-         * times or more: the N+1 pattern, a query in a loop where one query
-         * with a join or IN (...) would do.
-         *
-         *     level=WARN msg="repeated query" route="GET /orders" count=50 query="SELECT * FROM items WHERE order_id = ?"
-         *
-         * It counts every statement run through PDO (any driver) and
-         * Cairo\Sql. Statements with the same shape count as one: string and
-         * number literals and IN (...) lists are replaced by ?. Parameters
-         * are never logged. Each route and statement is logged at most once
-         * a minute. 0, the default, turns the detector off.
-         */
-        public function repeatedQueries(int $times = 10): static
-        {
-            if ($times < 0 || $times === 1) {
-                throw new \InvalidArgumentException('repeatedQueries must be 0 (off) or 2 or more');
-            }
-            $this->repeatedQueries = $times;
-            return $this;
-        }
-
-        /** @internal */
-        public function repeatedQueriesAt(): int
-        {
-            return $this->repeatedQueries;
-        }
-
-        /**
          * Development aid: log the static properties that hold request state
          * but are not request-local (see Cairo\RequestLocal), so one request
          * could read another's value:
@@ -165,7 +136,7 @@ namespace Cairo {
          *
          *     slow request route="GET /orders/{id}" ms=1240 php_ms=40 longest_run_ms=12 sql="38 in 310ms" http="2 in 890ms"
          *
-         * Kinds: sql (PDO pgsql, Cairo\Sql), http (Cairo\Http\Client, curl),
+         * Kinds: sql (PDO pgsql), http (curl),
          * socket (other hooked sockets: PDO MySQL, Redis, streams), connect
          * (DNS, connect, TLS), sleep, wait (channels, select(), Cairo\Pool
          * with acquireTimeout), offload and grpc. Waits of async() tasks run side by side, so the kinds can

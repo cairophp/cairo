@@ -11,7 +11,7 @@ import (
 // (reqTiming.longest). Every other request on that thread waited for it, so
 // past the threshold Go names the route, at most once a minute per route.
 
-var heavy repeatedLog // the same once-a-minute limit as repeated queries
+var heavy logOnce
 
 func (tm *timing) logHeavy(ev wire.Event, t *reqTiming) {
 	run := time.Duration(t.longest.Load())

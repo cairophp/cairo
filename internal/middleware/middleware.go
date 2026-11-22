@@ -1,26 +1,20 @@
 // Package middleware implements the Go-side middleware that server.php
 // declares with $server->use(Middleware::...). It runs in Go, before a
-// request reaches PHP, so rejected or compressed requests cost PHP nothing.
+// request reaches PHP, so a rejected request costs PHP nothing.
 //
-// HTTP: request_id, access_log, cors, rate_limit, max_body, gzip.
-// gRPC: request_id, access_log, rate_limit.
+// HTTP: request_id, access_log, max_body, timeout.
+// gRPC: request_id, access_log, timeout.
 // Middleware runs in the declared order: the first one declared is outermost.
 package middleware
 
 import (
-	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
-	"net"
 	"net/http"
-	"strconv"
-	"strings"
-	"sync"
 	"time"
 )
 
@@ -40,19 +34,6 @@ func HTTP(h http.Handler, decl []Declaration, log *slog.Logger) (http.Handler, e
 			h = requestID(h)
 		case "access_log":
 			h = accessLog(h, log)
-		case "cors":
-			var o CORSOptions
-			if err = decode(m, &o); err == nil {
-				h = cors(h, o)
-			}
-		case "rate_limit":
-			var o RateOptions
-			if err = decode(m, &o); err == nil {
-				var l *limiter
-				if l, err = newLimiter(o); err == nil {
-					h = rateLimitHTTP(h, l)
-				}
-			}
 		case "max_body":
 			var o struct {
 				Bytes int64 `json:"bytes"`
@@ -64,13 +45,6 @@ func HTTP(h http.Handler, decl []Declaration, log *slog.Logger) (http.Handler, e
 			var d time.Duration
 			if d, err = timeoutOf(m); err == nil {
 				h = timeoutHTTP(h, d)
-			}
-		case "gzip":
-			var o struct {
-				MinBytes int `json:"min_bytes"`
-			}
-			if err = decode(m, &o); err == nil {
-				h = gzipHandler(h, o.MinBytes)
 			}
 		default:
 			err = fmt.Errorf("unknown http middleware %q", m.Name)
@@ -185,169 +159,6 @@ func accessLog(h http.Handler, log *slog.Logger) http.Handler {
 	})
 }
 
-// ---- CORS ----
-
-// CORSOptions configure the cors middleware. An empty Origins allows none;
-// "*" allows any.
-type CORSOptions struct {
-	Origins     []string `json:"origins"`
-	Methods     []string `json:"methods"`
-	Headers     []string `json:"headers"`
-	Expose      []string `json:"expose"`
-	Credentials bool     `json:"credentials"`
-	MaxAge      int      `json:"max_age"`
-}
-
-func cors(h http.Handler, o CORSOptions) http.Handler {
-	if len(o.Methods) == 0 {
-		o.Methods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
-	}
-	any := false
-	allowed := map[string]bool{}
-	for _, origin := range o.Origins {
-		if origin == "*" {
-			any = true
-		}
-		allowed[strings.ToLower(origin)] = true
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
-		w.Header().Add("Vary", "Origin")
-		if origin == "" || !(any || allowed[strings.ToLower(origin)]) {
-			h.ServeHTTP(w, r)
-			return
-		}
-		if any && !o.Credentials {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-		} else {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-		}
-		if o.Credentials {
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
-		}
-		if len(o.Expose) > 0 {
-			w.Header().Set("Access-Control-Expose-Headers", strings.Join(o.Expose, ", "))
-		}
-		// A preflight is answered here; PHP never sees it.
-		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
-			w.Header().Set("Access-Control-Allow-Methods", strings.Join(o.Methods, ", "))
-			if len(o.Headers) > 0 {
-				w.Header().Set("Access-Control-Allow-Headers", strings.Join(o.Headers, ", "))
-			} else if req := r.Header.Get("Access-Control-Request-Headers"); req != "" {
-				w.Header().Set("Access-Control-Allow-Headers", req)
-			}
-			if o.MaxAge > 0 {
-				w.Header().Set("Access-Control-Max-Age", strconv.Itoa(o.MaxAge))
-			}
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		h.ServeHTTP(w, r)
-	})
-}
-
-// ---- rate limit ----
-
-// RateOptions configure rate_limit: PerSecond tokens refill each second, up
-// to Burst. By is "ip" (one bucket per client address) or "global".
-type RateOptions struct {
-	PerSecond float64 `json:"per_second"`
-	Burst     int     `json:"burst"`
-	By        string  `json:"by"`
-}
-
-type bucket struct {
-	tokens float64
-	last   time.Time
-}
-
-type limiter struct {
-	opts    RateOptions
-	mu      sync.Mutex
-	buckets map[string]*bucket
-	now     func() time.Time
-	sweep   time.Time
-}
-
-func newLimiter(o RateOptions) (*limiter, error) {
-	if o.PerSecond <= 0 {
-		return nil, fmt.Errorf("per_second must be above 0")
-	}
-	if o.Burst <= 0 {
-		o.Burst = int(o.PerSecond)
-		if o.Burst < 1 {
-			o.Burst = 1
-		}
-	}
-	switch o.By {
-	case "", "ip":
-		o.By = "ip"
-	case "global":
-	default:
-		return nil, fmt.Errorf(`by must be "ip" or "global", not %q`, o.By)
-	}
-	return &limiter{opts: o, buckets: map[string]*bucket{}, now: time.Now}, nil
-}
-
-// allow takes a token for key; when there is none it returns false and how
-// long until the next one.
-func (l *limiter) allow(key string) (bool, time.Duration) {
-	if l.opts.By == "global" {
-		key = ""
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	now := l.now()
-	b := l.buckets[key]
-	if b == nil {
-		b = &bucket{tokens: float64(l.opts.Burst), last: now}
-		l.buckets[key] = b
-	}
-	b.tokens += now.Sub(b.last).Seconds() * l.opts.PerSecond
-	if max := float64(l.opts.Burst); b.tokens > max {
-		b.tokens = max
-	}
-	b.last = now
-	// Drop full buckets now and then, so idle clients do not pile up.
-	if now.Sub(l.sweep) > time.Minute {
-		l.sweep = now
-		for k, ob := range l.buckets {
-			if k != key && now.Sub(ob.last).Seconds()*l.opts.PerSecond >= float64(l.opts.Burst) {
-				delete(l.buckets, k)
-			}
-		}
-	}
-	if b.tokens >= 1 {
-		b.tokens--
-		return true, 0
-	}
-	return false, time.Duration((1 - b.tokens) / l.opts.PerSecond * float64(time.Second))
-}
-
-func clientIP(remote string) string {
-	host, _, err := net.SplitHostPort(remote)
-	if err != nil {
-		return remote
-	}
-	return host
-}
-
-func rateLimitHTTP(h http.Handler, l *limiter) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ok, wait := l.allow(clientIP(r.RemoteAddr))
-		if !ok {
-			secs := int(wait.Seconds() + 0.999)
-			if secs < 1 {
-				secs = 1
-			}
-			w.Header().Set("Retry-After", strconv.Itoa(secs))
-			http.Error(w, "too many requests", http.StatusTooManyRequests)
-			return
-		}
-		h.ServeHTTP(w, r)
-	})
-}
-
 // ---- max body ----
 
 func maxBody(h http.Handler, n int64) http.Handler {
@@ -363,112 +174,3 @@ func maxBody(h http.Handler, n int64) http.Handler {
 		h.ServeHTTP(w, r)
 	})
 }
-
-// ---- gzip ----
-
-type gzipWriter struct {
-	http.ResponseWriter
-	min     int
-	buf     []byte
-	gz      *gzip.Writer
-	status  int
-	decided bool
-	plain   bool
-}
-
-func (g *gzipWriter) WriteHeader(code int) {
-	if g.status == 0 {
-		g.status = code
-	}
-}
-
-func (g *gzipWriter) Write(b []byte) (int, error) {
-	if g.status == 0 {
-		g.status = http.StatusOK
-	}
-	if !g.decided {
-		g.buf = append(g.buf, b...)
-		if len(g.buf) < g.min {
-			return len(b), nil
-		}
-		g.decide()
-		data := g.buf
-		g.buf = nil
-		if _, err := g.writeOut(data); err != nil {
-			return 0, err
-		}
-		return len(b), nil
-	}
-	return g.writeOut(b)
-}
-
-func (g *gzipWriter) decide() {
-	g.decided = true
-	h := g.Header()
-	if h.Get("Content-Encoding") != "" || g.status == http.StatusNoContent || g.status == http.StatusNotModified || len(g.buf) < g.min {
-		g.plain = true
-		g.ResponseWriter.WriteHeader(g.status)
-		return
-	}
-	h.Set("Content-Encoding", "gzip")
-	h.Del("Content-Length")
-	g.gz = gzip.NewWriter(g.ResponseWriter)
-	g.ResponseWriter.WriteHeader(g.status)
-}
-
-func (g *gzipWriter) writeOut(b []byte) (int, error) {
-	if g.plain {
-		return g.ResponseWriter.Write(b)
-	}
-	return g.gz.Write(b)
-}
-
-func (g *gzipWriter) finish() {
-	if !g.decided {
-		if g.status == 0 {
-			g.status = http.StatusOK
-		}
-		g.decide()
-		data := g.buf
-		g.buf = nil
-		if len(data) > 0 {
-			_, _ = g.writeOut(data)
-		}
-	}
-	if g.gz != nil {
-		_ = g.gz.Close()
-	}
-}
-
-func gzipHandler(h http.Handler, min int) http.Handler {
-	if min <= 0 {
-		min = 1024
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Add("Vary", "Accept-Encoding")
-		if !acceptsGzip(r.Header.Get("Accept-Encoding")) || r.Method == http.MethodHead {
-			h.ServeHTTP(w, r)
-			return
-		}
-		g := &gzipWriter{ResponseWriter: w, min: min}
-		defer g.finish()
-		h.ServeHTTP(g, r)
-	})
-}
-
-func acceptsGzip(v string) bool {
-	for _, part := range strings.Split(v, ",") {
-		name, params, _ := strings.Cut(strings.TrimSpace(part), ";")
-		if strings.EqualFold(strings.TrimSpace(name), "gzip") || strings.TrimSpace(name) == "*" {
-			if q, ok := strings.CutPrefix(strings.TrimSpace(params), "q="); ok {
-				if f, err := strconv.ParseFloat(q, 64); err == nil && f == 0 {
-					return false
-				}
-			}
-			return true
-		}
-	}
-	return false
-}
-
-var _ io.Writer = (*gzipWriter)(nil)

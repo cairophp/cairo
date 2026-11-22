@@ -21,7 +21,7 @@ namespace Cairo\Grpc {
         /** @var list<\Cairo\Middleware> */
         private array $middleware = [];
 
-        /** Add Go-side middleware: requestId(), accessLog(), rateLimit(); see Cairo\Middleware. */
+        /** Add Go-side middleware: requestId(), accessLog(), timeout(); see Cairo\Middleware. */
         public function use(\Cairo\Middleware $middleware): static
         {
             $this->middleware[] = $middleware;

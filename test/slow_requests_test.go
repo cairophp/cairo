@@ -64,8 +64,9 @@ func TestSlowRequests(t *testing.T) {
 	if run := number(field("longest_run_ms")); run < 25 || run > 80 {
 		t.Errorf("longest_run_ms = %d, want about 30 (the CPU loop)", run)
 	}
-	if h := field("http"); !strings.HasPrefix(h, "1 in ") || number(strings.TrimPrefix(h, "1 in ")) < 45 {
-		t.Errorf("http = %q, want one call of about 50ms", h)
+	// One curl transfer, which waits for its socket more than once.
+	if _, took, ok := strings.Cut(field("http"), " in "); !ok || number(took) < 45 {
+		t.Errorf("http = %q, want about 50ms", field("http"))
 	}
 	// Four sleeps of 100 ms; three ran side by side, so they add up to more
 	// than the request.
@@ -125,6 +126,11 @@ func TestSlowRequestsCountWaitsOnTheThread(t *testing.T) {
 		if ms, _ := strconv.Atoi(m[1]); ms < atLeast || ms > atLeast+300 {
 			t.Errorf("%s waited %dms, want about %dms: %s", name, ms, atLeast, line)
 		}
+	}
+	// The connect went through Go's dialer: the wait of a Go operation is
+	// in the breakdown as well.
+	if !regexp.MustCompile(` connect="1 in \d+ms"`).MatchString(line) {
+		t.Errorf("no connect in %s", line)
 	}
 }
 

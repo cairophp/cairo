@@ -11,7 +11,7 @@ namespace Cairo {
     use Cairo\Internal\Scheduler;
     use Cairo\Internal\Waiter;
 
-    /** Cairo\Pool or Cairo\Sql\Db had no free connection within its acquire timeout. */
+    /** Cairo\Pool had no free connection within its acquire timeout. */
     final class PoolTimeout extends \RuntimeException
     {
     }

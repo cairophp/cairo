@@ -178,27 +178,33 @@ func routeHandler(r Route, php Dispatcher, cache *responseCache, log *slog.Logge
 		policy = newCachePolicy(r.ID, *r.Cache)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// The cache first: a request it answers needs no event, because PHP
+		// does not see it. A multipart request never uses the cache.
+		key, cached := policy.key(req)
+		cached = cached && !isMultipart(req.Header)
+		var stale *response // served while this request's call rebuilds it
+		if cached {
+			resp, refresh := cache.lookup(key, policy, req.Method == http.MethodGet)
+			if resp != nil && !refresh {
+				resp.write(w)
+				return
+			}
+			stale = resp
+			// PHP may answer HEAD without a body, so HEAD only reads what a
+			// GET stored and never fills the cache.
+			cached = req.Method == http.MethodGet
+		}
 		ev, cleanup, ok := newEvent(w, req, r.ID, names)
 		if !ok {
+			if stale != nil {
+				cache.release(key)
+			}
 			return
 		}
 		ev.name = name
 		defer cleanup()
-		key, ok := policy.key(req)
-		if ok && req.Method == http.MethodHead {
-			// PHP may answer HEAD without a body, so HEAD only reads what a
-			// GET stored and never fills the cache.
-			if resp, _ := cache.lookup(key, policy, false); resp != nil {
-				resp.write(w)
-				return
-			}
-			ok = false
-		}
-		if ok && ev.form == nil {
-			resp, err := cache.serve(req, key, policy, func(ctx context.Context) (*response, error) {
-				r, err := callPHP(ctx, php, ev)
-				return &r, err
-			})
+		if !cached {
+			resp, err := callPHP(req.Context(), php, ev)
 			if err != nil {
 				writeError(w, req, err, log)
 				return
@@ -206,13 +212,30 @@ func routeHandler(r Route, php Dispatcher, cache *responseCache, log *slog.Logge
 			resp.write(w)
 			return
 		}
-		resp, err := callPHP(req.Context(), php, ev)
+		call := func(ctx context.Context) (*response, error) {
+			r, err := callPHP(ctx, php, ev)
+			return &r, err
+		}
+		if stale != nil {
+			cache.refresh(req.Context(), key, policy, call)
+			stale.write(w)
+			return
+		}
+		resp, err := cache.fetch(req.Context(), key, policy, call)
 		if err != nil {
 			writeError(w, req, err, log)
 			return
 		}
 		resp.write(w)
 	})
+}
+
+// isMultipart reports whether the request's body is a form with parts,
+// which PHP receives as fields and files.
+func isMultipart(h http.Header) bool {
+	const prefix = "multipart/form-data"
+	ct := h.Get("Content-Type")
+	return len(ct) >= len(prefix) && strings.EqualFold(ct[:len(prefix)], prefix)
 }
 
 // newEvent reads req into the event PHP receives. It answers the client
@@ -232,7 +255,7 @@ func newEvent(w http.ResponseWriter, req *http.Request, route int, names []strin
 	}
 	cleanup := func() {}
 	var form *multipartForm
-	if strings.HasPrefix(strings.ToLower(req.Header.Get("Content-Type")), "multipart/form-data") {
+	if isMultipart(req.Header) {
 		form, err = parseMultipart(body, req.Header.Get("Content-Type"), os.TempDir())
 		if err != nil {
 			http.Error(w, "malformed multipart body", http.StatusBadRequest)

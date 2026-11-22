@@ -141,21 +141,24 @@ func newResponseCache(maxBytes int) *responseCache {
 
 type callFunc func(ctx context.Context) (*response, error)
 
-// serve answers req from the cache, or through call when it has no usable
-// entry. A stale entry is served at once and rebuilt by one background call.
-func (c *responseCache) serve(req *http.Request, key string, p *cachePolicy, call callFunc) (*response, error) {
-	resp, refresh := c.lookup(key, p, true)
-	if resp == nil {
-		return c.fetch(req.Context(), key, p, call)
+// refresh rebuilds the stale entry for key through call, in the background:
+// the request that claimed it (lookup) is answered with the stale one.
+func (c *responseCache) refresh(ctx context.Context, key string, p *cachePolicy, call callFunc) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
+		defer cancel()
+		_, _ = c.fetch(ctx, key, p, call)
+	}()
+}
+
+// release gives back the claim on a stale entry whose refresh did not
+// start, so that a later request makes it.
+func (c *responseCache) release(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if el, ok := c.entries[key]; ok {
+		el.Value.(*cacheEntry).refreshing = false
 	}
-	if refresh {
-		go func() {
-			ctx, cancel := context.WithTimeout(context.WithoutCancel(req.Context()), refreshTimeout)
-			defer cancel()
-			_, _ = c.fetch(ctx, key, p, call)
-		}()
-	}
-	return resp, nil
 }
 
 // lookup returns the entry for key if it is fresh or stale and not purged.

@@ -222,13 +222,13 @@ func grpcMethodOf(req *grpcCallRequest) (*grpcMethod, map[string]any) {
 
 // request returns the encoded request for the array PHP gave. No array, or
 // an empty one, is the message with nothing set.
-func (m *grpcMethod) request(value wire.Raw) ([]byte, map[string]any) {
+func (m *grpcMethod) request(value wire.Raw) ([]byte, error) {
 	if len(value) == 0 || value[0] == wire.TagNull || bytes.Equal(value, emptyList) {
 		return nil, nil
 	}
 	in, err := m.in.FromPHP(value)
 	if err != nil {
-		return nil, grpcFail(3, "request does not match "+string(m.desc.Input().FullName())+": "+err.Error()) // INVALID_ARGUMENT
+		return nil, status.Errorf(codes.InvalidArgument, "request does not match %s: %v", m.desc.Input().FullName(), err)
 	}
 	return in, nil
 }
@@ -255,9 +255,9 @@ func grpcCall(ctx context.Context, req grpcCallRequest) map[string]any {
 	if m.desc.IsStreamingClient() || m.desc.IsStreamingServer() {
 		return grpcFail(12, req.Method+" is a streaming method")
 	}
-	in, fail := m.request(req.Message)
-	if fail != nil {
-		return fail
+	in, err := m.request(req.Message)
+	if err != nil {
+		return grpcStatusFail(err)
 	}
 	conn, err := grpcConn(req.Target, req.TLS)
 	if err != nil {

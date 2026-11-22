@@ -55,3 +55,15 @@ func TestGRPCClientReadsAhead(t *testing.T) {
 		t.Fatalf("got %s", strings.TrimSpace(raw))
 	}
 }
+
+// PHP's client sends more requests than the stream's queue holds: they
+// arrive in order. A request of the wrong type is refused when it is sent,
+// and nothing is sent after closeSend(); a send to a call that the server
+// has ended goes nowhere, as its status is what recv() throws.
+func TestGRPCClientSendsAreQueued(t *testing.T) {
+	raw := get(t, "/grpc-stream/sends?"+url.Values{"target": {grpcAddr}, "count": {"20000"}}.Encode())
+	want := `{"joined":true,"after_close_send":2,"wrong_type":3,"status":3,"after_the_status":0}`
+	if got := strings.TrimSpace(raw); got != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+}

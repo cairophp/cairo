@@ -8,6 +8,7 @@ import "C"
 import (
 	"unsafe"
 
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/cairophp/cairo/internal/grpcserver"
@@ -26,6 +27,25 @@ func init() {
 func goGrpcSend(stream C.longlong, data *C.char, n C.int, errOut **C.char) C.int {
 	reply := unsafe.Slice((*byte)(unsafe.Pointer(data)), int(n))
 	queued, err := grpcserver.StreamTrySend(int64(stream), reply)
+	return sendOutcome(queued, err, errOut)
+}
+
+// goGrpcClientSend is goGrpcSend for one request of a stream that PHP
+// opened as a client.
+//
+//export goGrpcClientSend
+func goGrpcClientSend(stream C.longlong, data *C.char, n C.int, errOut **C.char) C.int {
+	v, ok := clientStreams.Load(int64(stream))
+	if !ok {
+		*errOut = C.CString("the stream is closed")
+		return C.int(codes.Canceled)
+	}
+	request := unsafe.Slice((*byte)(unsafe.Pointer(data)), int(n))
+	queued, err := v.(*clientStream).trySend(request)
+	return sendOutcome(queued, err, errOut)
+}
+
+func sendOutcome(queued bool, err error, errOut **C.char) C.int {
 	if err != nil {
 		st := status.Convert(err)
 		*errOut = C.CString(st.Message())

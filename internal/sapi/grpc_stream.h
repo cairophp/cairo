@@ -3,8 +3,9 @@
 
 #include "extension.h"
 
-// cairo_grpc_send(), which Cairo\Grpc\ServerStream::send() sends each reply
-// with; grpcsend.go adds it to the SAPI module.
+// cairo_grpc_send() and cairo_grpc_client_send(), which the send() of
+// Cairo\Grpc\ServerStream and of ClientStream queue each message with;
+// grpcsend.go adds them to the SAPI module.
 extern const cairo_extension cairo_grpc_stream;
 
 #endif

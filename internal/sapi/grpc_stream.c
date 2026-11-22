@@ -1,4 +1,6 @@
-// The replies of a streaming gRPC method, on their way from PHP to Go.
+// What PHP sends on a gRPC stream, on its way to Go: the replies of a
+// streaming method it serves, and the requests of a stream it opened as a
+// client.
 
 #include <limits.h>
 #include <stdlib.h>
@@ -16,13 +18,11 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_grpc_send, 0, 0, 2)
 	ZEND_ARG_INFO(0, message)
 ZEND_END_ARG_INFO()
 
-// cairo_grpc_send(int $stream, mixed $message): bool|array queues one reply
-// of the streaming method that PHP is serving. A stream has many replies,
-// so this is one call into Go with the reply in internal/wire's form and
-// nothing to decode on the way back: true when the reply is queued, false
-// when the queue is full (the grpc.server.send operation then waits for
-// room), or [code, text] when the stream or the reply failed.
-static PHP_FUNCTION(cairo_grpc_send)
+// A stream has many messages, so sending one is one call into Go with the
+// message in internal/wire's form and nothing to decode on the way back:
+// true when it is queued, false when the queue is full (a Go operation then
+// waits for room), or [code, text] when the stream or the message failed.
+static void grpc_send(INTERNAL_FUNCTION_PARAMETERS, int (*send)(long long, char *, int, char **))
 {
 	zend_long stream;
 	zval *message;
@@ -30,19 +30,19 @@ static PHP_FUNCTION(cairo_grpc_send)
 		Z_PARAM_LONG(stream)
 		Z_PARAM_ZVAL(message)
 	ZEND_PARSE_PARAMETERS_END();
-	smart_str reply = {0};
-	if (cairo_wire_encode_value(message, &reply) == FAILURE) {
-		smart_str_free(&reply);
+	smart_str encoded = {0};
+	if (cairo_wire_encode_value(message, &encoded) == FAILURE) {
+		smart_str_free(&encoded);
 		RETURN_THROWS();
 	}
-	if (ZSTR_LEN(reply.s) > INT_MAX) {
-		smart_str_free(&reply);
-		zend_value_error("cairo_grpc_send(): the reply is larger than 2 GB");
+	if (ZSTR_LEN(encoded.s) > INT_MAX) {
+		smart_str_free(&encoded);
+		zend_value_error("%s(): the message is larger than 2 GB", get_active_function_name());
 		RETURN_THROWS();
 	}
 	char *error = NULL;
-	int code = goGrpcSend(stream, ZSTR_VAL(reply.s), (int)ZSTR_LEN(reply.s), &error);
-	smart_str_free(&reply);
+	int code = send(stream, ZSTR_VAL(encoded.s), (int)ZSTR_LEN(encoded.s), &error);
+	smart_str_free(&encoded);
 	if (error == NULL) {
 		RETURN_BOOL(code);
 	}
@@ -52,8 +52,25 @@ static PHP_FUNCTION(cairo_grpc_send)
 	free(error);
 }
 
+// cairo_grpc_send(int $stream, mixed $message): bool|array queues one reply
+// of the streaming method that PHP is serving (grpc.server.send waits for
+// room).
+static PHP_FUNCTION(cairo_grpc_send)
+{
+	grpc_send(INTERNAL_FUNCTION_PARAM_PASSTHRU, goGrpcSend);
+}
+
+// cairo_grpc_client_send(int $stream, mixed $message): bool|array queues
+// one request of a stream that PHP opened as a client (grpc.stream.send
+// waits for room).
+static PHP_FUNCTION(cairo_grpc_client_send)
+{
+	grpc_send(INTERNAL_FUNCTION_PARAM_PASSTHRU, goGrpcClientSend);
+}
+
 static const zend_function_entry cairo_grpc_stream_functions[] = {
 	PHP_FE(cairo_grpc_send, arginfo_cairo_grpc_send)
+	PHP_FE(cairo_grpc_client_send, arginfo_cairo_grpc_send)
 	PHP_FE_END
 };
 

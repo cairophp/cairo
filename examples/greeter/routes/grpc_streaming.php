@@ -5,6 +5,7 @@
 
 declare(strict_types=1);
 
+use Cairo\Grpc\Client;
 use Cairo\Grpc\Code;
 use Cairo\Grpc\Exception as GrpcException;
 use Cairo\Http\Request;
@@ -82,6 +83,40 @@ return function ($http): void {
             $chatReplies[] = 'status ' . $e->getCode();
         }
         return Response::json(['read' => $read, 'ordered' => $ordered, 'chat' => $chatReplies]);
+    });
+
+    // Requests are queued in Go as they are sent: more than the queue holds
+    // arrive in order, a message of the wrong type is refused at once, and
+    // nothing can be sent after closeSend() or to a call that has ended.
+    $http->get('/grpc-stream/sends', function (Request $req): Response {
+        $target = (string) $req->query('target');
+        $greeter = new GreeterClient($target, ['timeout' => 20]);
+        $names = range(1, (int) $req->query('count'));
+        $join = $greeter->JoinNames();
+        foreach ($names as $name) {
+            $join->send(new HelloRequest(name: (string) $name));
+        }
+        $out = ['joined' => $join->closeAndRecv()->message === 'Hello ' . implode(', ', $names)];
+
+        $code = static function (callable $send): int {
+            try {
+                $send();
+                return Code::OK;
+            } catch (GrpcException $e) {
+                return $e->getCode();
+            }
+        };
+        $out['after_close_send'] = $code(static fn () => $join->send(new HelloRequest(name: 'late')));
+
+        $client = new Client($target, ['protos' => [__DIR__ . '/../proto/helloworld.proto']]);
+        $raw = $client->stream('/helloworld.Greeter/JoinNames');
+        $out['wrong_type'] = $code(static fn () => $raw->send(['name' => ['not', 'a', 'string']]));
+
+        $ended = $greeter->Chat();
+        $ended->send(new HelloRequest(name: ''));
+        $out['status'] = $code(static fn () => $ended->recv());
+        $out['after_the_status'] = $code(static fn () => $ended->send(new HelloRequest(name: 'late')));
+        return Response::json($out);
     });
 
     // A server stream that takes about 1s; many overlap on one PHP thread.

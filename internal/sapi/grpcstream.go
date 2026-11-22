@@ -37,7 +37,9 @@ type clientStream struct {
 	cs     grpc.ClientStream
 	method *grpcMethod
 	cancel context.CancelFunc
-	sendMu sync.Mutex
+
+	// The requests wait here for their writer, in the order PHP sent them.
+	sends *grpcserver.SendQueue
 
 	// The replies are read ahead of PHP, from its first recv.
 	readOnce sync.Once
@@ -134,7 +136,8 @@ func grpcStreamOpen(ctx context.Context, req grpcStreamRequest) map[string]any {
 		return grpcStatusFail(err)
 	}
 	id := clientNextID.Add(1)
-	clientStreams.Store(id, &clientStream{cs: cs, method: m, cancel: cancel})
+	sends := grpcserver.NewSendQueue(func(in []byte) error { return cs.SendMsg(&grpcserver.Frame{Data: in}) })
+	clientStreams.Store(id, &clientStream{cs: cs, method: m, cancel: cancel, sends: sends})
 	return map[string]any{"ok": true, "id": id}
 }
 
@@ -146,43 +149,61 @@ func loadClientStream(id int64) (*clientStream, map[string]any) {
 	return v.(*clientStream), nil
 }
 
-// whileWaiting cancels the stream if the calling fiber's context ends while
-// it waits (the request was cancelled or ran out of time).
-func whileWaiting(ctx context.Context, st *clientStream, fn func() error) error {
-	stop := context.AfterFunc(ctx, st.cancel)
-	defer stop()
-	return fn()
+// trySend queues one request of stream id if the queue has room, without
+// waiting. It runs on the PHP thread (goGrpcClientSend).
+func (st *clientStream) trySend(msg wire.Raw) (queued bool, err error) {
+	in, err := st.method.request(msg)
+	if err != nil {
+		return false, err
+	}
+	queued, err = st.sends.TryPut(in)
+	return queued || sendEnded(err), sent(err)
 }
 
+// A write that failed with io.EOF means the server ended the call: its
+// status comes with the next recv, and what PHP still sends goes nowhere.
+func sendEnded(err error) bool { return errors.Is(err, io.EOF) }
+
+func sent(err error) error {
+	if sendEnded(err) {
+		return nil
+	}
+	return err
+}
+
+// grpcStreamSend queues one request, waiting for room in the queue. If the
+// calling fiber's context ends while it waits (the request was cancelled or
+// ran out of time), its stream ends with it.
 func grpcStreamSend(ctx context.Context, req grpcStreamRequest) map[string]any {
 	st, fail := loadClientStream(req.ID)
 	if fail != nil {
 		return fail
 	}
-	in, fail := st.method.request(req.Message)
-	if fail != nil {
-		return fail
-	}
-	st.sendMu.Lock()
-	defer st.sendMu.Unlock()
-	err := whileWaiting(ctx, st, func() error { return st.cs.SendMsg(&grpcserver.Frame{Data: in}) })
-	if errors.Is(err, io.EOF) {
-		// The server ended the call; its status comes with the next recv.
-		return map[string]any{"ok": true, "ended": true}
+	in, err := st.method.request(req.Message)
+	if err == nil {
+		err = sent(st.sends.Put(ctx, in))
 	}
 	if err != nil {
+		if ctx.Err() != nil {
+			st.cancel()
+		}
 		return grpcStatusFail(err)
 	}
 	return map[string]any{"ok": true}
 }
 
-func grpcStreamCloseSend(_ context.Context, req grpcStreamRequest) map[string]any {
+// grpcStreamCloseSend returns once the requests that were queued are
+// written, with the status of one that could not be.
+func grpcStreamCloseSend(ctx context.Context, req grpcStreamRequest) map[string]any {
 	st, fail := loadClientStream(req.ID)
 	if fail != nil {
 		return fail
 	}
-	st.sendMu.Lock()
-	defer st.sendMu.Unlock()
+	stop := context.AfterFunc(ctx, st.cancel) // a writer that waits on a cancelled request's stream
+	defer stop()
+	if err := sent(st.sends.Close()); err != nil {
+		return grpcStatusFail(err)
+	}
 	if err := st.cs.CloseSend(); err != nil {
 		return grpcStatusFail(err)
 	}
@@ -223,7 +244,9 @@ func (st *clientStream) recv() (wire.Raw, error) {
 
 func grpcStreamClose(_ context.Context, req grpcStreamRequest) map[string]any {
 	if v, ok := clientStreams.LoadAndDelete(req.ID); ok {
-		v.(*clientStream).cancel()
+		st := v.(*clientStream)
+		st.cancel()
+		_ = st.sends.Close() // ends the writer; what it had left has no stream to go to
 	}
 	return map[string]any{"ok": true}
 }

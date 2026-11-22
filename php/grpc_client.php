@@ -155,10 +155,22 @@ namespace Cairo\Grpc {
         /** @param TRequest $message */
         public function send(array|object $message): void
         {
-            Stream::call('grpc.stream.send', ['id' => $this->id, 'message' => Stream::encode($message)]);
+            // Queued by one call into Go, without a fiber switch, while the
+            // queue has room; a full queue waits in a Go operation.
+            $message = Stream::encode($message);
+            $queued = \cairo_grpc_client_send($this->id, $message);
+            if (is_array($queued)) {
+                throw new Exception($queued[0], $queued[1]);
+            }
+            if (!$queued) {
+                Stream::call('grpc.stream.send', ['id' => $this->id, 'message' => $message]);
+            }
         }
 
-        /** No more requests: the server sees the end of the client's stream. */
+        /**
+         * No more requests: the server sees the end of the client's stream.
+         * Returns once the requests that were sent are written.
+         */
         public function closeSend(): void
         {
             Stream::call('grpc.stream.closeSend', ['id' => $this->id]);

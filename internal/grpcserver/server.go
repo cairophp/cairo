@@ -27,6 +27,7 @@ import (
 	reflectionv1alpha "google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -307,7 +308,14 @@ func registerWithDeps(files *protoregistry.Files, f protoreflect.FileDescriptor)
 			return err
 		}
 	}
-	if err := files.RegisterFile(f); err != nil && !strings.Contains(err.Error(), "already registered") {
+	// The compiler's descriptors answer each question (a field's kind, a
+	// file's syntax) through a wrapper, which dynamicpb and protojson ask
+	// for every field of every message; protobuf-go's own are built once.
+	native, err := protodesc.NewFile(protodesc.ToFileDescriptorProto(f), files)
+	if err != nil {
+		return fmt.Errorf("describe %s: %w", f.Path(), err)
+	}
+	if err := files.RegisterFile(native); err != nil && !strings.Contains(err.Error(), "already registered") {
 		return fmt.Errorf("register %s: %w", f.Path(), err)
 	}
 	return nil

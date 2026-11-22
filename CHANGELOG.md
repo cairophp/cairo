@@ -191,6 +191,9 @@ change the PHP API; patch versions do not.
 - `Cairo\Http\Client`. Use curl, or a client built on it such as Guzzle:
   `curl_exec()` suspends only its fiber, and the slow request log still
   counts the call under `http`.
+- `Cairo\Revolt\Driver`, the driver for Revolt, Amp and ReactPHP's fiber
+  adapters. Apps written for those event loops no longer run on Cairo's
+  scheduler.
 
 ### Fixed
 

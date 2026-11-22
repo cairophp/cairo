@@ -38,7 +38,6 @@ the operation has for its own length.
 | `internal/sapi/blocking.go`, `blocking.c`, `php/blocking.php` | The blocking detector, which watches threads instead of requests: it asks the engine which threads are running PHP (`EachBusyThread`) and interrupts one that has for too long (`InterruptThread`), and that thread reports from the `interrupt` of the detector's `cairo_extension`. Its goroutine ends when the engine does (`Stopping`) |
 | `php/http_answer.php`, `php/grpc_answer.php` | How a request of each server is answered. The scheduler knows no server: a server's PHP file gives it an `Answer` with `Scheduler::answerWith()`, which answers a request in the request's fiber and names its route for the logs. `internal/sapi/http_answer.c` has `cairo_respond_http()`, which sends an HTTP answer to Go (`cairo_answer()`). The form its status and headers cross in is the HTTP server's own: written there, read by `decodeAnswer` in `internal/httpserver/answer.go` |
 | `php/leak_watch.php` | How a diagnostic joins the scheduler, which names none: `Scheduler::onStart()` runs it on each request thread that starts, and there it asks to be called after each request (`afterRequest()`) when the app turned it on. The detector itself (`leaks.php`) loads on first use |
-| `php/revolt.php` | `Cairo\Revolt\Driver`, loaded when `revolt/event-loop` is installed |
 | `php/cache.php`, `php/pool.php` | `Cairo\Cache` and `Cairo\Pool`, each loaded on first use |
 | `internal/spec/` | The declaration that `server.php` sends to Go. This package reads the core's part (threads, the concurrency mode, limits) and keeps what each extension declared as PHP sent it, under the extension's name. `Claims` is what servers must not share: listen addresses and handler ids |
 | `internal/httpserver/`, `internal/grpcserver/` | net/http and grpc-go servers built from the declaration. Each reads and checks its own part of it (`declaration.go`); `cmd/cairo` gives both to the engine to run in the declare phase |
@@ -65,7 +64,7 @@ yes to either makes it core.
 | Side | What it holds |
 |------|---------------|
 | Core | The SAPI and the PHP threads, their supervision, dispatch (fibers and isolated mode), the fiber scheduler and request-local state, the bridge (wire events, the op registry, the answer path), waiting (the threads' epolls, parked fibers, timers), deadlines and the hard stop, the concurrency API (`Context`, `Channel`, `select()`, `async()`, `await()`, `sleep()`, `offload()`, `RequestLocal`), the declaration and boot |
-| Extensions | Servers (HTTP, its response cache, middleware, gRPC), clients (`Grpc\Client`, `Cairo\Net`), databases (the PDO pgsql driver, `Cairo\Pool`), PHP hooks (streams, sleep, DNS, TLS, curl), bridges (PSR adapters, Revolt), diagnostics (slow log, heavy routes, leaks, blocking), `cairo gen` |
+| Extensions | Servers (HTTP, its response cache, middleware, gRPC), clients (`Grpc\Client`, `Cairo\Net`), databases (the PDO pgsql driver, `Cairo\Pool`), PHP hooks (streams, sleep, DNS, TLS, curl), bridges (PSR adapters), diagnostics (slow log, heavy routes, leaks, blocking), `cairo gen` |
 
 The core is `internal/core` (Go and C) with its PHP files in
 `internal/core/php`, and the two packages it imports, `internal/spec` and
@@ -154,8 +153,7 @@ What the test environment variables do:
 | `PHP_BIN` | A PHP CLI for the tests that need one (stubs, codegen) |
 
 Skipped tests are not passing tests: say which ones skipped when you report
-results. The frameworks and Revolt tests run `composer install` and need the
-network.
+results. The frameworks tests run `composer install` and need the network.
 
 `internal/core`, `internal/sapi` and `cmd/cairo` do not compile without the
 PHP headers. `go vet ./...` only works where `make php` has run.
@@ -255,12 +253,11 @@ one line and move on.
 | Function parameters | ≤ 4 | 6 (then pass a struct or options array) |
 | Nesting depth | ≤ 3 | 4 (return early instead) |
 
-- **One file, one concern**, named after it: `sqldb.go`, `grpcstream.go`,
+- **One file, one concern**, named after it: `pgshared.go`, `grpcstream.go`,
   `tls_unix.go`. A new capability gets a new file, never a new section at the
   bottom of a big one.
 - **Existing oversized files** (`internal/sapi/pdo_pgsql.c`,
-  `php/revolt.php`, `test/e2e_test.go`)
-  must not grow by a whole feature. A new PHP subsystem goes in its own file
+  `test/e2e_test.go`) must not grow by a whole feature. A new PHP subsystem goes in its own file
   under `php/`, added to the runtime with `registerPHP` from its Go file and,
   when it has public classes or functions, to the list in `scripts/stubs.php`
   (`php/cache.php` with `internal/sapi/cachepurge.go` is the model). New C goes in its own `.c` file with a

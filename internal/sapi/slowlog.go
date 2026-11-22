@@ -37,7 +37,7 @@ func opKind(op string) waitKind {
 	switch op {
 	case "pg":
 		return waitSQL
-	case "http", "waitset": // waitset: a hooked curl transfer
+	case "waitset": // a hooked curl transfer
 		return waitHTTP
 	case "wait":
 		return waitSocket

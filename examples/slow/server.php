@@ -6,12 +6,11 @@
 //     cairo serve server.php
 //     curl 'localhost:8080/report?url=https://example.com'
 //
-//     level=WARN msg="slow request" route="GET /report" ms=283 php_ms=31 longest_run_ms=30 http="1 in 51ms" sleep="4 in 402ms"
+//     level=WARN msg="slow request" route="GET /report" ms=283 php_ms=31 longest_run_ms=30 http="2 in 51ms" sleep="4 in 402ms"
 
 declare(strict_types=1);
 
 use Cairo\App;
-use Cairo\Http\Client;
 use Cairo\Http\Request;
 use Cairo\Http\Response;
 
@@ -24,7 +23,9 @@ $http = $app->http(getenv('CAIRO_HTTP') ?: ':8080');
 // An HTTP call, three waits side by side in async() tasks, one wait of its
 // own, and 30 ms of PHP.
 $http->get('/report', function (Request $req): Response {
-    (new Client(['timeout' => 5]))->get((string) $req->query('url'));
+    $curl = curl_init((string) $req->query('url'));
+    curl_setopt_array($curl, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 5]);
+    curl_exec($curl);
     await(all([
         async(fn () => sleep(0.1)),
         async(fn () => sleep(0.1)),

@@ -9,12 +9,12 @@
 declare(strict_types=1);
 
 use Cairo\Context;
-use Cairo\Http\Client;
 use Cairo\Http\Request;
 use Cairo\Http\Response;
 
 use function Cairo\async;
 use function Cairo\await;
+use function Cairo\Net\dial;
 use function Cairo\sleep;
 
 return function ($http): void {
@@ -77,17 +77,20 @@ return function ($http): void {
         ]);
     });
 
-    // A task waits a second for a socket. Next to it the request calls
-    // ?url= five times through Go and sleeps 50 ms: the thread, asleep in
-    // its epoll for the socket, wakes for each answer and for the timer.
+    // A task waits a second for a socket. Next to it the request asks
+    // ?addr= five times through Go (Cairo\Net) and sleeps 50 ms: the thread,
+    // asleep in its epoll for the socket, wakes for each answer and for the
+    // timer.
     $http->get('/sockets/beside', function (Request $req) use ($ask): Response {
         $conn = $ask($req, 1.0);
         $reader = async(fn (): string => trim((string) fgets($conn)));
-        $client = new Client(['timeout' => 5]);
         $slowest = 0.0;
         for ($i = 0; $i < 5; $i++) {
             $start = microtime(true);
-            $client->get((string) $req->query('url'));
+            $go = dial('tcp', (string) $req->query('addr'), ['timeout' => 5]);
+            $go->write("0\n");
+            $go->readLine();
+            $go->close();
             $slowest = max($slowest, microtime(true) - $start);
         }
         $start = microtime(true);

@@ -84,7 +84,7 @@ namespace Cairo {
          *
          *     slow request route="GET /orders/{id}" ms=1240 php_ms=40 longest_run_ms=12 sql="38 in 310ms" http="2 in 890ms"
          *
-         * Kinds: sql (PDO pgsql), http (Cairo\Http\Client, curl),
+         * Kinds: sql (PDO pgsql), http (curl),
          * socket (other hooked sockets: PDO MySQL, Redis, streams), connect
          * (DNS, connect, TLS), sleep, wait (channels, select(), Cairo\Pool
          * with acquireTimeout), offload and grpc. Waits of async() tasks run side by side, so the kinds can
@@ -1064,116 +1064,6 @@ namespace Cairo\Http {
         public static function fromSymfony(object $response, ?object $request = null): Response
         {
         }
-    }
-}
-
-namespace Cairo\Http {
-    /**
-     * An HTTP client backed by Go's net/http: pooled keep-alive connections,
-     * HTTP/2 over TLS, and proxies from HTTP_PROXY/HTTPS_PROXY/NO_PROXY.
-     * Inside a request handler or async() task the fiber suspends while Go
-     * sends the request, and the request's deadline cancels it; elsewhere
-     * the thread waits.
-     *
-     *     $github = new Client(['base_uri' => 'https://api.github.com', 'timeout' => 5]);
-     *     $repo = $github->get('/repos/php/php-src')->json();
-     *
-     * Options (to the constructor, or per request, which wins):
-     *   base_uri         prefix for relative URLs
-     *   headers          array<string, string|list<string>>
-     *   query            array, appended to the URL
-     *   body             string; or json (any value) or form (array)
-     *   timeout          seconds for the whole exchange, 0 for none (default 30)
-     *   follow_redirects bool, or the most redirects to follow (default 5)
-     *   verify           bool, or a CA bundle path (default true)
-     *   cert             client certificate PEM path, or [cert, key]
-     *
-     * Responses of any status are returned; transport failures throw
-     * ClientException (ClientTimeoutException for the timeout option).
-     */
-    final class Client
-    {
-        /** @param array<string, mixed> $options */
-        public function __construct(private readonly array $options = [])
-        {
-        }
-
-        /** @param array<string, mixed> $options */
-        public function get(string $url, array $options = []): ClientResponse
-        {
-        }
-
-        /** @param array<string, mixed> $options */
-        public function post(string $url, array $options = []): ClientResponse
-        {
-        }
-
-        /** @param array<string, mixed> $options */
-        public function put(string $url, array $options = []): ClientResponse
-        {
-        }
-
-        /** @param array<string, mixed> $options */
-        public function patch(string $url, array $options = []): ClientResponse
-        {
-        }
-
-        /** @param array<string, mixed> $options */
-        public function delete(string $url, array $options = []): ClientResponse
-        {
-        }
-
-        /** @param array<string, mixed> $options */
-        public function head(string $url, array $options = []): ClientResponse
-        {
-        }
-
-        /** @param array<string, mixed> $options */
-        public function request(string $method, string $url, array $options = []): ClientResponse
-        {
-        }
-    }
-
-    final class ClientResponse
-    {
-        /** @param array<string, list<string>> $headers canonical names (Content-Type) */
-        public function __construct(
-            public readonly int $status,
-            public readonly string $reason,
-            public readonly array $headers,
-            public readonly string $body,
-            public readonly string $url,
-            public readonly string $protocol,
-        )
-        {
-        }
-
-        /** The first value of a header, by any case of its name. */
-        public function header(string $name): ?string
-        {
-        }
-
-        public function ok(): bool
-        {
-        }
-
-        public function json(bool $assoc = true): mixed
-        {
-        }
-    }
-
-    /** A request that got no response: DNS, connect, TLS, redirects. */
-    class ClientException extends \RuntimeException
-    {
-        /** $kind: connect, tls, timeout, redirects or request */
-        public function __construct(string $message, public readonly string $kind = 'connect')
-        {
-        }
-    }
-
-    /** The request's timeout option ran out. */
-    final class ClientTimeoutException extends ClientException
-    {
     }
 }
 

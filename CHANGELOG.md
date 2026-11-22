@@ -188,6 +188,9 @@ change the PHP API; patch versions do not.
   `cairo_pool=N` for a pool shared by all threads, and PDO MySQL waits
   without blocking through the socket hook. The binary no longer carries
   the Go MySQL driver.
+- `Cairo\Http\Client`. Use curl, or a client built on it such as Guzzle:
+  `curl_exec()` suspends only its fiber, and the slow request log still
+  counts the call under `http`.
 
 ### Fixed
 

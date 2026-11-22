@@ -8,12 +8,12 @@ declare(strict_types=1);
 
 use Cairo\Channel;
 use Cairo\Context;
-use Cairo\Http\Client;
 use Cairo\Http\Request;
 use Cairo\Http\Response;
 
 use function Cairo\async;
 use function Cairo\await;
+use function Cairo\Net\dial;
 use function Cairo\select;
 use function Cairo\sleep;
 
@@ -85,17 +85,23 @@ return function ($http): void {
         return Response::json(['select' => [$key, $ok], 'waited' => round(microtime(true) - $start, 2)]);
     });
 
-    // A Go operation in flight (here a request to ?url=, which answers late)
-    // ends with the context it was asked under: at the deadline of
+    // A Go operation in flight (here a read from ?addr=, a server that reads
+    // a number of seconds, waits that long and answers "pong") ends with the
+    // context it was asked under: at the deadline of
     // withTimeout(), or when another fiber calls cancel() on the context or
     // on one it derives from. Under a context that has ended it does not
     // start, and the request's own context goes on through all of it.
     $http->get('/ctx/go-operation', function (Request $req, Context $ctx): Response {
-        $slow = (string) $req->query('url');
-        $get = static function (Context $c) use ($slow): array {
+        $addr = (string) $req->query('addr');
+        $ask = static function () use ($addr): string {
+            $conn = dial('tcp', $addr);
+            $conn->write("0.6\n");
+            return trim((string) $conn->readLine());
+        };
+        $get = static function (Context $c) use ($ask): array {
             $start = microtime(true);
             try {
-                $how = 'answered ' . $c->run(fn () => (new Client())->get($slow))->status;
+                $how = 'answered ' . $c->run($ask);
             } catch (Context\ContextException $e) {
                 $how = $e::class;
             }

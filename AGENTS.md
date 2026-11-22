@@ -65,7 +65,7 @@ yes to either makes it core.
 | Side | What it holds |
 |------|---------------|
 | Core | The SAPI and the PHP threads, their supervision, dispatch (fibers and isolated mode), the fiber scheduler and request-local state, the bridge (wire events, the op registry, the answer path), waiting (the threads' epolls, parked fibers, timers), deadlines and the hard stop, the concurrency API (`Context`, `Channel`, `select()`, `async()`, `await()`, `sleep()`, `offload()`, `RequestLocal`), the declaration and boot |
-| Extensions | Servers (HTTP, its response cache, middleware, gRPC), clients (`Http\Client`, `Grpc\Client`, `Cairo\Net`), databases (the PDO pgsql driver, `Cairo\Pool`), PHP hooks (streams, sleep, DNS, TLS, curl), bridges (PSR adapters, Revolt), diagnostics (slow log, heavy routes, leaks, blocking), `cairo gen` |
+| Extensions | Servers (HTTP, its response cache, middleware, gRPC), clients (`Grpc\Client`, `Cairo\Net`), databases (the PDO pgsql driver, `Cairo\Pool`), PHP hooks (streams, sleep, DNS, TLS, curl), bridges (PSR adapters, Revolt), diagnostics (slow log, heavy routes, leaks, blocking), `cairo gen` |
 
 The core is `internal/core` (Go and C) with its PHP files in
 `internal/core/php`, and the two packages it imports, `internal/spec` and

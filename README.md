@@ -81,8 +81,7 @@ The user documentation is in [cairophp/docs](https://github.com/cairophp/docs):
   [request state](https://github.com/cairophp/docs/blob/main/context-values.md), [runtime hooks](https://github.com/cairophp/docs/blob/main/runtime-hooks.md),
   [finding blocking code](https://github.com/cairophp/docs/blob/main/blocking.md)
 - **Data and I/O:** [PostgreSQL](https://github.com/cairophp/docs/blob/main/postgresql.md),
-  [connection pools](https://github.com/cairophp/docs/blob/main/pools.md), [HTTP client](https://github.com/cairophp/docs/blob/main/http-client.md),
-  [`Cairo\Net`](https://github.com/cairophp/docs/blob/main/net.md)
+  [connection pools](https://github.com/cairophp/docs/blob/main/pools.md), [`Cairo\Net`](https://github.com/cairophp/docs/blob/main/net.md)
 - **Running applications:** [isolated mode](https://github.com/cairophp/docs/blob/main/isolated-mode.md),
   [PSR-15, Symfony and Laravel](https://github.com/cairophp/docs/blob/main/frameworks.md), [Amp and Revolt](https://github.com/cairophp/docs/blob/main/revolt.md),
   [thread supervision](https://github.com/cairophp/docs/blob/main/supervision.md)

@@ -12,7 +12,7 @@ import (
 	"github.com/cairophp/cairo/internal/wire"
 )
 
-// GoOp is a Go operation that PHP APIs (Cairo\Http\Client, ...) call through
+// GoOp is a Go operation that PHP APIs call through
 // Cairo\Internal\Go::call(). Inside a request fiber it runs in a goroutine
 // of its own with the request's context while the fiber is suspended;
 // elsewhere (the declare phase, offload threads) the PHP thread waits for it

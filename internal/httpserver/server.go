@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -241,7 +240,7 @@ func isMultipart(h http.Header) bool {
 // newEvent reads req into the event PHP receives. It answers the client
 // itself and returns false when the request is malformed.
 func newEvent(w http.ResponseWriter, req *http.Request, route int, names []string) (*event, func(), bool) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, maxBody))
+	body, err := readBody(w, req)
 	if err != nil {
 		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		return nil, nil, false

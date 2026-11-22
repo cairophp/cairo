@@ -716,12 +716,10 @@ namespace Cairo {
      *
      *     $http->use(Middleware::requestId())
      *          ->use(Middleware::accessLog())
-     *          ->use(Middleware::cors(origins: ['https://app.example']))
-     *          ->use(Middleware::rateLimit(perSecond: 50, burst: 100))
-     *          ->use(Middleware::timeout(30))
-     *          ->use(Middleware::gzip());
+     *          ->use(Middleware::maxBody(8 << 20))
+     *          ->use(Middleware::timeout(30));
      *
-     * gRPC servers take requestId(), accessLog(), rateLimit() and timeout().
+     * gRPC servers take requestId(), accessLog() and timeout().
      */
     final class Middleware
     {
@@ -732,30 +730,6 @@ namespace Cairo {
 
         /** One log line per request: method, path, status, bytes, time, client, request id. */
         public static function accessLog(): self
-        {
-        }
-
-        /**
-         * Cross-origin requests. Preflights are answered in Go; PHP never sees them.
-         * @param list<string> $origins allowed origins, or ['*']
-         */
-        public static function cors(
-            array $origins,
-            array $methods = [],
-            array $headers = [],
-            array $expose = [],
-            bool $credentials = false,
-            int $maxAge = 0,
-        ): self
-        {
-        }
-
-        /**
-         * A token bucket: $perSecond requests a second, bursts up to $burst.
-         * Over the limit, HTTP answers 429 with Retry-After and gRPC answers
-         * RESOURCE_EXHAUSTED. $by is 'ip' (a bucket per client) or 'global'.
-         */
-        public static function rateLimit(float $perSecond, int $burst = 0, string $by = 'ip'): self
         {
         }
 
@@ -771,11 +745,6 @@ namespace Cairo {
          * client gets 504 or DEADLINE_EXCEEDED.
          */
         public static function timeout(float $seconds): self
-        {
-        }
-
-        /** Gzips responses of at least $minBytes for clients that accept it. HTTP only. */
-        public static function gzip(int $minBytes = 1024): self
         {
         }
 
@@ -1072,7 +1041,7 @@ namespace Cairo\Grpc {
 
     final class Server
     {
-        /** Add Go-side middleware: requestId(), accessLog(), rateLimit(); see Cairo\Middleware. */
+        /** Add Go-side middleware: requestId(), accessLog(), timeout(); see Cairo\Middleware. */
         public function use(\Cairo\Middleware $middleware): static
         {
         }

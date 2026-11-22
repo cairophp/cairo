@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
@@ -24,16 +23,6 @@ func GRPC(decl []Declaration, log *slog.Logger) ([]grpc.StreamServerInterceptor,
 			out = append(out, grpcRequestID)
 		case "access_log":
 			out = append(out, grpcAccessLog(log))
-		case "rate_limit":
-			var o RateOptions
-			if err := decode(m, &o); err != nil {
-				return nil, fmt.Errorf("middleware rate_limit: %w", err)
-			}
-			l, err := newLimiter(o)
-			if err != nil {
-				return nil, fmt.Errorf("middleware rate_limit: %w", err)
-			}
-			out = append(out, grpcRateLimit(l))
 		case "timeout":
 			d, err := timeoutOf(m)
 			if err != nil {
@@ -90,19 +79,6 @@ func grpcAccessLog(log *slog.Logger) grpc.StreamServerInterceptor {
 		log.Info("grpc", "method", info.FullMethod, "code", status.Code(err).String(),
 			"took", time.Since(start).Round(time.Microsecond), "remote", remote, "request_id", RequestID(ss.Context()))
 		return err
-	}
-}
-
-func grpcRateLimit(l *limiter) grpc.StreamServerInterceptor {
-	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		key := ""
-		if p, ok := peer.FromContext(ss.Context()); ok {
-			key = clientIP(p.Addr.String())
-		}
-		if ok, wait := l.allow(key); !ok {
-			return status.Errorf(codes.ResourceExhausted, "rate limit exceeded; retry in %s", wait.Round(time.Millisecond))
-		}
-		return handler(srv, ss)
 	}
 }
 

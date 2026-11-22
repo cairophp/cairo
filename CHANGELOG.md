@@ -194,6 +194,9 @@ change the PHP API; patch versions do not.
 - `Cairo\Revolt\Driver`, the driver for Revolt, Amp and ReactPHP's fiber
   adapters. Apps written for those event loops no longer run on Cairo's
   scheduler.
+- `Middleware::cors()`, `Middleware::rateLimit()` and `Middleware::gzip()`.
+  Set these in the reverse proxy in front of Cairo or in the framework.
+  `requestId()`, `accessLog()`, `maxBody()` and `timeout()` stay.
 
 ### Fixed
 

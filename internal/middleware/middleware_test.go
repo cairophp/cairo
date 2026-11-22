@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"compress/gzip"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -54,103 +53,6 @@ func TestRequestIDIsKeptOrMade(t *testing.T) {
 	}
 }
 
-func TestCORSAnswersPreflightInGo(t *testing.T) {
-	called := false
-	h := build(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }),
-		mw("cors", CORSOptions{Origins: []string{"https://app.example"}, MaxAge: 600}))
-	req := httptest.NewRequest("OPTIONS", "/x", nil)
-	req.Header.Set("Origin", "https://app.example")
-	req.Header.Set("Access-Control-Request-Method", "POST")
-	req.Header.Set("Access-Control-Request-Headers", "Content-Type")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != 204 || called || rec.Header().Get("Access-Control-Allow-Origin") != "https://app.example" ||
-		rec.Header().Get("Access-Control-Allow-Headers") != "Content-Type" || rec.Header().Get("Access-Control-Max-Age") != "600" {
-		t.Fatalf("preflight: %d %v called=%v", rec.Code, rec.Header(), called)
-	}
-	req = httptest.NewRequest("GET", "/x", nil)
-	req.Header.Set("Origin", "https://evil.example")
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Header().Get("Access-Control-Allow-Origin") != "" || !called {
-		t.Fatalf("other origin got %v", rec.Header())
-	}
-}
-
-func TestRateLimitTokenBucket(t *testing.T) {
-	l, err := newLimiter(RateOptions{PerSecond: 2, Burst: 3})
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Unix(1000, 0)
-	l.now = func() time.Time { return now }
-	for i := 0; i < 3; i++ {
-		if ok, _ := l.allow("a"); !ok {
-			t.Fatalf("burst request %d refused", i)
-		}
-	}
-	if ok, wait := l.allow("a"); ok || wait != 500*time.Millisecond {
-		t.Fatalf("4th: ok=%v wait=%v", ok, wait)
-	}
-	if ok, _ := l.allow("b"); !ok {
-		t.Fatal("another client shares a's bucket")
-	}
-	now = now.Add(500 * time.Millisecond)
-	if ok, _ := l.allow("a"); !ok {
-		t.Fatal("no token after refill")
-	}
-
-	h := build(t, hello, mw("rate_limit", RateOptions{PerSecond: 1, Burst: 1}))
-	codes := []int{}
-	for i := 0; i < 2; i++ {
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
-		codes = append(codes, rec.Code)
-		if rec.Code == 429 && rec.Header().Get("Retry-After") != "1" {
-			t.Fatalf("Retry-After %q", rec.Header().Get("Retry-After"))
-		}
-	}
-	if codes[0] != 200 || codes[1] != 429 {
-		t.Fatalf("codes %v", codes)
-	}
-}
-
-func TestGzip(t *testing.T) {
-	h := build(t, hello, mw("gzip", map[string]int{"min_bytes": 1024}))
-	req := httptest.NewRequest("GET", "/", nil)
-	req.Header.Set("Accept-Encoding", "gzip, br")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Header().Get("Content-Encoding") != "gzip" {
-		t.Fatalf("not gzipped: %v", rec.Header())
-	}
-	zr, err := gzip.NewReader(rec.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, _ := io.ReadAll(zr)
-	if string(body) != strings.Repeat("hello ", 500) {
-		t.Fatal("body changed")
-	}
-
-	small := build(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(201)
-		io.WriteString(w, "tiny")
-	}), mw("gzip", nil))
-	rec = httptest.NewRecorder()
-	small.ServeHTTP(rec, req)
-	if rec.Header().Get("Content-Encoding") != "" || rec.Body.String() != "tiny" || rec.Code != 201 {
-		t.Fatalf("small response: %d %v %q", rec.Code, rec.Header(), rec.Body.String())
-	}
-
-	req.Header.Set("Accept-Encoding", "gzip;q=0")
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Header().Get("Content-Encoding") != "" {
-		t.Fatal("gzipped although q=0")
-	}
-}
-
 func TestMaxBody(t *testing.T) {
 	h := build(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := io.ReadAll(r.Body); err != nil {
@@ -169,11 +71,11 @@ func TestOrderAndUnknown(t *testing.T) {
 	if _, err := HTTP(hello, []Declaration{{Name: "nope"}}, slog.Default()); err == nil {
 		t.Fatal("unknown middleware accepted")
 	}
-	if _, err := GRPC([]Declaration{{Name: "gzip"}}, slog.Default()); err == nil {
-		t.Fatal("gzip accepted for gRPC")
+	if _, err := GRPC([]Declaration{{Name: "max_body"}}, slog.Default()); err == nil {
+		t.Fatal("max_body accepted for gRPC")
 	}
-	if _, err := HTTP(hello, []Declaration{mw("rate_limit", RateOptions{PerSecond: 0})}, slog.Default()); err == nil {
-		t.Fatal("per_second 0 accepted")
+	if _, err := HTTP(hello, []Declaration{mw("timeout", map[string]int{"seconds": 0})}, slog.Default()); err == nil {
+		t.Fatal("a timeout of 0 seconds accepted")
 	}
 }
 

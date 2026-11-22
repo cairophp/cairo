@@ -93,16 +93,11 @@ $app->threads('auto');          // request threads: many fibers each
 $app->offloadThreads('auto');   // CPU threads for Cairo\offload()
 
 $http = $app->http(getenv('CAIRO_HTTP') ?: ':8080')
-    // Go runs these before PHP, in this order.
-    ->use(Middleware::requestId())
-    ->use(Middleware::cors(origins: ['*']))
-    ->use(Middleware::gzip());
+    // Go runs this before PHP.
+    ->use(Middleware::requestId());
 
 // The request id set by the middleware reaches PHP as a header.
 $http->get('/request-id', fn (Request $req): Response => Response::text((string) $req->header('x-request-id')));
-
-// Large enough for the gzip middleware (1 KB by default).
-$http->get('/big', fn (): Response => Response::text(str_repeat("Cairo serves PHP from Go.\n", 200)));
 
 // Multipart uploads in fiber mode: $req->form() and $req->file().
 $http->post('/upload', function (Request $req): Response {

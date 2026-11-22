@@ -554,8 +554,7 @@ func TestGRPCDeadlineReachesPHP(t *testing.T) {
 }
 
 // Go-side middleware declared in server.php: request ids reach PHP and come
-// back on the response, CORS preflights never reach PHP, big responses are
-// gzipped, and gRPC calls get an x-request-id header.
+// back on the response, and gRPC calls get an x-request-id header.
 func TestMiddleware(t *testing.T) {
 	resp, err := http.Get("http://" + httpAddr + "/request-id")
 	if err != nil {
@@ -565,31 +564,6 @@ func TestMiddleware(t *testing.T) {
 	resp.Body.Close()
 	if id := resp.Header.Get("X-Request-Id"); len(id) != 32 || string(b) != id {
 		t.Fatalf("request id header %q, PHP saw %q", id, b)
-	}
-
-	req, _ := http.NewRequest("OPTIONS", "http://"+httpAddr+"/hello/x", nil)
-	req.Header.Set("Origin", "https://app.example")
-	req.Header.Set("Access-Control-Request-Method", "GET")
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != 204 || resp.Header.Get("Access-Control-Allow-Origin") != "*" {
-		t.Fatalf("preflight: %d %v", resp.StatusCode, resp.Header)
-	}
-
-	tr := &http.Transport{DisableCompression: true}
-	req, _ = http.NewRequest("GET", "http://"+httpAddr+"/big", nil)
-	req.Header.Set("Accept-Encoding", "gzip")
-	resp, err = tr.RoundTrip(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.Header.Get("Content-Encoding") != "gzip" || len(raw) >= 5200 {
-		t.Fatalf("big response: encoding %q, %d bytes on the wire", resp.Header.Get("Content-Encoding"), len(raw))
 	}
 
 	g := newGreeter(t)

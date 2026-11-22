@@ -149,16 +149,15 @@ namespace Cairo\Internal {
         }
 
         /**
-         * One request of Cairo's PDO pgsql driver (JSON in, JSON out), run as
-         * a Go operation of the fiber. Null lets the driver wait for Go instead.
+         * One request of Cairo's PDO pgsql driver, run as a Go operation of
+         * the fiber. Null lets the driver wait for Go instead.
+         *
+         * @param array<string, mixed> $request
+         * @return array<string, mixed>|null
          */
-        public static function pg(string $request): ?string
+        public static function pg(array $request): ?array
         {
-            if (!self::on(\Cairo\Hook::PGSQL)) {
-                return null;
-            }
-            $result = Scheduler::instance()->call('pg', $request);
-            return json_encode($result, JSON_THROW_ON_ERROR);
+            return self::on(\Cairo\Hook::PGSQL) ? Scheduler::instance()->call('pg', $request) : null;
         }
 
         /** is_uploaded_file(): true for this thread's Cairo uploads. */

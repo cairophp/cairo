@@ -9,9 +9,8 @@ import "C"
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/cairophp/cairo/internal/core"
+	"github.com/cairophp/cairo/internal/wire"
 )
 
 // Cairo's PDO driver for PostgreSQL ("pgsql:" DSNs) is C on the PHP side and
@@ -75,17 +75,17 @@ var (
 )
 
 type pgRequest struct {
-	Kind     string    `json:"kind"` // connect, exec, query, close, status, notify, copy_in, copy_out, lo
-	DSN      string    `json:"dsn"`
-	User     string    `json:"user"`
-	Password string    `json:"password"`
-	Timeout  float64   `json:"timeout"`
-	Conn     int64     `json:"conn"`
-	SQL      string    `json:"sql"`
-	Params   []*string `json:"params"`  // base64, nil for SQL NULL
-	Binary   []int     `json:"binary"`  // indexes of LOB parameters: raw bytea
-	Data     string    `json:"data"`    // copy_in: base64 COPY text
-	WaitMS   int64     `json:"wait_ms"` // notify: how long to wait for one
+	Kind     string   `json:"kind"` // connect, exec, query, close, status, notify, copy_in, copy_out, lo
+	DSN      string   `json:"dsn"`
+	User     string   `json:"user"`
+	Password string   `json:"password"`
+	Timeout  float64  `json:"timeout"`
+	Conn     int64    `json:"conn"`
+	SQL      string   `json:"sql"`
+	Params   [][]byte `json:"params"`  // as they are, nil for SQL NULL
+	Binary   []int    `json:"binary"`  // indexes of LOB parameters: raw bytea
+	Data     []byte   `json:"data"`    // copy_in: COPY text; lo write: the bytes
+	WaitMS   int64    `json:"wait_ms"` // notify: how long to wait for one
 
 	// lo: large objects, through the server's lo_* functions.
 	LO     string `json:"lo"` // create, open, read, write, seek, tell, close, unlink
@@ -155,15 +155,11 @@ func pgDo(ctx context.Context, req pgRequest) map[string]any {
 func pgDoOn(ctx context.Context, pc *pgConn, req pgRequest) map[string]any {
 	switch req.Kind {
 	case "status":
-		return map[string]any{"ok": true, "server_version": pc.conn.ParameterStatus("server_version"), "pid": pc.conn.PID()}
+		return map[string]any{"ok": true, "server_version": pc.conn.ParameterStatus("server_version"), "pid": int64(pc.conn.PID())}
 	case "notify":
 		return pgNotify(ctx, pc, req.WaitMS)
 	case "copy_in":
-		data, err := base64.StdEncoding.DecodeString(req.Data)
-		if err != nil {
-			return pgFail("HY000", "bad COPY data encoding")
-		}
-		tag, err := pc.conn.CopyFrom(ctx, bytes.NewReader(data), req.SQL)
+		tag, err := pc.conn.CopyFrom(ctx, bytes.NewReader(req.Data), req.SQL)
 		if err != nil {
 			return pgError(err)
 		}
@@ -175,7 +171,7 @@ func pgDoOn(ctx context.Context, pc *pgConn, req pgRequest) map[string]any {
 		if _, err := pc.conn.CopyTo(ctx, &buf, req.SQL); err != nil {
 			return pgError(err)
 		}
-		return map[string]any{"ok": true, "data": base64.StdEncoding.EncodeToString(buf.Bytes())}
+		return map[string]any{"ok": true, "data": buf.Bytes()}
 	case "exec":
 		// PDO::exec(): the simple protocol, so several statements may be sent.
 		results, err := pc.conn.Exec(ctx, req.SQL).ReadAll()
@@ -188,20 +184,7 @@ func pgDoOn(ctx context.Context, pc *pgConn, req pgRequest) map[string]any {
 		}
 		return map[string]any{"ok": true, "affected": affected}
 	case "query":
-		values := make([][]byte, len(req.Params))
-		for i, p := range req.Params {
-			if p == nil {
-				continue
-			}
-			b, err := base64.StdEncoding.DecodeString(*p)
-			if err != nil {
-				return pgFail("HY000", "bad parameter encoding")
-			}
-			if b == nil {
-				b = []byte{}
-			}
-			values[i] = b
-		}
+		values := req.Params // nil for SQL NULL
 		// Parameters go as text with unspecified types, as pdo_pgsql sends
 		// them: the server infers each type from the query. LOBs go as
 		// binary bytea.
@@ -285,13 +268,13 @@ func pgNotify(ctx context.Context, pc *pgConn, waitMS int64) map[string]any {
 	if n == nil {
 		return map[string]any{"ok": true, "notification": nil}
 	}
-	return map[string]any{"ok": true, "notification": map[string]any{"channel": n.Channel, "pid": n.PID, "payload": n.Payload}}
+	return map[string]any{"ok": true, "notification": map[string]any{"channel": n.Channel, "pid": int64(n.PID), "payload": n.Payload}}
 }
 
 // pgLargeObject runs one large-object operation as a single statement on
 // the server's lo_* functions. Descriptors from lo_open last until the end
 // of the transaction, so PDO needs one open, as with pdo_pgsql. The answer
-// carries "value" (an integer) or, for read, "data" (base64).
+// carries "value" (an integer) or, for read, "data" (the bytes).
 func pgLargeObject(ctx context.Context, pc *pgConn, req pgRequest) map[string]any {
 	num := func(n int64) []byte { return []byte(strconv.FormatInt(n, 10)) }
 	var (
@@ -307,10 +290,7 @@ func pgLargeObject(ctx context.Context, pc *pgConn, req pgRequest) map[string]an
 	case "read":
 		sql, params = "SELECT loread($1::int, $2::int)", [][]byte{num(req.FD), num(req.N)}
 	case "write":
-		data, err := base64.StdEncoding.DecodeString(req.Data)
-		if err != nil {
-			return pgFail("HY000", "bad large object data encoding")
-		}
+		data := req.Data
 		if data == nil {
 			data = []byte{}
 		}
@@ -349,7 +329,7 @@ func pgLargeObject(ctx context.Context, pc *pgConn, req pgRequest) map[string]an
 	}
 	v := res.Rows[0][0]
 	if req.LO == "read" {
-		return map[string]any{"ok": true, "data": base64.StdEncoding.EncodeToString(v)}
+		return map[string]any{"ok": true, "data": v}
 	}
 	n, err := strconv.ParseInt(string(v), 10, 64)
 	if err != nil {
@@ -445,7 +425,7 @@ func pgCollect(rr *pgconn.ResultReader) pgResult {
 
 func pgRequestFrom(data []byte) (pgRequest, error) {
 	var req pgRequest
-	err := json.Unmarshal(data, &req)
+	err := wire.Unmarshal(data, &req)
 	return req, err
 }
 
@@ -473,19 +453,24 @@ func init() {
 }
 
 // goPgSync runs a request on the calling PHP thread (outside a Cairo fiber,
-// or with hooks off). Returns the JSON response; the caller frees it.
+// or with hooks off). The request and the response are arrays in
+// internal/wire's form; the caller frees the response, which is *n bytes.
 //
 //export goPgSync
-func goPgSync(data *C.char, n C.int) *C.char {
-	req, err := pgRequestFrom(C.GoBytes(unsafe.Pointer(data), n))
+func goPgSync(data *C.char, size C.int, n *C.int) *C.char {
+	req, err := pgRequestFrom(C.GoBytes(unsafe.Pointer(data), size))
 	var resp map[string]any
 	if err != nil {
 		resp = pgFail("HY000", err.Error())
 	} else {
 		resp = pgDo(context.Background(), req)
 	}
-	b, _ := json.Marshal(resp)
-	return C.CString(string(b))
+	b := wire.Encode(resp)
+	if len(b) > math.MaxInt32 {
+		b = wire.Encode(pgFail("HY000", "the response is larger than 2 GB"))
+	}
+	*n = C.int(len(b))
+	return (*C.char)(C.CBytes(b))
 }
 
 // goPgTake hands C the result set stored under id (once).

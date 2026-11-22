@@ -92,6 +92,20 @@ func TestUnmarshalEmptyAndNull(t *testing.T) {
 	}
 }
 
+// A []byte keeps apart an empty string and null, which is how the pgsql
+// driver's parameters tell ” from SQL NULL.
+func TestUnmarshalEmptyBytes(t *testing.T) {
+	var got struct {
+		Params [][]byte `json:"params"`
+	}
+	if err := Unmarshal(Encode(map[string]any{"params": []any{"", nil, "\x00x"}}), &got); err != nil {
+		t.Fatal(err)
+	}
+	if p := got.Params; len(p) != 3 || p[0] == nil || len(p[0]) != 0 || p[1] != nil || string(p[2]) != "\x00x" {
+		t.Errorf("params: %q", p)
+	}
+}
+
 // An object that PHP's json extension encoded arrives as JSON text.
 func TestUnmarshalJSONValue(t *testing.T) {
 	b := AppendMap(nil, 2)

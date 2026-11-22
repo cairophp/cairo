@@ -177,6 +177,22 @@ change the PHP API; patch versions do not.
   ns, and a route that queries MySQL through PDO, which parks its fiber for
   every wait on the socket, answers 16% more requests per second. Fibers
   that sleep until the same moment wake in the order they went to sleep.
+- Performance: a gRPC message goes between protobuf's bytes and PHP's array
+  directly, with no message object and no JSON text in between, and each
+  reply of a streaming method reaches Go with one call. Handlers and
+  generated classes see the same arrays as before; a message with a
+  `google.protobuf` type, a type that is not proto3 and any unusual value
+  still go through protojson. A stream of 100 replies: 1,686 to 5,046 calls
+  per second; unary calls: 7% more (ghz at 64 concurrent calls, 4 PHP
+  threads on 2 CPUs).
+- gRPC, at the edges: a reply that holds `NAN`, `INF` or a string that is
+  not UTF-8 ends its call with INTERNAL (the handler's fiber ended with an
+  uncaught exception before).
+- Performance: PDO PostgreSQL sends each request to Go, and gets its
+  answer, as an array in Cairo's binary form instead of JSON text, and the
+  parameters of a statement, COPY data and the bytes of a large object are
+  no longer base64 on the way. A route with one query: 2.6% more requests
+  per second (wrk at 64 connections, 4 PHP threads on 2 CPUs).
 
 ### Removed
 
@@ -211,6 +227,11 @@ change the PHP API; patch versions do not.
   just taken from a `Cairo\Pool` could fail with "the connection is busy
   with another query" while the request that had the object before gave its
   server connection back (7 in 490,000 requests in a benchmark).
+- gRPC: a damaged request no longer stops the server. protobuf-go panics on
+  a map entry whose key comes a second time with another wire type, and in
+  a client-streaming or bidirectional method nothing recovered that panic.
+  Such a message now ends its call with INTERNAL, like any other that
+  cannot be read.
 
 ## [0.4.0] - 2026-11-19
 

@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"slices"
 	"sort"
 )
 
@@ -105,11 +106,12 @@ func AppendKey(b []byte, k string) []byte {
 
 // AppendHeader appends HTTP headers as a map of lists, in key order.
 func AppendHeader(b []byte, h http.Header) []byte {
-	keys := make([]string, 0, len(h))
+	var few [32]string // a request's names fit here, so sorting them allocates nothing
+	keys := few[:0]
 	for k := range h {
 		keys = append(keys, k)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	b = AppendMap(b, len(keys))
 	for _, k := range keys {
 		b = AppendKey(b, k)

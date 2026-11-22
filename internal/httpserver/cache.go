@@ -98,23 +98,13 @@ func cacheable(r *response) bool {
 	if r.status != http.StatusOK || len(r.body) > cacheMaxEntry {
 		return false
 	}
-	if len(values(r.header, "Set-Cookie")) > 0 || slices.Contains(values(r.header, "Vary"), "*") {
+	// decodeAnswer made the names canonical, however PHP spelled them: a
+	// missed Set-Cookie would leak one client's session.
+	if len(r.header["Set-Cookie"]) > 0 || slices.Contains(r.header["Vary"], "*") {
 		return false
 	}
-	cc := strings.ToLower(strings.Join(values(r.header, "Cache-Control"), ","))
+	cc := strings.ToLower(strings.Join(r.header["Cache-Control"], ","))
 	return !strings.Contains(cc, "private") && !strings.Contains(cc, "no-store") && !strings.Contains(cc, "no-cache")
-}
-
-// values returns every value of header name: PHP's header names are not
-// canonical, and a missed Set-Cookie would leak one client's session.
-func values(h http.Header, name string) []string {
-	var out []string
-	for k, vs := range h {
-		if strings.EqualFold(k, name) {
-			out = append(out, vs...)
-		}
-	}
-	return out
 }
 
 type cacheEntry struct {

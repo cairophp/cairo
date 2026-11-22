@@ -223,9 +223,12 @@ func newEvent(w http.ResponseWriter, req *http.Request, route int, names []strin
 		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		return nil, nil, false
 	}
-	params := make(map[string]string, len(names))
-	for _, n := range names {
-		params[n] = req.PathValue(n)
+	var params map[string]string // nil crosses as an empty array, as a route without parameters has
+	if len(names) > 0 {
+		params = make(map[string]string, len(names))
+		for _, n := range names {
+			params[n] = req.PathValue(n)
+		}
 	}
 	cleanup := func() {}
 	var form *multipartForm
@@ -295,13 +298,17 @@ func writeError(w http.ResponseWriter, req *http.Request, err error, log *slog.L
 	// Otherwise the client went away; there is nobody to answer.
 }
 
-// write sends the response; the header map may be shared with the cache, so
-// it is copied, never handed over.
+// write sends the response. Its header may be the cache's, so the map is
+// never handed over; a value slice is, because decodeAnswer left it no room
+// to be appended to in place.
 func (r *response) write(w http.ResponseWriter) {
 	h := w.Header()
 	for k, vs := range r.header {
-		ck := http.CanonicalHeaderKey(k)
-		h[ck] = append(h[ck], vs...)
+		if old, ok := h[k]; ok {
+			h[k] = append(old, vs...)
+			continue
+		}
+		h[k] = vs
 	}
 	w.WriteHeader(r.status)
 	_, _ = w.Write(r.body)

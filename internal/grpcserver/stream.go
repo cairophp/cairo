@@ -27,20 +27,10 @@ type activeStream struct {
 	readOnce sync.Once
 	ahead    *ReadAhead
 
-	// Replies go through out to one writer goroutine, so PHP can queue a
-	// reply without waiting for it to be written. The first send error
-	// stops the writer and is returned by the following sends.
-	startOnce sync.Once
-	closeMu   sync.RWMutex // held for reading while a reply is queued
-	closed    bool
-	out       chan []byte // encoded replies
-	done      chan struct{}
-	sendErr   atomic.Pointer[error]
+	// Replies wait here for their writer, so that the client gets them
+	// in order and before the call's status.
+	sends *SendQueue
 }
-
-// sendQueue is how many replies may wait for the writer; a send beyond it
-// waits in the fiber's Go operation (StreamSend) until there is room.
-const sendQueue = 64
 
 var (
 	streams      sync.Map // int64 -> *activeStream
@@ -49,36 +39,18 @@ var (
 
 func openStream(ss grpc.ServerStream, m method) int64 {
 	id := nextStreamID.Add(1)
-	streams.Store(id, &activeStream{ss: ss, method: m})
+	sends := NewSendQueue(func(reply []byte) error { return ss.SendMsg(&Frame{reply}) })
+	streams.Store(id, &activeStream{ss: ss, method: m, sends: sends})
 	return id
 }
 
 // closeStream waits until the queued replies are written, so they reach the
 // client before the call's status.
 func closeStream(id int64) {
-	v, ok := streams.LoadAndDelete(id)
-	if !ok {
-		return
-	}
-	st := v.(*activeStream)
-	st.closeMu.Lock()
-	st.closed = true
-	st.closeMu.Unlock()
-	if st.out != nil {
-		close(st.out)
-		<-st.done
-	}
-}
-
-func (st *activeStream) writer() {
-	defer close(st.done)
-	for m := range st.out {
-		if st.sendErr.Load() != nil {
-			continue // drain: the client is gone or the stream broke
-		}
-		if err := st.ss.SendMsg(&Frame{m}); err != nil {
-			st.sendErr.Store(&err)
-		}
+	if v, ok := streams.LoadAndDelete(id); ok {
+		// A reply that could not be written has nobody to tell: its
+		// client is gone.
+		_ = v.(*activeStream).sends.Close()
 	}
 }
 
@@ -124,13 +96,7 @@ func StreamSend(id int64, msg wire.Raw) error {
 	if err != nil {
 		return err
 	}
-	defer st.closeMu.RUnlock()
-	select {
-	case st.out <- out:
-		return nil
-	case <-st.ss.Context().Done():
-		return status.FromContextError(st.ss.Context().Err()).Err()
-	}
+	return st.sends.Put(st.ss.Context(), out)
 }
 
 // StreamTrySend queues one reply if there is room, without waiting; queued
@@ -140,17 +106,10 @@ func StreamTrySend(id int64, msg wire.Raw) (queued bool, err error) {
 	if err != nil {
 		return false, err
 	}
-	defer st.closeMu.RUnlock()
-	select {
-	case st.out <- out:
-		return true, nil
-	default:
-		return false, nil
-	}
+	return st.sends.TryPut(out)
 }
 
-// sendable encodes msg for stream id and returns with closeMu held for
-// reading, so the queue stays open until the caller has queued msg.
+// sendable returns the encoding of msg, a reply of stream id.
 func sendable(id int64, msg wire.Raw) (*activeStream, []byte, error) {
 	v, ok := streams.Load(id)
 	if !ok {
@@ -160,22 +119,12 @@ func sendable(id int64, msg wire.Raw) (*activeStream, []byte, error) {
 	if !st.method.desc.IsStreamingServer() {
 		return nil, nil, errors.New("a client-streaming method replies by returning its message")
 	}
-	if err := st.sendErr.Load(); err != nil {
-		return nil, nil, *err
+	if err := st.sends.Err(); err != nil {
+		return nil, nil, err
 	}
 	out, err := st.method.out.FromPHP(msg)
 	if err != nil {
 		return nil, nil, status.Errorf(codes.Internal, "invalid %s: %v", st.method.desc.Output().FullName(), err)
 	}
-	st.closeMu.RLock()
-	if st.closed {
-		st.closeMu.RUnlock()
-		return nil, nil, ErrStreamClosed
-	}
-	st.startOnce.Do(func() {
-		st.out = make(chan []byte, sendQueue)
-		st.done = make(chan struct{})
-		go st.writer()
-	})
 	return st, out, nil
 }

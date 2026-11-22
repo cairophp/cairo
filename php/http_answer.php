@@ -43,7 +43,9 @@ namespace Cairo\Internal {
             if ($isolated) {
                 Superglobals::fill($event);
             }
-            Form::track($event['files'] ?? []);
+            if (isset($event['files'])) {
+                Form::track($event['files']);
+            }
             try {
                 if ($isolated) {
                     // Classic PHP style: echo and header() become the response.
@@ -77,7 +79,9 @@ namespace Cairo\Internal {
                 $response = Http\Response::text("Internal Server Error\n", 500);
             }
             Context::current()->markAnswered();
-            Form::untrack($event['files'] ?? []);   // Go removes what is left once we respond
+            if (isset($event['files'])) {
+                Form::untrack($event['files']);   // Go removes what is left once we respond
+            }
             \cairo_respond_http((int) $event['id'], $response->status, $response->headers, $response->body);
         }
 

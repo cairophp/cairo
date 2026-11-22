@@ -168,6 +168,9 @@ namespace Cairo\Http {
         /** @internal */
         private ?array $form = null;
 
+        /** @var ?array<int|string, mixed> the query string, parsed at its first use */
+        private ?array $query = null;
+
         public function __construct(private readonly array $event)
         {
         }
@@ -195,15 +198,24 @@ namespace Cairo\Http {
 
         public function query(string $name): ?string
         {
-            parse_str($this->event['query'] ?? '', $query);
-            $value = $query[$name] ?? null;
+            if ($this->query === null) {
+                parse_str($this->event['query'] ?? '', $query);
+                $this->query = $query;
+            }
+            $value = $this->query[$name] ?? null;
             return is_string($value) ? $value : null;
         }
 
         public function header(string $name): ?string
         {
-            foreach ($this->event['headers'] ?? [] as $key => $values) {
-                if (strcasecmp($key, $name) === 0) {
+            $headers = $this->event['headers'] ?? [];
+            // Go sends the names in their canonical form ("Content-Type"),
+            // which is how most code asks for them.
+            if (isset($headers[$name])) {
+                return $headers[$name][0] ?? null;
+            }
+            foreach ($headers as $key => $values) {
+                if (strcasecmp((string) $key, $name) === 0) {
                     return $values[0] ?? null;
                 }
             }

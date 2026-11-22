@@ -194,3 +194,28 @@ func TestGRPCDamagedMessage(t *testing.T) {
 		t.Fatalf("after the damaged messages: %v", err)
 	}
 }
+
+// A reply that is no message of the method's type ends its call with
+// INTERNAL, as the answer of a unary call and as a reply sent to a stream.
+func TestGRPCInvalidReply(t *testing.T) {
+	conn, svc := startKinds(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	all := svc.Methods().ByName("Echo").Input()
+	m := dynamicpb.NewMessage(all)
+	m.Set(all.Fields().ByName("f_string"), protoreflect.ValueOfString("reply with no message"))
+	echo := dynamicpb.NewMessage(all)
+	if err := conn.Invoke(ctx, "/kinds.Kinds/Echo", m, echo); status.Code(err) != codes.Internal {
+		t.Errorf("unary: %v", err)
+	}
+	each, err := conn.NewStream(ctx, &grpc.StreamDesc{ServerStreams: true, ClientStreams: true}, "/kinds.Kinds/EchoEach")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := each.SendMsg(m); err != nil {
+		t.Fatal(err)
+	}
+	if err := each.RecvMsg(echo); status.Code(err) != codes.Internal {
+		t.Errorf("stream: %v", err)
+	}
+}

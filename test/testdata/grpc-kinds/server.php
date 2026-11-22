@@ -18,14 +18,14 @@ final class Kinds
      */
     public function Echo(array $request, Context $ctx): array
     {
-        return self::set($request);
+        return self::reply($request);
     }
 
     /** @param ServerStream<array<string, mixed>, array<string, mixed>> $stream */
     public function EchoEach(ServerStream $stream, Context $ctx): void
     {
         foreach ($stream as $message) {
-            $stream->send(self::set($message));
+            $stream->send(self::reply($message));
         }
     }
 
@@ -38,6 +38,18 @@ final class Kinds
         $want = json_decode((string) $request['json'], true, 512, JSON_THROW_ON_ERROR);
         $same = $want === $request['message'];
         return ['same' => $same, 'got' => $same ? '' : var_export($request['message'], true)];
+    }
+
+    /**
+     * The reply to a message: the message, or what is no message of its type
+     * when the test asks for that.
+     *
+     * @param array<string, mixed> $message
+     * @return array<int|string, mixed>
+     */
+    private static function reply(array $message): array
+    {
+        return $message['fString'] === 'reply with no message' ? ['fInt32' => 'x'] : self::set($message);
     }
 
     /**

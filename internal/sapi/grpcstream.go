@@ -54,9 +54,8 @@ var (
 func init() {
 	registerPHP("grpc.php")
 	registerStreamOps(map[string]func(context.Context, grpcServerStreamRequest) map[string]any{
-		"grpc.server.recv":    grpcServerRecv,
-		"grpc.server.send":    grpcServerSend,
-		"grpc.server.trySend": grpcServerTrySend,
+		"grpc.server.recv": grpcServerRecv,
+		"grpc.server.send": grpcServerSend,
 	})
 	registerStreamOps(map[string]func(context.Context, grpcStreamRequest) map[string]any{
 		"grpc.stream.open":      grpcStreamOpen,
@@ -100,16 +99,6 @@ func grpcServerSend(_ context.Context, req grpcServerStreamRequest) map[string]a
 		return grpcStatusFail(err)
 	}
 	return map[string]any{"ok": true}
-}
-
-// grpcServerTrySend runs on the PHP thread (it never waits): queued is
-// false when the reply queue is full and PHP should use grpc.server.send.
-func grpcServerTrySend(_ context.Context, req grpcServerStreamRequest) map[string]any {
-	queued, err := grpcserver.StreamTrySend(req.ID, req.Message)
-	if err != nil {
-		return grpcStatusFail(err)
-	}
-	return map[string]any{"ok": true, "queued": queued}
 }
 
 // grpcStreamOpen starts a streaming call. The stream is not tied to the

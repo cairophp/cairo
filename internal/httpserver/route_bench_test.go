@@ -27,9 +27,9 @@ func newAPIPHP() *apiPHP {
 	})}
 }
 
-func (p *apiPHP) Dispatch(_ context.Context, ev wire.Event) ([]byte, []byte, error) {
+func (p *apiPHP) DispatchLent(_ context.Context, ev wire.Event) ([]byte, []byte, func(), error) {
 	p.buf = ev.AppendWire(p.buf[:0], 1, 0)
-	return p.answer, []byte(`{"ok":true}`), nil
+	return p.answer, []byte(`{"ok":true}`), nil, nil
 }
 
 // browserRequest is a GET with the headers a browser and a proxy send.

@@ -23,16 +23,16 @@ type fakePHP struct {
 	header http.Header
 }
 
-func (f *fakePHP) Dispatch(ctx context.Context, _ wire.Event) ([]byte, []byte, error) {
+func (f *fakePHP) DispatchLent(ctx context.Context, _ wire.Event) ([]byte, []byte, func(), error) {
 	n := f.calls.Add(1)
 	if f.delay > 0 {
 		select {
 		case <-time.After(f.delay):
 		case <-ctx.Done():
-			return nil, nil, ctx.Err()
+			return nil, nil, nil, ctx.Err()
 		}
 	}
-	return wire.AppendHeader(wire.AppendInt(nil, 200), f.header), []byte(strconv.FormatInt(n, 10)), nil
+	return wire.AppendHeader(wire.AppendInt(nil, 200), f.header), []byte(strconv.FormatInt(n, 10)), nil, nil
 }
 
 func cachedRoute(t *testing.T, php *fakePHP, c RouteCache) func(req *http.Request) string {

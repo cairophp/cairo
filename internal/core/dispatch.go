@@ -7,12 +7,14 @@ package core
 import "C"
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/cairophp/cairo/internal/wire"
 )
@@ -33,10 +35,27 @@ type call struct {
 }
 
 // reply is PHP's answer to a call: its metadata (JSON) and, for an HTTP
-// response, the body as raw bytes.
+// response, the body as raw bytes. A large body is not copied for it: it is
+// the memory of the message it came in (lent), which whoever takes the reply
+// frees.
 type reply struct {
 	meta []byte
 	body []byte
+	lent unsafe.Pointer
+}
+
+// lendMin is the size from which a body stays in C's memory. Go gives every
+// allocation past 32 KiB spans of its own, under the heap's lock, and a copy
+// of that size is no longer small beside what else a request costs.
+const lendMin = 32 << 10
+
+// free frees the body that the reply was lent, if any. Nothing may read the
+// body afterwards.
+func (a *reply) free() {
+	if a.lent != nil {
+		C.free(a.lent)
+		a.lent = nil
+	}
 }
 
 // request is what Dispatch needs for one request and keeps for the next:
@@ -83,6 +102,46 @@ func (r *request) free() {
 // request context does: that is what ends the waits of a fiber the request
 // left running (an async() that nobody awaited).
 func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte, err error) {
+	a, err := e.dispatch(ctx, ev)
+	if err != nil {
+		return nil, nil, err
+	}
+	if a.lent != nil {
+		a.body = bytes.Clone(a.body)
+		a.free()
+	}
+	return a.meta, a.body, nil
+}
+
+// DispatchLent is Dispatch for a caller that only passes the body on, as a
+// server does that writes it to its client. A large body is then lent and
+// not copied: when release is not nil, body is memory of C that release
+// frees. The caller calls release when it is done with body, and keeps no
+// part of body after that. Calling release again does nothing.
+func (e *Engine) DispatchLent(ctx context.Context, ev wire.Event) (meta, body []byte, release func(), err error) {
+	a, err := e.dispatch(ctx, ev)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if a.lent == nil {
+		return a.meta, a.body, nil, nil
+	}
+	l := &lentBody{msg: a.lent}
+	return a.meta, a.body, l.release, nil
+}
+
+// lentBody is the message a lent body is in, until it is released.
+type lentBody struct{ msg unsafe.Pointer }
+
+func (l *lentBody) release() {
+	if p := atomic.SwapPointer(&l.msg, nil); p != nil {
+		C.free(p)
+	}
+}
+
+// dispatch is Dispatch with the answer as PHP's thread sent it: the caller
+// frees it.
+func (e *Engine) dispatch(ctx context.Context, ev wire.Event) (reply, error) {
 	var p Probe
 	if e.newProbe != nil {
 		p = e.newProbe()
@@ -95,12 +154,12 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 			var once sync.Once
 			release = func() { once.Do(func() { <-e.slots }) }
 		case <-ctx.Done():
-			return nil, nil, ctx.Err()
+			return reply{}, ctx.Err()
 		}
 	}
 	t, release, err := e.pickWorker(ctx, release)
 	if err != nil {
-		return nil, nil, err
+		return reply{}, err
 	}
 	id := e.nextID.Add(1)
 	r := requests.Get().(*request)
@@ -117,27 +176,27 @@ func (e *Engine) Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte
 		t.inflight.Add(-1)
 		release()
 		r.free()
-		return nil, nil, err
+		return reply{}, err
 	}
 	select {
 	case answer := <-c.resp:
 		release()
 		if answer == nil {
 			r.free()
-			return nil, nil, ErrThreadStopped
+			return reply{}, ErrThreadStopped
 		}
-		meta, body = answer.meta, answer.body
+		a := *answer
 		r.free()
 		if p != nil {
 			p.Done(ev, "")
 		}
-		return meta, body, nil
+		return a, nil
 	case <-ctx.Done():
 		go e.abandon(ctx, r, release)
 		if p != nil {
 			p.Done(ev, CtxError(ctx))
 		}
-		return nil, nil, ctx.Err()
+		return reply{}, ctx.Err()
 	}
 }
 
@@ -160,7 +219,10 @@ func (e *Engine) abandon(ctx context.Context, r *request, release func()) {
 	}
 	for {
 		select {
-		case <-c.resp:
+		case a := <-c.resp:
+			if a != nil {
+				a.free() // nobody waits for the answer any more
+			}
 			release() // the slot is free once PHP is done with the request
 			r.free()
 			return

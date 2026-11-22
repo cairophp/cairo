@@ -4,6 +4,7 @@
 package httpserver
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -19,10 +20,12 @@ import (
 	"github.com/cairophp/cairo/internal/wire"
 )
 
-// Dispatcher sends a call to PHP and returns PHP's answer: its metadata
-// (JSON) and the response body.
+// Dispatcher sends a call to PHP and returns PHP's answer: its status and
+// headers (decodeAnswer) and the response body. A large body is lent, not
+// copied: release is then not nil, and frees it. Nothing of the body may be
+// read after that (response.free, response.own).
 type Dispatcher interface {
-	Dispatch(ctx context.Context, ev wire.Event) (meta, body []byte, err error)
+	DispatchLent(ctx context.Context, ev wire.Event) (meta, body []byte, release func(), err error)
 }
 
 // maxBody caps request bodies read into memory for PHP.
@@ -208,11 +211,13 @@ func routeHandler(r Route, php Dispatcher, cache *responseCache, log *slog.Logge
 				writeError(w, req, err, log)
 				return
 			}
+			defer resp.free()
 			resp.write(w)
 			return
 		}
 		call := func(ctx context.Context) (*response, error) {
 			r, err := callPHP(ctx, php, ev)
+			r.own() // the cache and the requests that share the answer keep it
 			return &r, err
 		}
 		if stale != nil {
@@ -280,11 +285,31 @@ func newEvent(w http.ResponseWriter, req *http.Request, route int, names []strin
 	}, cleanup, true
 }
 
-// response is PHP's answer to one request.
+// response is PHP's answer to one request. With release, its body is lent
+// (Dispatcher): the request frees it when it has written it, and what
+// outlives the request takes a copy first.
 type response struct {
-	status int
-	header http.Header
-	body   []byte
+	status  int
+	header  http.Header
+	body    []byte
+	release func()
+}
+
+// free ends the use of a lent body.
+func (r *response) free() {
+	if r.release != nil {
+		r.release()
+		r.body, r.release = nil, nil
+	}
+}
+
+// own makes the body the response's own, so that it can be kept.
+func (r *response) own() {
+	if r.release != nil {
+		body := bytes.Clone(r.body)
+		r.free()
+		r.body = body
+	}
 }
 
 var errBadResponse = errors.New("bad php response")
@@ -292,18 +317,21 @@ var errBadResponse = errors.New("bad php response")
 // callPHP returns a value, not a pointer: uncached routes then allocate
 // nothing for it.
 func callPHP(ctx context.Context, php Dispatcher, ev *event) (response, error) {
-	raw, body, err := php.Dispatch(ctx, ev)
+	raw, body, release, err := php.DispatchLent(ctx, ev)
 	if err != nil {
 		return response{}, err
 	}
 	status, header, err := decodeAnswer(raw)
 	if err != nil {
+		if release != nil {
+			release()
+		}
 		return response{}, fmt.Errorf("%w: %w", errBadResponse, err)
 	}
 	if status == 0 {
 		status = http.StatusOK
 	}
-	return response{status: status, header: header, body: body}, nil
+	return response{status: status, header: header, body: body, release: release}, nil
 }
 
 func writeError(w http.ResponseWriter, req *http.Request, err error, log *slog.Logger) {

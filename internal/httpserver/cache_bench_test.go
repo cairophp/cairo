@@ -12,8 +12,8 @@ import (
 
 type constPHP struct{}
 
-func (constPHP) Dispatch(context.Context, wire.Event) ([]byte, []byte, error) {
-	return wire.AppendHeader(wire.AppendInt(nil, 200), http.Header(nil)), []byte("1"), nil
+func (constPHP) DispatchLent(context.Context, wire.Event) ([]byte, []byte, func(), error) {
+	return wire.AppendHeader(wire.AppendInt(nil, 200), http.Header(nil)), []byte("1"), nil, nil
 }
 
 func benchRoute(b *testing.B, c *RouteCache) {

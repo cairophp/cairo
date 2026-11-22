@@ -50,10 +50,7 @@ func opKind(op string) waitKind {
 	case "offload":
 		return waitOffload
 	}
-	switch {
-	case strings.HasPrefix(op, "sql."):
-		return waitSQL
-	case strings.HasPrefix(op, "grpc."):
+	if strings.HasPrefix(op, "grpc.") {
 		return waitGRPC
 	}
 	return waitOther

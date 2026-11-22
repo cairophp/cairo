@@ -7,7 +7,7 @@ import (
 
 func TestOpKind(t *testing.T) {
 	for op, want := range map[string]waitKind{
-		"pg": waitSQL, "sql.query": waitSQL, "sql.begin": waitSQL,
+		"pg":   waitSQL,
 		"http": waitHTTP, "waitset": waitHTTP, "wait": waitSocket,
 		"dial": waitConnect, "lookup": waitConnect, "starttls": waitConnect,
 		"sleep": waitSleep, "park": waitChannel, "offload": waitOffload,

@@ -183,6 +183,11 @@ change the PHP API; patch versions do not.
 - `App::repeatedQueries()`, the repeated query detector. Find N+1 queries
   with the tools of your framework (Laravel's `preventLazyLoading()`, the
   Symfony profiler) or the database's own statement log.
+- `Cairo\Sql` (`Db`, `Tx`, `SqlException`, `Bytes`). PDO is the way to a
+  database: `new PDO('pgsql:...')` is Cairo's Go-backed driver and takes
+  `cairo_pool=N` for a pool shared by all threads, and PDO MySQL waits
+  without blocking through the socket hook. The binary no longer carries
+  the Go MySQL driver.
 
 ### Fixed
 

@@ -84,7 +84,7 @@ namespace Cairo {
          *
          *     slow request route="GET /orders/{id}" ms=1240 php_ms=40 longest_run_ms=12 sql="38 in 310ms" http="2 in 890ms"
          *
-         * Kinds: sql (PDO pgsql, Cairo\Sql), http (Cairo\Http\Client, curl),
+         * Kinds: sql (PDO pgsql), http (Cairo\Http\Client, curl),
          * socket (other hooked sockets: PDO MySQL, Redis, streams), connect
          * (DNS, connect, TLS), sleep, wait (channels, select(), Cairo\Pool
          * with acquireTimeout), offload and grpc. Waits of async() tasks run side by side, so the kinds can
@@ -1674,163 +1674,6 @@ namespace Cairo\Net {
     }
 }
 
-namespace Cairo\Sql {
-    /**
-     * A SQL query failed. $sqlState is the five-character SQLSTATE code
-     * (e.g. 23505 for a unique violation), when the database sent one.
-     */
-    class SqlException extends \RuntimeException
-    {
-        public function __construct(string $message, public readonly ?string $sqlState = null, public readonly ?string $detail = null)
-        {
-        }
-    }
-
-    /** A binary parameter (bytea, BLOB). Values read back from binary columns are plain strings. */
-    final class Bytes
-    {
-        public function __construct(public readonly string $bytes)
-        {
-        }
-    }
-
-    /** What Db and Tx share: running statements. */
-    abstract class Queryable
-    {
-        /** @return array<string, int> which pool or transaction runs the statement */
-        abstract protected function target(): array;
-
-        /**
-         * Run a query and return every row as column => value. Parameters
-         * are $1, $2, ... for PostgreSQL and ? for MySQL. Only the calling
-         * fiber waits.
-         *
-         * @param list<mixed> $params
-         * @return list<array<string, mixed>>
-         */
-        public function query(string $sql, array $params = []): array
-        {
-        }
-
-        /**
-         * The first row, or null when there is none.
-         *
-         * @param list<mixed> $params
-         * @return array<string, mixed>|null
-         */
-        public function queryRow(string $sql, array $params = []): ?array
-        {
-        }
-
-        /**
-         * The first column of the first row, or null when there is no row.
-         *
-         * @param list<mixed> $params
-         */
-        public function queryValue(string $sql, array $params = []): mixed
-        {
-        }
-
-        /**
-         * Run a statement and return how many rows it changed.
-         *
-         * @param list<mixed> $params
-         */
-        public function exec(string $sql, array $params = []): int
-        {
-        }
-    }
-
-    /**
-     * A PostgreSQL or MySQL connection pool in Go (database/sql with pgx or
-     * go-sql-driver/mysql), shared by every PHP thread: Db::open() with the
-     * same DSN and options returns the same pool on each thread, so max_open
-     * bounds the connections of the whole server.
-     *
-     *     $db = Db::open('postgres://app:secret@127.0.0.1/app', ['max_open' => 20]);
-     *     $users = $db->query('SELECT id, name FROM users WHERE team = $1', [$team]);
-     *
-     *     $db = Db::open('mysql://app:secret@127.0.0.1:3306/app');
-     *     $users = $db->query('SELECT id, name FROM users WHERE team = ?', [$team]);
-     *
-     * Integers, floats, booleans, strings and nulls come back as such; binary
-     * columns as strings, timestamps as RFC 3339 in UTC (MySQL DATE as
-     * Y-m-d), numeric/DECIMAL, json and the rest in the database's text form.
-     */
-    final class Db extends Queryable
-    {
-        /**
-         * $dsn is a postgres:// URL, a PostgreSQL key=value DSN, or
-         * mysql://user:pass@host:port/db (?socket=/path for a Unix socket,
-         * plus the go-sql-driver/mysql parameters such as tls or timeout).
-         *
-         * Options: max_open (connections, 0 for no limit; default 10),
-         * max_idle (default max_open, or 10 with no limit), max_lifetime and
-         * max_idle_time (seconds). Fewer idle than open connections means a
-         * reconnect for most queries under load; max_idle_time closes the
-         * ones a quiet pool does not need. acquire_timeout (seconds) bounds
-         * the wait for a free connection with a Cairo\PoolTimeout; without
-         * it a query waits until its request ends. Connecting is lazy: a bad
-         * DSN shows on the first query.
-         *
-         * Statements that would leave a transaction or a lock on a pooled
-         * connection (BEGIN, START TRANSACTION, SET autocommit, LOCK, XA)
-         * throw a SqlException: use transaction() instead.
-         *
-         * @param array{max_open?: int, max_idle?: int, max_lifetime?: float, max_idle_time?: float, acquire_timeout?: float} $options
-         */
-        public static function open(string $dsn, array $options = []): self
-        {
-        }
-
-        /**
-         * Run $fn in a transaction: committed when $fn returns, rolled back
-         * when it throws (the exception is rethrown). Returns what $fn returns.
-         * A transaction left open when its fiber ends is rolled back.
-         *
-         * @template T
-         * @param callable(Tx): T $fn
-         * @param array{isolation?: 'read committed'|'repeatable read'|'serializable', read_only?: bool} $options
-         * @return T
-         */
-        public function transaction(callable $fn, array $options = []): mixed
-        {
-        }
-
-        /** @return array{max_open: int, open: int, in_use: int, idle: int, wait_count: int, wait_time: float} */
-        public function stats(): array
-        {
-        }
-
-        protected function target(): array
-        {
-        }
-
-        /** @internal */
-        public static function call(string $op, array $payload): mixed
-        {
-        }
-    }
-
-    /** A transaction; see Db::transaction(). */
-    final class Tx extends Queryable
-    {
-        /** @internal */
-        public function __construct(private readonly int $tx)
-        {
-        }
-
-        protected function target(): array
-        {
-        }
-
-        /** @internal commit (true) or roll back */
-        public function end(bool $commit): void
-        {
-        }
-    }
-}
-
 namespace Cairo {
     final class Cache
     {
@@ -1857,7 +1700,7 @@ namespace Cairo {
 }
 
 namespace Cairo {
-    /** Cairo\Pool or Cairo\Sql\Db had no free connection within its acquire timeout. */
+    /** Cairo\Pool had no free connection within its acquire timeout. */
     final class PoolTimeout extends \RuntimeException
     {
     }

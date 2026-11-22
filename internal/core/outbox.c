@@ -80,15 +80,26 @@ int cairo_answer(int64_t id, const char *meta, size_t n, const char *body, size_
 	return 0;
 }
 
-void cairo_outbox_exit(int tid, int status)
+// A message of the thread about itself.
+static void tell(int tid, int kind, int64_t id)
 {
 	cairo_msg *m = malloc(sizeof(*m));
 	if (m == NULL) {
 		abort();   // Go would wait for this thread for ever
 	}
-	m->id = status;
+	m->id = id;
 	m->tid = tid;
-	m->kind = CAIRO_MSG_EXIT;
+	m->kind = kind;
 	m->len = m->blen = 0;
 	push(m);
+}
+
+void cairo_outbox_ready(int tid)
+{
+	tell(tid, CAIRO_MSG_READY, 0);
+}
+
+void cairo_outbox_exit(int tid, int status)
+{
+	tell(tid, CAIRO_MSG_EXIT, status);
 }

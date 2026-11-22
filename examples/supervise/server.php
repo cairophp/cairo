@@ -4,7 +4,9 @@
 // memory_limit) is restarted, and the requests it held get 500 instead of
 // hanging. An offload thread that dies is restarted too, and the fiber that
 // waits for the job it ran gets an OffloadException. App::maxRequests() and App::maxMemory() replace a thread with a
-// fresh one before leaks pile up, without failing any request.
+// fresh one before leaks pile up, without failing any request, and the old
+// one serves until the new one has run this file (CAIRO_BOOT_MS makes that
+// take time, as booting a framework does).
 // App::maxInFlight() caps requests per thread; the rest wait in Go.
 
 declare(strict_types=1);
@@ -26,6 +28,7 @@ final class Boot
     public static array $leak = [];
 }
 Boot::$id = bin2hex(random_bytes(6));
+usleep((int) getenv('CAIRO_BOOT_MS') * 1000);
 
 /** For offload(): which run of server.php the offload thread is. */
 function boot_id(): string

@@ -23,9 +23,11 @@ import (
 //
 // A request thread can also be recycled on purpose, after App::maxRequests()
 // requests or once its memory passes App::maxMemory(). PHP asks with
-// cairo_retire(); Go starts a replacement, puts it in the old thread's pool
-// slot, stops queueing requests to the old thread and sends it a "retire"
-// event. The old thread finishes the requests it holds, then exits.
+// cairo_retire(); Go starts a replacement and, once that has run server.php
+// and come to its loop, puts it in the old thread's pool slot, stops queueing
+// requests to the old thread and sends it a "retire" event. The old thread
+// serves until then, so no request waits behind the boot of the new one,
+// finishes the requests it holds, then exits.
 
 // maxThreads matches CAIRO_MAX_THREADS in extension.h.
 const maxThreads = 4096
@@ -87,6 +89,9 @@ func (e *Engine) threadExited(t *thread, status int) {
 	t.retired, t.gone = t.retired || retiring, retiring
 	failed := e.failCalls(t, retiring)
 	t.sendMu.Unlock()
+	if retiring {
+		close(t.left)
+	}
 
 	if retiring && status == 0 {
 		e.releaseTid(t)
@@ -190,12 +195,28 @@ func (e *Engine) retire(old *thread, reason string) {
 		e.log.Error("php thread not recycled", "thread", old.id, "err", err)
 		return
 	}
+	// A new thread that ends before its loop is restarted like any other
+	// (threadExited), in the slot: the old one has asked to leave. With an
+	// old one that died meanwhile, requests wait in the new one's inbox.
+	select {
+	case <-nt.ready:
+	case <-old.left:
+	case <-e.shutdownCh:
+	}
 	e.workers[old.slot].Store(nt)
 	old.sendMu.Lock() // waits for requests being queued to old
 	old.retired = true
 	old.sendMu.Unlock()
 	e.post(old, map[string]string{"type": "retire"}) // after every request queued to old
 	e.log.Info("recycling php thread", "thread", old.id, "reason", reason, "served", old.box.served.Load()-old.bootMark, "replacement", tid)
+}
+
+// booted marks that the thread came to its loop, or ended before it did.
+func (t *thread) booted() {
+	if !t.up {
+		t.up = true
+		close(t.ready)
+	}
 }
 
 func (e *Engine) report(err error) {

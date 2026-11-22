@@ -2,14 +2,14 @@ package test
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"testing"
 	"time"
 )
 
-// pongAfter serves connections that send a number of seconds on a line and
-// get "pong" back after that long, as often as they ask.
-func pongAfter(t *testing.T) string {
+// serveConns answers each connection to the address it returns with serve.
+func serveConns(t *testing.T, serve func(c *net.TCPConn)) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -24,18 +24,27 @@ func pongAfter(t *testing.T) string {
 			}
 			go func() {
 				defer c.Close()
-				var secs float64
-				for {
-					if _, err := fmt.Fscanln(c, &secs); err != nil {
-						return
-					}
-					time.Sleep(time.Duration(secs * float64(time.Second)))
-					fmt.Fprintln(c, "pong")
-				}
+				serve(c.(*net.TCPConn))
 			}()
 		}
 	}()
 	return ln.Addr().String()
+}
+
+// pongAfter serves connections that send a number of seconds on a line and
+// get "pong" back after that long, as often as they ask.
+func pongAfter(t *testing.T) string {
+	t.Helper()
+	return serveConns(t, func(c *net.TCPConn) {
+		var secs float64
+		for {
+			if _, err := fmt.Fscanln(c, &secs); err != nil {
+				return
+			}
+			time.Sleep(time.Duration(secs * float64(time.Second)))
+			fmt.Fprintln(c, "pong")
+		}
+	})
 }
 
 // A read of a socket waits no longer than the stream's timeout, and the
@@ -98,5 +107,31 @@ func TestSocketWaitIsOneFibersAtATime(t *testing.T) {
 	out := getJSON(t, "/sockets/shared?addr="+pongAfter(t))
 	if out["first"] != "pong" || out["second"] != "socket is already in use by another fiber" {
 		t.Errorf("two fibers reading one socket: %v", out)
+	}
+}
+
+// A write that fills the socket's buffer waits for room in its fiber only:
+// all of it arrives, and a sleep of another fiber takes its own time.
+func TestSocketWriteWaitsForRoom(t *testing.T) {
+	addr := serveConns(t, func(c *net.TCPConn) {
+		time.Sleep(300 * time.Millisecond)
+		n, _ := io.Copy(io.Discard, c)
+		fmt.Fprintln(c, n)
+	})
+	out := getJSON(t, "/sockets/write?addr="+addr)
+	if out["written"] != float64(8<<20) || out["got"] != float64(8<<20) {
+		t.Errorf("a write of 8 MiB to a server that reads late: %v", out)
+	}
+	if slept, _ := out["slept"].(float64); slept < 0.04 || slept > 0.25 {
+		t.Errorf("next to the write, a 50ms sleep took %vs", slept)
+	}
+}
+
+// The end of a stream is read as the end, at once.
+func TestSocketReadFindsTheEnd(t *testing.T) {
+	addr := serveConns(t, func(c *net.TCPConn) { fmt.Fprintln(c, "bye") })
+	out := getJSON(t, "/sockets/end?addr="+addr)
+	if took, _ := out["took"].(float64); out["line"] != "bye\n" || out["after"] != false || out["eof"] != true || took > 0.2 {
+		t.Errorf("reading past the last line of a server that closed: %v", out)
 	}
 }

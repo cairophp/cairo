@@ -854,6 +854,55 @@ namespace Cairo\Http {
         {
         }
 
+        /**
+         * Serve HTTPS with the certificate in $certFile (PEM: the
+         * certificate, then its chain) and the private key in $keyFile.
+         * Clients that ask for HTTP/2 get it. The files are read again when
+         * they change, so a renewed certificate needs no restart.
+         */
+        public function tls(string $certFile, string $keyFile): static
+        {
+        }
+
+        /**
+         * Serve HTTPS with certificates that Let's Encrypt issues and renews
+         * for $domains. Calling this accepts the terms of service of the
+         * certificate authority.
+         *
+         * The authority checks each domain by connecting to it, so the
+         * domains must point to this server and it must listen on port 443,
+         * or have redirectHttp() on port 80. The first request for a domain
+         * waits for its certificate. $cacheDir keeps the account key and the
+         * certificates between restarts: it must survive them, and nobody
+         * else should be able to read it. $email is where the authority
+         * writes about problems with a certificate. $directory is the ACME
+         * directory of another authority, or of Let's Encrypt's staging
+         * service while you try things out.
+         *
+         * @param list<string> $domains host names, without wildcards
+         */
+        public function autoTls(array $domains, string $cacheDir, string $email = '', string $directory = ''): static
+        {
+        }
+
+        /**
+         * Also accept HTTP/2 without TLS, from clients that start with it
+         * (a load balancer or a proxy set to do so). HTTP/1.1 stays. Not
+         * for a server with tls() or autoTls(), which has HTTP/2 already.
+         */
+        public function h2c(): static
+        {
+        }
+
+        /**
+         * Also listen on $listen without TLS and send every request there
+         * to the same address on this server (308). For a server with tls()
+         * or autoTls().
+         */
+        public function redirectHttp(string $listen = ':80'): static
+        {
+        }
+
         /** @internal */
         public function spec(): array
         {
@@ -888,6 +937,19 @@ namespace Cairo\Http {
         }
 
         public function header(string $name): ?string
+        {
+        }
+
+        /** The request's protocol: "HTTP/1.1" or "HTTP/2.0". */
+        public function protocol(): string
+        {
+        }
+
+        /**
+         * Whether the request came to Cairo over TLS. Behind a proxy that
+         * ends TLS itself this is false: read the header the proxy sets.
+         */
+        public function secure(): bool
         {
         }
 
@@ -1067,6 +1129,15 @@ namespace Cairo\Grpc {
 
         /** Upper bound in seconds for any call, applied when the client sets a later or no deadline. */
         public function maxDuration(float $seconds): static
+        {
+        }
+
+        /**
+         * Serve gRPC over TLS with the certificate in $certFile (PEM: the
+         * certificate, then its chain) and the private key in $keyFile. The
+         * files are read again when they change.
+         */
+        public function tls(string $certFile, string $keyFile): static
         {
         }
 

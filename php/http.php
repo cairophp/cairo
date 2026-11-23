@@ -21,6 +21,10 @@ namespace Cairo\Http {
         private float $writeTimeout = 0;
         /** @var list<\Cairo\Middleware> */
         private array $middleware = [];
+        /** @var ?array<string, mixed> */
+        private ?array $tls = null;
+        private bool $h2c = false;
+        private string $redirectHttp = '';
 
         /** @internal */
         public function __construct(private readonly App $app, private readonly string $listen)
@@ -148,6 +152,66 @@ namespace Cairo\Http {
             return $this;
         }
 
+        /**
+         * Serve HTTPS with the certificate in $certFile (PEM: the
+         * certificate, then its chain) and the private key in $keyFile.
+         * Clients that ask for HTTP/2 get it. The files are read again when
+         * they change, so a renewed certificate needs no restart.
+         */
+        public function tls(string $certFile, string $keyFile): static
+        {
+            $this->tls = ['cert' => $certFile, 'key' => $keyFile];
+            return $this;
+        }
+
+        /**
+         * Serve HTTPS with certificates that Let's Encrypt issues and renews
+         * for $domains. Calling this accepts the terms of service of the
+         * certificate authority.
+         *
+         * The authority checks each domain by connecting to it, so the
+         * domains must point to this server and it must listen on port 443,
+         * or have redirectHttp() on port 80. The first request for a domain
+         * waits for its certificate. $cacheDir keeps the account key and the
+         * certificates between restarts: it must survive them, and nobody
+         * else should be able to read it. $email is where the authority
+         * writes about problems with a certificate. $directory is the ACME
+         * directory of another authority, or of Let's Encrypt's staging
+         * service while you try things out.
+         *
+         * @param list<string> $domains host names, without wildcards
+         */
+        public function autoTls(array $domains, string $cacheDir, string $email = '', string $directory = ''): static
+        {
+            if ($domains === []) {
+                throw new \InvalidArgumentException('autoTls: name at least one domain');
+            }
+            $this->tls = ['domains' => array_values($domains), 'cache_dir' => $cacheDir, 'email' => $email, 'directory' => $directory];
+            return $this;
+        }
+
+        /**
+         * Also accept HTTP/2 without TLS, from clients that start with it
+         * (a load balancer or a proxy set to do so). HTTP/1.1 stays. Not
+         * for a server with tls() or autoTls(), which has HTTP/2 already.
+         */
+        public function h2c(): static
+        {
+            $this->h2c = true;
+            return $this;
+        }
+
+        /**
+         * Also listen on $listen without TLS and send every request there
+         * to the same address on this server (308). For a server with tls()
+         * or autoTls().
+         */
+        public function redirectHttp(string $listen = ':80'): static
+        {
+            $this->redirectHttp = $listen;
+            return $this;
+        }
+
         /** @internal */
         public function spec(): array
         {
@@ -159,6 +223,9 @@ namespace Cairo\Http {
                 'static' => $this->static,
                 'public_dir' => $this->publicDir,
                 'middleware' => array_map(static fn ($m) => $m->spec(), $this->middleware),
+                'tls' => $this->tls,
+                'h2c' => $this->h2c,
+                'redirect_http' => $this->redirectHttp,
             ];
         }
     }
@@ -220,6 +287,21 @@ namespace Cairo\Http {
                 }
             }
             return null;
+        }
+
+        /** The request's protocol: "HTTP/1.1" or "HTTP/2.0". */
+        public function protocol(): string
+        {
+            return (string) ($this->event['proto'] ?? 'HTTP/1.1');
+        }
+
+        /**
+         * Whether the request came to Cairo over TLS. Behind a proxy that
+         * ends TLS itself this is false: read the header the proxy sets.
+         */
+        public function secure(): bool
+        {
+            return !empty($this->event['tls']);
         }
 
         public function body(): string

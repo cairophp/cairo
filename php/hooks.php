@@ -57,14 +57,16 @@ namespace Cairo\Internal {
          */
         public static function wait(int $fd, bool $write, float $timeout): int
         {
-            if (!self::on(\Cairo\Hook::SOCKETS)) {
+            // What on() asks, with the context looked up once: every query waits here.
+            $ctx = Context::current();
+            if ($ctx->requestId === 0 || ((self::$flags ?? self::flags()) & \Cairo\Hook::SOCKETS) === 0) {
                 return 0;
             }
             $scheduler = Scheduler::instance();
             if ($scheduler->waitHere($fd, $write)) {
                 return 1;
             }
-            return $scheduler->waits->socket(Context::current(), $fd, $write, $timeout) ? 1 : -1;
+            return $scheduler->waits->socket($ctx, $fd, $write, $timeout) ? 1 : -1;
         }
 
         /**
@@ -187,9 +189,16 @@ namespace Cairo\Internal {
         /** Hooks run only in fibers Cairo started on a request thread. */
         private static function on(int $hook): bool
         {
-            return Scheduler::running()
-                && (Scheduler::instance()->app()->hookFlags() & $hook) !== 0
-                && Context::current()->requestId !== 0;
+            return ((self::$flags ?? self::flags()) & $hook) !== 0 && Context::current()->requestId !== 0;
+        }
+
+        /** The app's Hook flags once its scheduler runs, when the declaration is over: read once. */
+        private static ?int $flags = null;
+
+        /** The hooks that are on: none while no scheduler runs. */
+        private static function flags(): int
+        {
+            return Scheduler::running() ? self::$flags = Scheduler::instance()->app()->hookFlags() : 0;
         }
     }
 }

@@ -133,7 +133,7 @@ static void unlist(parked *p)
 	p->listed = false;
 }
 
-static void wake(zend_long id)
+void cairo_parked_wake(zend_long id)
 {
 	parked *p = tables ? zend_hash_index_find_ptr(&waits, (zend_ulong)id) : NULL;
 	if (p != NULL) {
@@ -154,9 +154,41 @@ int64_t cairo_parked_tick(void)
 		if (ntimers > 0) {
 			sift_down(0);
 		}
-		wake(id);
+		cairo_parked_wake(id);
 	}
 	return ntimers == 0 ? -1 : timers[0].at - now;
+}
+
+void cairo_park_fiber(zend_long id, zend_object *context, zend_long request, int64_t at, int kind)
+{
+	zval ret;
+	zend_fiber *fiber = EG(active_fiber);
+	if (fiber == NULL) {
+		cairo_fiber_suspend(&ret);  // throws: there is no fiber to park
+		return;
+	}
+	if (!tables) {
+		zend_hash_init(&waits, 64, NULL, NULL, 0);
+		zend_hash_init(&requests, 64, NULL, NULL, 0);
+		tables = true;
+	}
+	parked p = {.id = id, .request = request, .fiber = fiber, .context = context, .at = at};
+	if (zend_hash_index_add_ptr(&waits, (zend_ulong)id, &p) == NULL) {
+		zend_throw_error(NULL, "cairo_park(): wait " ZEND_LONG_FMT " is taken", id);
+		return;
+	}
+	list(&p);
+	GC_ADDREF(&fiber->std);
+	int64_t began = cairo_wait_began(request);
+	cairo_fiber_suspend(&ret);
+	zval_ptr_dtor(&ret);
+	if (began != 0) {
+		cairo_wait_ended(request, kind, began);
+	}
+	if (p.listed) {
+		unlist(&p);  // not woken: the fiber could not suspend, is being destroyed, or was resumed by other code
+	}
+	OBJ_RELEASE(&fiber->std);
 }
 
 // cairo_park(int $id, object $context, int $request, int $at, int $kind): void
@@ -176,34 +208,7 @@ PHP_FUNCTION(cairo_park)
 		Z_PARAM_LONG(at)
 		Z_PARAM_LONG(kind)
 	ZEND_PARSE_PARAMETERS_END();
-	zval ret;
-	zend_fiber *fiber = EG(active_fiber);
-	if (fiber == NULL) {
-		cairo_fiber_suspend(&ret);  // throws: there is no fiber to park
-		RETURN_THROWS();
-	}
-	if (!tables) {
-		zend_hash_init(&waits, 64, NULL, NULL, 0);
-		zend_hash_init(&requests, 64, NULL, NULL, 0);
-		tables = true;
-	}
-	parked p = {.id = id, .request = request, .fiber = fiber, .context = context, .at = at};
-	if (zend_hash_index_add_ptr(&waits, (zend_ulong)id, &p) == NULL) {
-		zend_throw_error(NULL, "cairo_park(): wait " ZEND_LONG_FMT " is taken", id);
-		RETURN_THROWS();
-	}
-	list(&p);
-	GC_ADDREF(&fiber->std);
-	int64_t began = cairo_wait_began(request);
-	cairo_fiber_suspend(&ret);
-	zval_ptr_dtor(&ret);
-	if (began != 0) {
-		cairo_wait_ended(request, (int)kind, began);
-	}
-	if (p.listed) {
-		unlist(&p);  // not woken: the fiber could not suspend, is being destroyed, or was resumed by other code
-	}
-	OBJ_RELEASE(&fiber->std);
+	cairo_park_fiber(id, context, request, at, (int)kind);
 }
 
 // cairo_wake(int $id): void
@@ -214,7 +219,7 @@ PHP_FUNCTION(cairo_wake)
 	ZEND_PARSE_PARAMETERS_START(1, 1)
 		Z_PARAM_LONG(id)
 	ZEND_PARSE_PARAMETERS_END();
-	wake(id);
+	cairo_parked_wake(id);
 }
 
 // cairo_parked(): int

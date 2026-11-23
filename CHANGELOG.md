@@ -239,6 +239,14 @@ change the PHP API; patch versions do not.
   Laravel through Octane, the slowest 0.1% of requests under a light load
   took 15 ms and now take 8 ms. For the length of the boot the old thread
   serves past its limit and both hold their memory.
+- Performance: a fiber that waits on a hooked socket (a PDO MySQL query, a
+  stream, curl) is armed in its thread's epoll and parked by one call into
+  C, and the thread's loop wakes it without running PHP. Before, each wait
+  ran seventeen PHP functions and made an object, and the loop called PHP for
+  every socket that was ready. A wait takes 2 µs less of the thread's time
+  (5.2 to 3.2 µs, measured inside the server). The requests per second of a
+  request with two MySQL queries rise by about 2%, which is inside what the
+  benchmark machine can tell apart.
 
 ### Removed
 

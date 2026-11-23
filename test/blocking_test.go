@@ -13,7 +13,9 @@ import (
 
 // App::detectBlocking(): a request that keeps its PHP thread busy past the
 // threshold is logged once, naming the line it was on; one that yields to Go
-// (Cairo\sleep, or a hooked usleep) is not.
+// (Cairo\sleep, or a hooked usleep) is not, and neither are ten fibers whose
+// sockets are ready at the same moment and that each compute for less than
+// the threshold: the thread comes back to its loop between them.
 func TestBlockingDetector(t *testing.T) {
 	src, err := os.ReadFile("../examples/blocking/server.php")
 	if err != nil {
@@ -56,9 +58,10 @@ func TestBlockingDetector(t *testing.T) {
 
 	fetch("/ok")
 	fetch("/usleep")
+	fetch("/sockets?addr=" + echoAfter(t, 200*time.Millisecond))
 	time.Sleep(200 * time.Millisecond)
 	if n := reports(); n != 0 {
-		t.Fatalf("/ok and /usleep yield to Go but were reported as blocking:\n%s", stderr.String())
+		t.Fatalf("/ok, /usleep and /sockets yield to Go but were reported as blocking:\n%s", stderr.String())
 	}
 
 	fetch("/spin")

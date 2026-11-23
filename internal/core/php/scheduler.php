@@ -240,7 +240,6 @@ namespace Cairo\Internal {
 
         public function run(): void
         {
-            $waits = $this->waits;
             while (true) {
                 $idle = \cairo_run_ready(self::TURN);   // whether the queue ran empty
                 while (!$this->later->isEmpty()) {
@@ -262,9 +261,7 @@ namespace Cairo\Internal {
                 $n = self::TURN;
                 $event = \cairo_next_event($idle);
                 while ($event !== null) {
-                    if (\is_int($event)) {
-                        $waits->ready($event);   // a socket that a fiber waits on
-                    } elseif (($type = $event['type']) === 'io') {
+                    if (($type = $event['type']) === 'io') {
                         $fiber = $this->io[$event['io']] ?? null;
                         unset($this->io[$event['io']]);
                         $fiber?->resume($event);

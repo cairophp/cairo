@@ -16,6 +16,17 @@
 // long until the next one's is, in nanoseconds; below 0 with no timer set.
 int64_t cairo_parked_tick(void);
 
+// What cairo_park() does, for a wait that begins in C: parks the running
+// fiber as wait id under context of request, until cairo_parked_wake(id) or
+// the monotonic clock is at at. kind is what it waits in (a constant of
+// Waits). Returns once the fiber runs again; with an exception thrown when
+// there is no fiber to park.
+void cairo_park_fiber(zend_long id, zend_object *context, zend_long request, int64_t at, int kind);
+
+// Ends wait id of the calling thread if it still goes on: its fiber runs at
+// the loop's next turn.
+void cairo_parked_wake(zend_long id);
+
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_park, 0, 0, 5)
 	ZEND_ARG_INFO(0, id)
 	ZEND_ARG_INFO(0, context)

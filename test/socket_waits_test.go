@@ -47,6 +47,19 @@ func pongAfter(t *testing.T) string {
 	})
 }
 
+// echoAfter serves connections that send a line and get it back after d.
+func echoAfter(t *testing.T, d time.Duration) string {
+	t.Helper()
+	return serveConns(t, func(c *net.TCPConn) {
+		var line string
+		if _, err := fmt.Fscanln(c, &line); err != nil {
+			return
+		}
+		time.Sleep(d)
+		fmt.Fprintln(c, line)
+	})
+}
+
 // A read of a socket waits no longer than the stream's timeout, and the
 // socket can be waited on again afterwards.
 func TestSocketWaitEndsAtTheStreamTimeout(t *testing.T) {
@@ -99,6 +112,16 @@ func TestSocketWaitLeavesTheThreadAwake(t *testing.T) {
 	}
 	if took := time.Since(start); out["read"] != "pong" || took < 900*time.Millisecond || took > 3*time.Second {
 		t.Errorf("the socket's fiber read %q, and the request took %s; want the answer after about 1s", out["read"], took.Round(time.Millisecond))
+	}
+}
+
+// Fifty fibers of one request each wait on a socket of their own, and the
+// answers come at the same moment: each fiber reads its own, and all of
+// them in the time of one.
+func TestSocketWaitsOfManyFibersEndTogether(t *testing.T) {
+	out := getJSON(t, "/sockets/many?addr="+echoAfter(t, 300*time.Millisecond))
+	if took, _ := out["took"].(float64); out["own"] != float64(50) || took < 0.25 || took > 1.5 {
+		t.Errorf("50 fibers that each wait 0.3s on a socket of their own: %v", out)
 	}
 }
 

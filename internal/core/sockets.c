@@ -11,9 +11,12 @@
 #include <unistd.h>
 
 #include <php.h>
+#include <ext/spl/spl_exceptions.h>
+#include <zend_exceptions.h>
 
 #include "extension.h"
 #include "loop.h"
+#include "parked.h"
 #include "sockets.h"
 
 // epoll_pwait2 (Linux 5.11) takes its timeout in nanoseconds, which the
@@ -28,6 +31,7 @@
 static __thread int epfd = -1;   // the thread's epoll, once a fiber waited on a socket
 static __thread int waker = -1;  // the descriptor in it that wakes the thread
 static __thread int armed;       // sockets armed and not yet taken as ready or disarmed
+static __thread HashTable watched;   // with an epoll: armed socket => the wait of the fiber that waits on it (parked.h)
 static __thread struct epoll_event ready[CAIRO_SOCKETS_BATCH];
 static __thread int nready, taken;
 static int no_pwait2;            // the kernel has no epoll_pwait2: timeouts are rounded up to milliseconds
@@ -66,6 +70,7 @@ static int open_epoll(void)
 		close(ep);
 		return -1;
 	}
+	zend_hash_init(&watched, 64, NULL, NULL, 0);
 	epfd = ep;
 	waker = fd;
 	return 0;
@@ -88,16 +93,24 @@ void cairo_sockets_thread_end(void)
 	armed = nready = taken = 0;
 }
 
-int cairo_sockets_next(void)
+int cairo_sockets_take(bool all)
 {
-	while (taken < nready) {
+	int woke = 0;
+	while (taken < nready && (all || woke == 0)) {
 		int fd = ready[taken++].data.fd;
-		if (fd >= 0 && fd != waker) {
-			armed--;
-			return fd;
+		if (fd < 0 || fd == waker) {
+			continue;
+		}
+		armed--;
+		zval *wait = zend_hash_index_find(&watched, (zend_ulong)fd);
+		if (wait != NULL) {
+			zend_long id = Z_LVAL_P(wait);
+			zend_hash_index_del(&watched, (zend_ulong)fd);
+			cairo_parked_wake(id);
+			woke++;
 		}
 	}
-	return -1;
+	return woke;
 }
 
 static int wait_ns(int64_t ns)
@@ -131,24 +144,21 @@ int cairo_sockets_wait(int64_t ns)
 	return 0;
 }
 
-// cairo_socket_arm(int $fd, int $events): ?string
-// A fiber of this thread waits for socket $fd to be readable (1), writable
-// (2) or either (3): the loop gets $fd from cairo_next_event() once it is.
-// Returns null, or why the socket cannot be waited on. The socket stays in
-// the epoll afterwards, switched off (EPOLLONESHOT), so the next wait on it
-// is one system call; the kernel drops it when PHP closes it.
-PHP_FUNCTION(cairo_socket_arm)
+// The fiber of wait id waits for socket fd to be readable (events 1),
+// writable (2) or either (3). Returns NULL, or why the socket cannot be
+// waited on. The socket stays in the epoll afterwards, switched off
+// (EPOLLONESHOT), so the next wait on it is one system call; the kernel
+// drops it when PHP closes it.
+static const char *arm(zend_long fd, zend_long events, zend_long id)
 {
-	zend_long fd, events;
-	ZEND_PARSE_PARAMETERS_START(2, 2)
-		Z_PARAM_LONG(fd)
-		Z_PARAM_LONG(events)
-	ZEND_PARSE_PARAMETERS_END();
 	if (fd < 0 || fd > INT_MAX || (events & 3) == 0) {
-		RETURN_STRING("not a socket to wait on");
+		return "not a socket to wait on";
 	}
 	if (epfd < 0 && open_epoll() != 0) {
-		RETURN_STRING(strerror(errno));
+		return strerror(errno);
+	}
+	if (zend_hash_index_exists(&watched, (zend_ulong)fd)) {
+		return "socket is already in use by another fiber";
 	}
 	struct epoll_event ev = {.events = EPOLLONESHOT, .data.fd = (int)fd};
 	if (events & 1) {
@@ -159,23 +169,25 @@ PHP_FUNCTION(cairo_socket_arm)
 	}
 	if (epoll_ctl(epfd, EPOLL_CTL_MOD, (int)fd, &ev) != 0
 		&& (errno != ENOENT || epoll_ctl(epfd, EPOLL_CTL_ADD, (int)fd, &ev) != 0)) {
-		RETURN_STRING(strerror(errno));
+		return strerror(errno);
 	}
+	zval wait;
+	ZVAL_LONG(&wait, id);
+	zend_hash_index_add_new(&watched, (zend_ulong)fd, &wait);
 	armed++;
+	return NULL;
 }
 
-// cairo_socket_disarm(int $fd): void
-// The wait on socket $fd, which cairo_socket_arm() began and
-// cairo_next_event() has not returned, is over: its fiber no longer waits.
-PHP_FUNCTION(cairo_socket_disarm)
+// Wait id is over. Returns whether socket fd was still armed for it, which
+// it no longer is; false when the loop found the socket ready, or the wait
+// never armed it.
+static bool disarm(zend_long fd, zend_long id)
 {
-	zend_long fd;
-	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_LONG(fd)
-	ZEND_PARSE_PARAMETERS_END();
-	if (epfd < 0 || fd < 0 || fd > INT_MAX) {
-		return;
+	zval *wait = epfd >= 0 ? zend_hash_index_find(&watched, (zend_ulong)fd) : NULL;
+	if (wait == NULL || Z_LVAL_P(wait) != id) {
+		return false;
 	}
+	zend_hash_index_del(&watched, (zend_ulong)fd);
 	// Out of the epoll, not only switched off: an error on the socket would
 	// still be reported, to whoever waits on that number next.
 	epoll_ctl(epfd, EPOLL_CTL_DEL, (int)fd, NULL);
@@ -185,6 +197,72 @@ PHP_FUNCTION(cairo_socket_disarm)
 		}
 	}
 	armed--;
+	return true;
+}
+
+// cairo_wait_socket(int $fd, int $events, int $id, object $context, int $request, int $at): bool
+// Parks the running fiber as wait $id (cairo_park() in parked.c) until
+// socket $fd is readable ($events 1), writable (2) or either (3), and says
+// whether it is: false when the wait ended first, at $at or by
+// cairo_wake($id). Throws when the socket cannot be waited on, which
+// includes that another fiber waits on it.
+PHP_FUNCTION(cairo_wait_socket)
+{
+	zend_long fd, events, id, request, at;
+	zend_object *context;
+	ZEND_PARSE_PARAMETERS_START(6, 6)
+		Z_PARAM_LONG(fd)
+		Z_PARAM_LONG(events)
+		Z_PARAM_LONG(id)
+		Z_PARAM_OBJ(context)
+		Z_PARAM_LONG(request)
+		Z_PARAM_LONG(at)
+	ZEND_PARSE_PARAMETERS_END();
+	const char *error = arm(fd, events, id);
+	if (error != NULL) {
+		zend_throw_exception(spl_ce_RuntimeException, error, 0);
+		RETURN_THROWS();
+	}
+	cairo_park_fiber(id, context, request, at, CAIRO_WAIT_SOCKET);
+	RETURN_BOOL(!disarm(fd, id));
+}
+
+// cairo_wait_sockets(array $events, int $id, object $context, int $request, int $at): bool
+// cairo_wait_socket() for the first of several sockets: $events is socket
+// => 1, 2 or 3. With none the fiber waits out the time.
+PHP_FUNCTION(cairo_wait_sockets)
+{
+	HashTable *sockets;
+	zend_long id, request, at;
+	zend_object *context;
+	ZEND_PARSE_PARAMETERS_START(5, 5)
+		Z_PARAM_ARRAY_HT(sockets)
+		Z_PARAM_LONG(id)
+		Z_PARAM_OBJ(context)
+		Z_PARAM_LONG(request)
+		Z_PARAM_LONG(at)
+	ZEND_PARSE_PARAMETERS_END();
+	const char *error = NULL;
+	zend_ulong fd;
+	zval *events;
+	ZEND_HASH_FOREACH_NUM_KEY_VAL(sockets, fd, events) {
+		error = Z_TYPE_P(events) == IS_LONG ? arm((zend_long)fd, Z_LVAL_P(events), id) : "not a socket to wait on";
+		if (error != NULL) {
+			break;
+		}
+	} ZEND_HASH_FOREACH_END();
+	if (error == NULL) {
+		cairo_park_fiber(id, context, request, at, CAIRO_WAIT_SOCKETS);
+	}
+	bool ready = false;
+	ZEND_HASH_FOREACH_NUM_KEY(sockets, fd) {
+		ready = !disarm((zend_long)fd, id) || ready;
+	} ZEND_HASH_FOREACH_END();
+	if (error != NULL) {
+		zend_throw_exception(spl_ce_RuntimeException, error, 0);
+		RETURN_THROWS();
+	}
+	RETURN_BOOL(ready);
 }
 
 // Longest wait on the PHP thread itself, in milliseconds: long enough for a

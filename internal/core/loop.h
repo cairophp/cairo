@@ -5,9 +5,9 @@
 
 #include "queue.h"
 
-// The loop of a PHP thread: where it comes back between fibers, takes the
-// events Go queued for it and the sockets its fibers wait on that are ready
-// (sockets.h) and, with none and no fiber to run, sleeps (loop.c).
+// The loop of a PHP thread: where it comes back between fibers, wakes those
+// whose sockets are ready (sockets.h), takes the events Go queued for it
+// and, with none and no fiber to run, sleeps (loop.c).
 
 // What a PHP thread shares with the Go code that sends it events, one per
 // thread id. Go reads it as atomics (mailbox in mailbox.go has the same

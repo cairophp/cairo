@@ -9,6 +9,8 @@
  * description is sent to Go (the declare phase). On worker threads the file
  * then runs the fiber scheduler: each request runs in its own Fiber, and a
  * fiber that waits on Go-backed I/O is suspended so the thread can run others.
+ * Under `cairo php` there is no server.php: the file ends once Cairo's
+ * classes are there, and the script of the command line runs after it.
  */
 
 declare(strict_types=1);
@@ -55,6 +57,14 @@ namespace Cairo\Internal {
                 require_once __DIR__ . '/' . $onUse[$class];
             }
         });
+        if ($info['mode'] === 'cli') {
+            // Cairo's files are removed once this returns (goCLILoaded), so
+            // what a first use would load is loaded now.
+            foreach (array_unique($onUse) as $file) {
+                require_once __DIR__ . '/' . $file;
+            }
+            return;
+        }
         $app = (static fn (string $file): mixed => require $file)($info['server']);
         if (!$app instanceof App) {
             throw new \RuntimeException($info['server'] . ' must return a Cairo\App');

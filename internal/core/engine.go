@@ -67,6 +67,7 @@ type Engine struct {
 	runtimeFile string
 	log         *slog.Logger
 	phpIni      string
+	cli         bool // PHP's command line runs (RunCLI): no server file, no threads
 
 	table   [maxThreads]atomic.Pointer[thread] // live PHP threads by thread id
 	workers []atomic.Pointer[thread]           // run requests as fibers; a slot's thread is replaced on recycle
@@ -410,7 +411,9 @@ func goPHPLog(tid C.int, msg *C.char, syslogType C.int) {
 func goCairoInfo(tid C.int) *C.char {
 	e := engine
 	mode := "declare"
-	if tid >= 0 {
+	if e.cli {
+		mode = "cli"
+	} else if tid >= 0 {
 		mode = "serve"
 		if e.table[int(tid)].Load().pool == poolOffload {
 			mode = "offload"

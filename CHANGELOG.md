@@ -16,6 +16,16 @@ change the PHP API; patch versions do not.
 - `install.sh`, which installs the release binary for the machine it runs
   on after checking it against `SHA256SUMS`.
 - `SECURITY.md`: how to report a vulnerability, and which versions get fixes.
+- `cairo php`: PHP's command line in the binary, for `artisan`, `bin/console`,
+  Composer and any script, with no PHP installed next to Cairo. It runs a
+  file, code (`-r`) or standard input with the SAPI `cli`, `$argv`, `STDIN`,
+  `STDOUT` and `STDERR`, PHP's exit status and the options `-d`, `-c`, `-n`,
+  `-l`, `-i`, `-m`, `-v`, `--ini` and `--ri`. The same extensions as the server
+  are there, Cairo's PDO pgsql driver included. `PHP_BINARY` is the binary,
+  which runs a script when it is given PHP's arguments, so that PHP code can
+  start PHP again; under the name `php` (a link, which the official image
+  has) it is the command line as well. Not there: the interactive shell
+  (`-a`), the built-in web server (`-S`) and `pcntl`.
 
 ## [0.5.0] - 2026-11-23
 

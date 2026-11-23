@@ -613,7 +613,9 @@ namespace Cairo {
 
     /**
      * Run $fn concurrently in its own fiber, under the current context.
-     * It runs until its first suspension, then async() returns.
+     * It runs until its first suspension, then async() returns. Where no
+     * scheduler runs (a command of `cairo php`, an offload() job), $fn runs
+     * to its end before async() returns.
      */
     function async(callable $fn): Task
     {

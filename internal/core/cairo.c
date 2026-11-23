@@ -32,6 +32,7 @@
 #include <ext/standard/php_fopen_wrappers.h>
 
 #include "cairo.h"
+#include "module.h"
 #include "extension.h"
 #include "outbox.h"
 #include "wire.h"
@@ -452,7 +453,7 @@ static PHP_MINIT_FUNCTION(cairo)
 	return SUCCESS;
 }
 
-static zend_module_entry cairo_module_entry = {
+zend_module_entry cairo_module_entry = {
 	STANDARD_MODULE_HEADER,
 	"cairo",
 	cairo_functions,
@@ -650,7 +651,6 @@ static int run_file(const char *file)
 // cairo_boot starts PHP (module startup, then a request on this thread for
 // the declare phase) and runs the runtime script. php_ini is a php.ini path
 // (file or directory), or NULL to search the usual places.
-static void cairo_signals_onstack(void);
 
 int cairo_boot(const char *runtime_file, const char *php_ini)
 {
@@ -696,7 +696,7 @@ int cairo_boot(const char *runtime_file, const char *php_ini)
 // otherwise; Go's CPU profiler (SIGPROF) hit that. Handlers keep their
 // function and only gain SA_ONSTACK. Signals are process-wide, so after the
 // first PHP request startup this changes nothing.
-static void cairo_signals_onstack(void)
+void cairo_signals_onstack(void)
 {
 	static const int sigs[] = {SIGPROF, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2, SIGALRM};
 	for (size_t i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) {

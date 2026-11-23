@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/cairophp/cairo/internal/middleware"
+	"github.com/cairophp/cairo/internal/servertls"
 	"github.com/cairophp/cairo/internal/wire"
 )
 
@@ -33,11 +34,13 @@ const maxBody = 32 << 20
 
 var paramRe = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)(\.\.\.)?\}`)
 
-// Server is one HTTP listener.
+// Server is one HTTP listener, and with $http->redirectHttp() the plain
+// one beside it.
 type Server struct {
-	srv *http.Server
-	ln  net.Listener
-	log *slog.Logger
+	srv      *http.Server
+	ln       net.Listener
+	redirect *redirect
+	log      *slog.Logger
 }
 
 // New builds the router for one declared HTTP server and opens its listener.
@@ -66,19 +69,36 @@ func New(decl Declaration, php Dispatcher, log *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	ln, err := net.Listen("tcp", decl.Listen)
-	if err != nil {
+	srv := &http.Server{
+		Handler:      handler,
+		ReadTimeout:  seconds(decl.ReadTimeout),
+		WriteTimeout: seconds(decl.WriteTimeout),
+		ErrorLog:     slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+	}
+	var secure *servertls.TLS
+	if decl.TLS != nil {
+		if secure, err = servertls.New(*decl.TLS, log); err != nil {
+			return nil, err
+		}
+		srv.TLSConfig = secure.Config
+	}
+	if decl.H2C {
+		srv.Protocols = new(http.Protocols)
+		srv.Protocols.SetHTTP1(true)
+		srv.Protocols.SetUnencryptedHTTP2(true)
+	}
+	s := &Server{srv: srv, log: log}
+	if s.ln, err = net.Listen("tcp", decl.Listen); err != nil {
 		return nil, err
 	}
-	return &Server{
-		srv: &http.Server{
-			Handler:      handler,
-			ReadTimeout:  seconds(decl.ReadTimeout),
-			WriteTimeout: seconds(decl.WriteTimeout),
-		},
-		ln:  ln,
-		log: log,
-	}, nil
+	if decl.RedirectHTTP != "" {
+		if s.redirect, err = newRedirect(decl.RedirectHTTP, s.ln.Addr(), secure, srv.ErrorLog); err != nil {
+			s.ln.Close()
+			return nil, err
+		}
+		log.Info("http redirect listening", "addr", s.redirect.ln.Addr().String(), "to", s.Addr())
+	}
+	return s, nil
 }
 
 // Addr is the address the server listens on.
@@ -86,15 +106,35 @@ func (s *Server) Addr() string { return s.ln.Addr().String() }
 
 // Serve blocks until the server stops.
 func (s *Server) Serve() error {
-	err := s.srv.Serve(s.ln)
-	if errors.Is(err, http.ErrServerClosed) {
-		return nil
+	errs := make(chan error, 2) // room for both, so neither goroutine outlives its listener
+	serving := 1
+	go func() { errs <- s.serve() }()
+	if s.redirect != nil {
+		serving++
+		go func() { errs <- s.redirect.serve() }()
 	}
-	return err
+	for ; serving > 0; serving-- {
+		if err := <-errs; !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Server) serve() error {
+	if s.srv.TLSConfig != nil {
+		return s.srv.ServeTLS(s.ln, "", "") // the certificate is the config's
+	}
+	return s.srv.Serve(s.ln)
 }
 
 // Shutdown stops accepting connections and waits for in-flight requests.
-func (s *Server) Shutdown(ctx context.Context) error { return s.srv.Shutdown(ctx) }
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s.redirect != nil {
+		_ = s.redirect.srv.Shutdown(ctx) // its requests are answered at once
+	}
+	return s.srv.Shutdown(ctx)
+}
 
 // event is a request as PHP receives it (Cairo\Http\Request).
 type event struct {

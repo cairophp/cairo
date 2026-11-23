@@ -20,6 +20,8 @@ namespace Cairo\Grpc {
         private float $maxDuration = 0;
         /** @var list<\Cairo\Middleware> */
         private array $middleware = [];
+        /** @var ?array{cert:string,key:string} */
+        private ?array $tls = null;
 
         /** Add Go-side middleware: requestId(), accessLog(), timeout(); see Cairo\Middleware. */
         public function use(\Cairo\Middleware $middleware): static
@@ -59,6 +61,17 @@ namespace Cairo\Grpc {
             return $this;
         }
 
+        /**
+         * Serve gRPC over TLS with the certificate in $certFile (PEM: the
+         * certificate, then its chain) and the private key in $keyFile. The
+         * files are read again when they change.
+         */
+        public function tls(string $certFile, string $keyFile): static
+        {
+            $this->tls = ['cert' => $certFile, 'key' => $keyFile];
+            return $this;
+        }
+
         /** @internal */
         public function spec(): array
         {
@@ -68,6 +81,7 @@ namespace Cairo\Grpc {
                 'max_duration' => $this->maxDuration,
                 'services' => $this->services,
                 'middleware' => array_map(static fn ($m) => $m->spec(), $this->middleware),
+                'tls' => $this->tls,
             ];
         }
     }

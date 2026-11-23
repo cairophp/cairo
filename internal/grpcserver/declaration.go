@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/cairophp/cairo/internal/middleware"
+	"github.com/cairophp/cairo/internal/servertls"
 	"github.com/cairophp/cairo/internal/spec"
 )
 
@@ -14,6 +15,8 @@ type Declaration struct {
 	MaxDuration float64                  `json:"max_duration"`
 	Services    []Service                `json:"services"`
 	Middleware  []middleware.Declaration `json:"middleware"`
+	// TLS is $grpc->tls(): nil serves gRPC without TLS.
+	TLS *servertls.Declaration `json:"tls"`
 }
 
 // Service maps a fully qualified gRPC service name to a PHP handler id.
@@ -33,6 +36,11 @@ func Declared(s *spec.Spec, claims *spec.Claims) ([]Declaration, error) {
 	for _, d := range decls {
 		if err := claims.Listen(d.Listen); err != nil {
 			return nil, err
+		}
+		if d.TLS != nil {
+			if err := d.TLS.Validate(); err != nil {
+				return nil, fmt.Errorf("grpc %s: %w", d.Listen, err)
+			}
 		}
 		if len(d.Services) > 0 && len(d.Protos) == 0 {
 			return nil, fmt.Errorf("gRPC server %s has services but no ->proto(...) files", d.Listen)

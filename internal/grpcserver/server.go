@@ -21,6 +21,7 @@ import (
 	"github.com/bufbuild/protocompile"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
@@ -32,6 +33,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 
 	"github.com/cairophp/cairo/internal/middleware"
+	"github.com/cairophp/cairo/internal/servertls"
 	"github.com/cairophp/cairo/internal/wire"
 )
 
@@ -102,12 +104,20 @@ func New(decl Declaration, php Dispatcher, log *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.grpc = grpc.NewServer(grpc.UnknownServiceHandler(s.handle), grpc.ChainStreamInterceptor(interceptors...),
-		grpc.ForceServerCodecV2(NewCodec()))
+	opts := []grpc.ServerOption{grpc.UnknownServiceHandler(s.handle), grpc.ChainStreamInterceptor(interceptors...),
+		grpc.ForceServerCodecV2(NewCodec())}
+	if decl.TLS != nil {
+		secure, err := servertls.New(*decl.TLS, log)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, grpc.Creds(credentials.NewTLS(secure.Config)))
+	}
+	s.grpc = grpc.NewServer(opts...)
 	healthpb.RegisterHealthServer(s.grpc, hs)
-	opts := reflection.ServerOptions{Services: s, DescriptorResolver: resolver{files}}
-	reflectionv1.RegisterServerReflectionServer(s.grpc, reflection.NewServerV1(opts))
-	reflectionv1alpha.RegisterServerReflectionServer(s.grpc, reflection.NewServer(opts))
+	reflect := reflection.ServerOptions{Services: s, DescriptorResolver: resolver{files}}
+	reflectionv1.RegisterServerReflectionServer(s.grpc, reflection.NewServerV1(reflect))
+	reflectionv1alpha.RegisterServerReflectionServer(s.grpc, reflection.NewServer(reflect))
 
 	s.ln, err = net.Listen("tcp", decl.Listen)
 	if err != nil {

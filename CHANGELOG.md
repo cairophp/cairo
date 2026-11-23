@@ -7,6 +7,16 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+### Added
+
+- An official image, `ghcr.io/cairophp/cairo`, for amd64 and arm64: the
+  release's static binary on Alpine, running as the user `cairo`. The release
+  workflow publishes it with every release, tagged `x.y.z`, `x.y` and
+  `latest`.
+- `install.sh`, which installs the release binary for the machine it runs
+  on after checking it against `SHA256SUMS`.
+- `SECURITY.md`: how to report a vulnerability, and which versions get fixes.
+
 ## [0.5.0] - 2026-11-23
 
 Mostly speed, and a smaller API. A fiber no longer has a goroutine: sleeps,

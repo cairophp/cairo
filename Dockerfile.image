@@ -1,0 +1,15 @@
+# The official image, ghcr.io/cairophp/cairo: a release's static binary on
+# Alpine. .github/workflows/image.yml builds it from the binaries of a
+# published release, which it puts in dist/ first.
+#   FROM ghcr.io/cairophp/cairo:0.5
+#   COPY --chown=cairo:cairo . /app
+FROM alpine:3.21
+# Not root: an app that is taken over cannot change the image or bind low ports.
+RUN adduser -D -u 1000 cairo
+ARG TARGETARCH
+COPY --chmod=755 dist/cairo-linux-${TARGETARCH} /usr/local/bin/cairo
+WORKDIR /app
+USER cairo
+EXPOSE 8080
+ENTRYPOINT ["cairo"]
+CMD ["serve", "server.php"]

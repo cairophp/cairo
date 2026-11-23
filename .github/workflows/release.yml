@@ -97,3 +97,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release edit "$GITHUB_REF_NAME" --draft=false
+
+  image:
+    needs: publish
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/image.yml
+    with:
+      tag: ${{ github.ref_name }}

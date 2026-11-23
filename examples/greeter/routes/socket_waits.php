@@ -131,6 +131,27 @@ return function ($http): void {
         return Response::json(['line' => $line, 'after' => $after, 'eof' => feof($conn), 'took' => round(microtime(true) - $start, 2)]);
     });
 
+    // Fifty tasks each wait on a socket of their own. ?addr= says each line
+    // back after 0.3s, so the sockets are ready at the same moment: every
+    // fiber is woken for its own.
+    $http->get('/sockets/many', function (Request $req): Response {
+        $start = microtime(true);
+        $tasks = [];
+        for ($i = 0; $i < 50; $i++) {
+            $conn = stream_socket_client('tcp://' . $req->query('addr'), $errno, $error, 5);
+            if ($conn === false) {
+                throw new RuntimeException("connect: $error");
+            }
+            fwrite($conn, "$i\n");
+            $tasks[$i] = async(fn (): string => trim((string) fgets($conn)));
+        }
+        $own = 0;
+        foreach ($tasks as $i => $task) {
+            $own += await($task) === (string) $i ? 1 : 0;
+        }
+        return Response::json(['own' => $own, 'took' => round(microtime(true) - $start, 2)]);
+    });
+
     // A second fiber that reads a socket another one waits on is refused.
     $http->get('/sockets/shared', function (Request $req) use ($ask): Response {
         $conn = $ask($req, 0.2);

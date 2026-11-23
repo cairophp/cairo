@@ -45,6 +45,11 @@ static const php_stream_ops *find_orig_ops(const php_stream_ops *hooked)
 	return NULL;
 }
 
+// Hooks::wait as this thread found it at its first wait: a wait is too
+// frequent to look the method up by its name each time. A PHP thread has
+// its classes for as long as it lives.
+static __thread zend_function *wait_fn;
+
 // Asks the runtime to wait (Cairo\Internal\Hooks::wait) for a socket that
 // was just found not ready. Returns 1 when the socket is ready, 0 when the
 // runtime declined (block as usual), -1 on the socket's own timeout, -2 when
@@ -58,20 +63,24 @@ static int cairo_wait_fd(php_netstream_data_t *sock, int write)
 	if (sock->timeout.tv_sec != -1) {
 		timeout = (double)sock->timeout.tv_sec + (double)sock->timeout.tv_usec / 1e6;
 	}
-	zval fname, args[3], retval;
-	ZVAL_STRING(&fname, "Cairo\\Internal\\Hooks::wait");
+	if (wait_fn == NULL) {
+		zend_string *name = zend_string_init(ZEND_STRL("Cairo\\Internal\\Hooks"), 0);
+		zend_class_entry *hooks = zend_lookup_class(name);
+		zend_string_release(name);
+		wait_fn = hooks != NULL ? zend_hash_str_find_ptr(&hooks->function_table, ZEND_STRL("wait")) : NULL;
+		if (wait_fn == NULL) {
+			return 0;
+		}
+	}
+	zval args[3], retval;
 	ZVAL_LONG(&args[0], (zend_long)sock->socket);
 	ZVAL_BOOL(&args[1], write);
 	ZVAL_DOUBLE(&args[2], timeout);
 	ZVAL_UNDEF(&retval);
-	int rc = call_user_function(NULL, NULL, &fname, &retval, 3, args);
-	zval_ptr_dtor(&fname);
+	zend_call_known_function(wait_fn, NULL, wait_fn->common.scope, &retval, 3, args, NULL);
 	if (EG(exception) != NULL) {
 		zval_ptr_dtor(&retval);
 		return -2;
-	}
-	if (rc != SUCCESS) {
-		return 0;
 	}
 	int out = Z_TYPE(retval) == IS_LONG ? (int)Z_LVAL(retval) : 0;
 	zval_ptr_dtor(&retval);

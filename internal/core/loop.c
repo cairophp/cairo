@@ -1,5 +1,5 @@
-// The loop of a PHP thread, where it comes back between fibers: it takes the
-// events Go queued for it and the sockets that are ready for its fibers and,
+// The loop of a PHP thread, where it comes back between fibers: it wakes the
+// fibers whose sockets are ready, takes the events Go queued for it and,
 // with none and no fiber to run, sleeps, all without a call into Go. See
 // loop.h.
 
@@ -175,7 +175,7 @@ static int64_t look(cairo_mailbox *box, int64_t wait)
 // nap is the thread asleep until an event is queued for it or a socket that
 // one of its fibers waits on is ready, for wait nanoseconds at most (below
 // 0: as long as it takes). Returns the event, or NULL: then the time is up
-// or cairo_sockets_next() has the socket.
+// or cairo_sockets_take() has the socket.
 static cairo_msg *nap(cairo_mailbox *box, int64_t wait)
 {
 	__atomic_store_n(&box->since, 0, __ATOMIC_RELAXED);   // asleep in the eyes of dispatch
@@ -255,18 +255,19 @@ static cairo_msg *next_msg(cairo_mailbox *box, int64_t wait, int handed, int64_t
 	return m;
 }
 
-// cairo_next_event(bool $idle, bool $turn = true): array|int|null
-// The thread comes back to its loop. Returns a socket that is ready for the
-// fiber that waits on it (cairo_socket_arm() in sockets.c), as its
-// descriptor; or the next event Go has for the thread (a request, a
-// finished operation, shutdown), which Go encodes in internal/wire's format
-// and wire.c turns into the array, or what another PHP thread has for it (an
-// offload job or its result, offload.h); or null. A thread that is $idle
-// (PHP has nothing to run) waits for one of them when no fiber is ready
-// either, until the next timer of a parked fiber at the latest. Each turn
+// cairo_next_event(bool $idle, bool $turn = true): ?array
+// The thread comes back to its loop. Returns the next event Go has for the
+// thread (a request, a finished operation, shutdown), which Go encodes in
+// internal/wire's format and wire.c turns into the array, or what another
+// PHP thread has for it (an offload job or its result, offload.h); or null.
+// A thread that is $idle (PHP has nothing to run) waits for an event when no
+// fiber is ready either, until a socket that a fiber waits on is ready
+// (sockets.h) or the next timer of a parked fiber at the latest. Each turn
 // of the loop begins with a call that is its $turn: that one wakes the
 // parked fibers whose time is up (parked.h) and asks the kernel which
-// sockets are ready. The turn's other calls only return what is there.
+// sockets are ready, whose fibers it wakes: all of them when PHP has more to
+// run, else one a call, and then it returns no event with it. The turn's
+// other calls only return what is there.
 PHP_FUNCTION(cairo_next_event)
 {
 	bool idle, turn = 1;
@@ -294,18 +295,15 @@ PHP_FUNCTION(cairo_next_event)
 	if (!idle || cairo_fibers_queued() > 0) {
 		wait = 0;
 	}
-	int fd = cairo_sockets_next();
-	if (fd < 0 && turn && sockets_ready(box, wait)) {
-		fd = cairo_sockets_next();
-	}
-	cairo_msg *m = fd < 0 ? next_msg(box, wait, handed, &now) : NULL;
-	if (fd < 0 && m == NULL) {
-		fd = cairo_sockets_next();   // what ended the sleep
+	// A thread with nothing else to run takes one socket a turn, as it takes
+	// one event, and runs its fiber: a stretch of PHP stays one fiber's,
+	// which is what dispatch and the probes read it as.
+	int woke = cairo_sockets_take(!idle) || (turn && sockets_ready(box, wait) && cairo_sockets_take(!idle));
+	cairo_msg *m = woke && idle ? NULL : next_msg(box, woke ? 0 : wait, handed, &now);
+	if (m == NULL && !woke) {
+		cairo_sockets_take(!idle);   // what ended the thread's sleep
 	}
 	__atomic_store_n(&box->since, now, __ATOMIC_RELAXED);
-	if (fd >= 0) {
-		RETURN_LONG(fd);
-	}
 	if (m == NULL) {
 		RETURN_NULL();
 	}

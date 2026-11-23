@@ -8,8 +8,11 @@
 declare(strict_types=1);
 
 use Cairo\App;
+use Cairo\Http\Request;
 use Cairo\Http\Response;
 
+use function Cairo\async;
+use function Cairo\await;
 use function Cairo\sleep;
 
 $app = new App();
@@ -35,6 +38,28 @@ $http->get('/spin', function (): Response {
 $http->get('/usleep', function (): Response {
     usleep(300_000);
     return Response::text('slept');
+});
+
+// Fine: ten tasks each wait for a line from ?addr=, which come at the same
+// moment, and then each computes for 30 ms. No fiber keeps the thread for
+// long, and the thread comes back to its loop between them.
+$http->get('/sockets', function (Request $req): Response {
+    $tasks = [];
+    for ($i = 0; $i < 10; $i++) {
+        $conn = stream_socket_client('tcp://' . $req->query('addr'), $errno, $error, 5);
+        if ($conn === false) {
+            throw new RuntimeException("connect: $error");
+        }
+        fwrite($conn, "$i\n");
+        $tasks[] = async(function () use ($conn): string {
+            $line = (string) fgets($conn);
+            $end = microtime(true) + 0.03;
+            while (microtime(true) < $end) {
+            }
+            return $line;
+        });
+    }
+    return Response::text(implode('', array_map(static fn ($task): string => await($task), $tasks)));
 });
 
 // Blocks: one long C call Cairo does not hook. The report comes as soon as

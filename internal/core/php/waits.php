@@ -22,8 +22,6 @@ namespace Cairo\Internal {
         public const OFFLOAD = 4;
 
         private int $lastId = 0;
-        /** @var array<int, Waiter> socket descriptor => who waits for it in this thread's epoll (cairo_socket_arm()) */
-        private array $sockets = [];
 
         /**
          * Park the current fiber for at most $seconds (below 0: no limit),
@@ -67,22 +65,18 @@ namespace Cairo\Internal {
          * Suspend the current fiber until socket $fd is readable (or
          * writable), for $seconds at most (below 0: no limit). Returns
          * whether it is; false when the time was up. Throws when $ctx ends
-         * first. The thread's loop watches the socket (ready()); one fiber
-         * waits on a socket at a time.
+         * first. The thread's loop watches the socket and wakes the fiber
+         * (cairo_wait_socket() in sockets.c); one fiber waits on a socket at
+         * a time.
          */
         public function socket(Context $ctx, int $fd, bool $write, float $seconds): bool
         {
-            $waiter = new Waiter();
-            $this->arm($fd, $write ? 2 : 1, $waiter);
-            try {
-                $ended = $this->park($ctx, $seconds, $waiter, self::SOCKET);
-            } finally {
-                $this->disarm($fd, $waiter);
-            }
-            if ($ended !== null && !$waiter->done) {
+            $at = self::until($ctx, $seconds);
+            $ready = \cairo_wait_socket($fd, $write ? 2 : 1, ++$this->lastId, $ctx, $ctx->requestId, $at);
+            if (!$ready && ($ended = $ctx->endedAs()) !== null) {
                 throw self::exceptionOf($ctx, $ended);
             }
-            return $waiter->done;
+            return $ready;
         }
 
         /**
@@ -99,51 +93,32 @@ namespace Cairo\Internal {
             foreach ($write as $fd) {
                 $events[$fd] = ($events[$fd] ?? 0) | 2;
             }
-            $waiter = new Waiter();
-            try {
-                foreach ($events as $fd => $what) {
-                    $this->arm($fd, $what, $waiter);
-                }
-                $ended = $this->park($ctx, $seconds, $waiter, self::SOCKETS);
-            } finally {
-                foreach ($events as $fd => $what) {
-                    $this->disarm($fd, $waiter);
-                }
-            }
-            if ($ended !== null && !$waiter->done) {
+            $at = self::until($ctx, $seconds);
+            $ready = \cairo_wait_sockets($events, ++$this->lastId, $ctx, $ctx->requestId, $at);
+            if (!$ready && ($ended = $ctx->endedAs()) !== null) {
                 throw self::exceptionOf($ctx, $ended);
             }
         }
 
-        /** @internal The loop found socket $fd ready: whoever waits for it runs at the loop's next turn. */
-        public function ready(int $fd): void
+        /**
+         * A wait on sockets begins under $ctx, for $seconds at most: the
+         * tick of hrtime()'s clock at which its time is up. Throws when $ctx
+         * has ended.
+         */
+        private static function until(Context $ctx, float $seconds): int
         {
-            if (($waiter = $this->sockets[$fd] ?? null) !== null) {
-                unset($this->sockets[$fd]);
-                $waiter->done = true;
-                \cairo_wake($waiter->op);
+            if ($ctx->requestId === 0) {
+                throw new \LogicException('Cairo I/O must run inside a request handler or an async() task');
             }
-        }
-
-        /** $waiter's fiber is about to wait for socket $fd: 1 to read it, 2 to write it, 3 for either. */
-        private function arm(int $fd, int $events, Waiter $waiter): void
-        {
-            if (isset($this->sockets[$fd])) {
-                throw new \RuntimeException('socket is already in use by another fiber');
+            if (($ended = $ctx->endedAs()) !== null) {
+                throw self::exceptionOf($ctx, $ended);
             }
-            if (($error = \cairo_socket_arm($fd, $events)) !== null) {
-                throw new \RuntimeException($error);
+            $at = $ctx->deadlineTick();
+            // A limit of thirty years or more is none: it would not fit the clock.
+            if ($seconds >= 0 && $seconds < 1e9 && ($limit = hrtime(true) + (int) ($seconds * 1e9)) < $at) {
+                $at = $limit;
             }
-            $this->sockets[$fd] = $waiter;
-        }
-
-        /** $waiter's wait is over: socket $fd is no longer watched for it, when it was and has not been ready. */
-        private function disarm(int $fd, Waiter $waiter): void
-        {
-            if (($this->sockets[$fd] ?? null) === $waiter) {
-                unset($this->sockets[$fd]);
-                \cairo_socket_disarm($fd);
-            }
+            return $at;
         }
 
         /** @internal The exception of $ctx, which ended as $ended while a fiber waited under it. */

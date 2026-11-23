@@ -428,7 +428,10 @@ Cairo is a server: per-request code runs millions of times.
 3. `.github/workflows/release.yml` builds the static binaries for amd64 and
    arm64 with `cairo version` set to the tag, checks them, and publishes a
    GitHub release with `SHA256SUMS` and the changelog section as notes. Tags
-   with a hyphen (`v0.2.0-rc.1`) become prereleases.
+   with a hyphen (`v0.2.0-rc.1`) become prereleases. It then calls
+   `.github/workflows/image.yml`, which puts those binaries on Alpine
+   (`Dockerfile.image`) and pushes `ghcr.io/cairophp/cairo` tagged `x.y.z`,
+   `x.y` and `latest`.
 4. Publish the stubs under the same tag, by hand for now:
    `git clone git@github.com:cairophp/stubs.git /tmp/stubs && scripts/publish-stubs.sh /tmp/stubs vx.y.z`.
 

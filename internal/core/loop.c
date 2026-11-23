@@ -215,6 +215,22 @@ static int came_back(cairo_mailbox *box, int tid, int64_t now)
 	return handed;
 }
 
+// Whether the thread has run no fiber since it left its loop: the first one
+// it resumes began with the stretch, and its time is the mailbox's since.
+static __thread bool fresh;
+
+void cairo_loop_resumes(void)
+{
+	if (fresh) {
+		fresh = 0;
+		return;
+	}
+	int tid = cairo_thread_id();
+	if (tid >= 0) {
+		__atomic_store_n(&boxes[tid].fiber, unix_ns(), __ATOMIC_RELAXED);
+	}
+}
+
 void cairo_loop_answered(int tid)
 {
 	cairo_mailbox *box = &boxes[tid];
@@ -306,6 +322,7 @@ PHP_FUNCTION(cairo_next_event)
 		cairo_sockets_take(!idle);   // what ended the thread's sleep
 	}
 	__atomic_store_n(&box->since, now, __ATOMIC_RELAXED);
+	fresh = m == NULL;   // PHP runs the fiber of an event before those that are ready
 	if (m == NULL) {
 		RETURN_NULL();
 	}

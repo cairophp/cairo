@@ -289,6 +289,13 @@ change the PHP API; patch versions do not.
 - `Cairo\Grpc\Client`: the same damaged message in a reply, from a server
   that an app calls, no longer stops the Cairo process that made the call.
   The call ends with INTERNAL.
+- `App::detectBlocking()` no longer blames one fiber for the time of
+  several. Fibers that became ready at the same moment (their sleeps ended
+  together, or one request began several tasks) run one after the other,
+  and the detector counted them as one: ten that each computed for 30 ms
+  were reported as a request that kept its thread for 120 ms. It now counts
+  each fiber from where it began. Code that really blocks is reported as
+  before.
 
 ## [0.4.0] - 2026-11-19
 

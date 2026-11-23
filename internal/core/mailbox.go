@@ -33,12 +33,16 @@ type mailbox struct {
 	// The events the thread took and has not read yet, oldest first. Go
 	// reads it once the thread has ended (queuedCalls).
 	next *C.cairo_msg
+	// When the thread last went on from one fiber to the next without a
+	// visit to its loop (unix ns): later than since while it runs a fiber
+	// that began so, which is then the one that keeps it (EachBusyThread).
+	fiber atomic.Int64
 	// 1 when the thread gave Go an operation or an answer since it last
 	// came to its loop: a goroutine has to take that over, and the thread
 	// looks before it sleeps (look). Only the thread itself reads and
 	// writes it, in C and in its calls into Go.
 	handed int32
-	_      [20]byte // the thread's fields and the senders' share no cache line
+	_      [12]byte // the thread's fields and the senders' share no cache line
 	// The events queued for the thread (queue.h), which C pushes for send.
 	inbox unsafe.Pointer
 	// How many events were ever queued for the thread.

@@ -62,6 +62,23 @@ $http->get('/sockets', function (Request $req): Response {
     return Response::text(implode('', array_map(static fn ($task): string => await($task), $tasks)));
 });
 
+// Fine as well: ten tasks sleep until the same moment and then each computes
+// for 30 ms. The thread runs them one after the other, and none keeps it
+// for long.
+$http->get('/timers', function (): Response {
+    $tasks = [];
+    for ($i = 0; $i < 10; $i++) {
+        $tasks[] = async(function (): int {
+            sleep(0.2);
+            $end = microtime(true) + 0.03;
+            while (microtime(true) < $end) {
+            }
+            return 1;
+        });
+    }
+    return Response::text((string) array_sum(array_map(static fn ($task): int => await($task), $tasks)));
+});
+
 // Blocks: one long C call Cairo does not hook. The report comes as soon as
 // PHP runs again after the call returns.
 $http->get('/hash', function (): Response {

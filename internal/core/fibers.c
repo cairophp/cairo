@@ -8,6 +8,7 @@
 
 #include "fiber_local.h"
 #include "fibers.h"
+#include "loop.h"
 
 // How many fibers wait for their next job: a new one costs a stack mmap
 // and, when it is freed, a TLB shootdown on every CPU.
@@ -310,6 +311,7 @@ PHP_FUNCTION(cairo_run_ready)
 		ready_len--;
 		if (EXPECTED(suspended(fiber))) {
 			zval ret;
+			cairo_loop_resumes();
 			cairo_fiber_resume(fiber, NULL, &ret);
 			zval_ptr_dtor(&ret);
 		}

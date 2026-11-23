@@ -8,19 +8,38 @@ import (
 )
 
 // Busy is running PHP: the thread came to its loop, found work and has not
-// come back since.
+// come back since. What keeps it is the fiber it is in, which began when the
+// thread left its loop or, with several fibers ready, when the one before it
+// paused.
 func TestEachBusyThread(t *testing.T) {
 	since := time.Date(2026, 11, 20, 1, 2, 3, 456, time.UTC)
 	waiting, busy := &thread{id: 4, box: &mailbox{}}, &thread{id: 7, box: &mailbox{}}
 	busy.box.since.Store(since.UnixNano())
 	e := &Engine{workers: make([]atomic.Pointer[thread], 3)}
 	e.workers[0].Store(waiting)
-	e.workers[2].Store(busy) // and no thread in slot 1
+	e.workers[2].Store(busy)                  // and no thread in slot 1
+	waiting.box.fiber.Store(since.UnixNano()) // of a stretch that is over: the thread sleeps
 
-	got := map[int]time.Time{}
-	e.EachBusyThread(func(tid int, since time.Time) { got[tid] = since })
-	if len(got) != 1 || !got[7].Equal(since) {
-		t.Fatalf("busy threads: %v, want only thread 7 since %s", got, since)
+	for _, tc := range []struct {
+		name  string
+		fiber time.Time // when the thread last went on to a ready fiber
+		want  time.Time
+	}{
+		{"the first fiber of the stretch", time.Time{}, since},
+		{"a fiber of an earlier stretch", since.Add(-time.Second), since},
+		{"a later fiber of this stretch", since.Add(30 * time.Millisecond), since.Add(30 * time.Millisecond)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			busy.box.fiber.Store(0)
+			if !tc.fiber.IsZero() {
+				busy.box.fiber.Store(tc.fiber.UnixNano())
+			}
+			got := map[int]time.Time{}
+			e.EachBusyThread(func(tid int, since time.Time) { got[tid] = since })
+			if len(got) != 1 || !got[7].Equal(tc.want) {
+				t.Fatalf("busy threads: %v, want only thread 7 since %s", got, tc.want)
+			}
+		})
 	}
 }
 

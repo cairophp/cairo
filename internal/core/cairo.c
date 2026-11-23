@@ -52,6 +52,11 @@ int cairo_thread_id(void)
 	return cairo_tid;
 }
 
+void cairo_thread_adopt(int tid)
+{
+	cairo_tid = tid;
+}
+
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_none, 0, 0, 0)
 ZEND_END_ARG_INFO()
 
@@ -165,6 +170,7 @@ PHP_FUNCTION(cairo_go_call)
 
 PHP_FUNCTION(cairo_guard);
 PHP_FUNCTION(cairo_next_event);
+PHP_FUNCTION(cairo_stuck);
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_retire, 0, 0, 1)
 	ZEND_ARG_INFO(0, reason)
@@ -183,6 +189,8 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_info, arginfo_cairo_none)
 	PHP_FE(cairo_spec, arginfo_cairo_spec)
 	PHP_FE(cairo_next_event, arginfo_cairo_next_event)
+	PHP_FE(cairo_stuck, arginfo_cairo_none)
+	PHP_FE(cairo_cli_script, arginfo_cairo_none)
 	PHP_FE(cairo_respond, arginfo_cairo_respond)
 	PHP_FE(cairo_retire, arginfo_cairo_retire)
 	PHP_FE(cairo_wait_socket, arginfo_cairo_wait_socket)
@@ -199,6 +207,7 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_fiber_bind, arginfo_cairo_fiber_bind)
 	PHP_FE(cairo_fiber_reuse, arginfo_cairo_fiber_reuse)
 	PHP_FE(cairo_fiber_idle, arginfo_cairo_fiber_idle)
+	PHP_FE(cairo_fiber_alone, arginfo_cairo_none)
 	PHP_FE(cairo_ready, arginfo_cairo_ready)
 	PHP_FE(cairo_run_ready, arginfo_cairo_run_ready)
 	PHP_FE(cairo_park, arginfo_cairo_park)

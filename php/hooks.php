@@ -186,10 +186,15 @@ namespace Cairo\Internal {
             return (array) Scheduler::instance()->call('lookup', json_encode(['host' => $host], JSON_THROW_ON_ERROR));
         }
 
-        /** Hooks run only in fibers Cairo started on a request thread. */
+        /**
+         * Hooks run only in fibers Cairo started on a request thread, and
+         * not in the only fiber a script has to run, which waits with its
+         * thread as it does under PHP.
+         */
         private static function on(int $hook): bool
         {
-            return ((self::$flags ?? self::flags()) & $hook) !== 0 && Context::current()->requestId !== 0;
+            return ((self::$flags ?? self::flags()) & $hook) !== 0 && ($ctx = Context::current())->requestId !== 0
+                && !(($scheduler = Scheduler::instance())->script && $scheduler->waitsAlone($ctx));
         }
 
         /** The app's Hook flags once its scheduler runs, when the declaration is over: read once. */

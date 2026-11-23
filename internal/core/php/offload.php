@@ -42,8 +42,8 @@ namespace Cairo {
         if ($fn instanceof OffloadTask && $args !== []) {
             throw new \InvalidArgumentException('offload() takes no arguments with an OffloadTask; give them to the task');
         }
-        if (\Fiber::getCurrent() === null || !Scheduler::running()) {
-            // already off the request threads
+        if (\Fiber::getCurrent() === null || !Scheduler::running() || Scheduler::instance()->script) {
+            // already off the request threads, or in a script, which has no offload threads
             return $fn instanceof OffloadTask ? $fn->run() : $fn(...$args);
         }
         if (!$fn instanceof OffloadTask && !is_callable($fn)) {

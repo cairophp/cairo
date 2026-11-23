@@ -58,6 +58,7 @@ PHP_FUNCTION(cairo_fiber_context);
 PHP_FUNCTION(cairo_fiber_bind);
 PHP_FUNCTION(cairo_fiber_reuse);
 PHP_FUNCTION(cairo_fiber_idle);
+PHP_FUNCTION(cairo_fiber_alone);
 PHP_FUNCTION(cairo_ready);
 PHP_FUNCTION(cairo_run_ready);
 

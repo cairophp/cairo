@@ -26,7 +26,11 @@ const phpUsage = `usage:
   -v                 the version
   --ini              the php.ini files in use
   --ri <name>        the configuration of the extension <name>
-  -h                 this help`
+  -h                 this help
+
+The script runs under Cairo's fiber scheduler. CAIRO_SCHEDULER=off in the
+environment runs it as PHP does, for a program that has an event loop of its
+own for fibers.`
 
 // What an option that prints information runs: PHP code, which reads what
 // it needs to be told from $argv.
@@ -119,6 +123,7 @@ func parsePHP(args []string) (core.CLI, bool, error) {
 	if p.run.INIPath == "" && !p.run.NoINI {
 		p.run.INIPath = os.Getenv("CAIRO_PHP_INI") // the php.ini of `cairo serve`
 	}
+	p.run.NoScheduler = os.Getenv("CAIRO_SCHEDULER") == "off"
 	switch {
 	case p.run.Mode == core.CLILint:
 		if p.script != "" {

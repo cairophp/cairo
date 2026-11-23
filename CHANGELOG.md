@@ -37,6 +37,15 @@ change the PHP API; patch versions do not.
   start PHP again; under the name `php` (a link, which the official image
   has) it is the command line as well. Not there: the interactive shell
   (`-a`), the built-in web server (`-S`) and `pcntl`.
+- A script of `cairo php` runs under Cairo's fiber scheduler, as a request
+  handler does. `async()`, `await()`, channels, `select()`, contexts with a
+  timeout and Cairo's clients work in it, and a wait in PHP's own functions
+  (`sleep()`, PDO, curl, streams) suspends only its fiber: 50 fibers that
+  each sleep a second, or 20 that each run a query of a second, take a
+  second together. A script that runs one fiber at a time waits as it does
+  under PHP and costs what it did. `CAIRO_SCHEDULER=off` runs a script
+  outside the scheduler, for a program that has an event loop of its own for
+  fibers (amphp, Revolt).
 
 ## [0.5.0] - 2026-11-23
 

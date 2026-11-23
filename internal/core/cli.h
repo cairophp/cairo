@@ -20,6 +20,7 @@ typedef struct {
 	const char *ini_path;  // a php.ini file or directory (-c), or NULL
 	int ini_ignore;        // no php.ini at all (-n)
 	const char *binary;    // this executable: PHP_BINARY
+	int scheduled;         // the script runs under Cairo's scheduler, on PHP thread 0
 } cairo_cli_options;
 
 // Runs it on a thread of its own and returns PHP's exit status.

@@ -4,11 +4,13 @@
 // file follows it (sapi/cli/php_cli.c): the SAPI goes by "cli", which is what
 // PHP itself and libraries ask to know they run in a terminal, output goes
 // to standard output as it is written, errors are shown, and the script has
-// $argv, STDIN, STDOUT and STDERR. No server runs and no request thread
-// starts. Cairo's runtime is loaded ahead of the script, so the script has
-// the Cairo\ classes, and a hooked function that it calls inside a fiber of
-// its own finds the PHP side of its hook, which lets it block as usual where
-// no scheduler runs.
+// $argv, STDIN, STDOUT and STDERR. No server runs. The thread is PHP thread
+// 0 of the engine, and what it runs is Cairo's runtime, whose scheduler
+// takes the script as the thread's one request: the script runs in a fiber
+// (cairo_cli_script()), so what it waits for suspends that fiber, and the
+// fibers it starts run beside it. A run that is not scheduled has the
+// runtime's classes and no scheduler: the script is the thread's own code,
+// as under PHP, and every wait is the thread's.
 
 #include <errno.h>
 #include <poll.h>
@@ -171,17 +173,56 @@ static void cli_register_file_handles(void)
 	}
 }
 
-// Cairo's runtime does not count as a file the script included: its first
-// included file is itself, as with PHP.
-static bool cli_load_runtime(const char *file)
+// What cairo_cli_script() runs: the run whose script has not begun, and its
+// file. Only the thread of the command line reads and writes them.
+static const cairo_cli_options *cli_pending;
+static zend_file_handle *cli_file;
+static bool cli_running;   // the script has begun and not ended
+
+// cairo_cli_script(): void
+// Runs the script of the command line. The runtime calls it once: in the
+// fiber that its scheduler made for the script, or outside any when the run
+// is not scheduled.
+PHP_FUNCTION(cairo_cli_script)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+	const cairo_cli_options *o = cli_pending;
+	if (o == NULL) {
+		zend_throw_error(NULL, "cairo_cli_script(): no script waits to run");
+		RETURN_THROWS();
+	}
+	cli_pending = NULL;
+	// Cairo's runtime does not count as a file the script included: its
+	// first included file is itself, as with PHP.
+	zend_hash_clean(&EG(included_files));
+	goCLILoaded();
+	cli_register_file_handles();
+	// The script is the bottom of its stack, as it is under PHP, and not a
+	// call of the runtime's: its variables are the globals, and a backtrace
+	// ends at it.
+	zend_execute_data *caller = EG(current_execute_data);
+	EG(current_execute_data) = NULL;
+	cli_running = true;
+	if (o->mode == CAIRO_CLI_CODE) {
+		zend_eval_string_ex(o->code, NULL, "Command line code", 1);
+	} else {
+		php_execute_script(cli_file);
+	}
+	cli_running = false;
+	EG(current_execute_data) = caller;
+	goCLIEnded();
+	if (CG(unclean_shutdown)) {
+		zend_bailout();   // a fatal error that php_execute_script() caught ends the fiber too
+	}
+}
+
+// Runs Cairo's runtime, which runs the script.
+static void cli_runtime(const char *file)
 {
 	zend_file_handle fh;
 	zend_stream_init_filename(&fh, file);
-	bool ok = zend_execute_scripts(ZEND_REQUIRE, NULL, 1, &fh) == SUCCESS && EG(exception) == NULL;
+	zend_execute_scripts(ZEND_REQUIRE, NULL, 1, &fh);
 	zend_destroy_file_handle(&fh);
-	zend_hash_clean(&EG(included_files));
-	goCLILoaded();
-	return ok;
 }
 
 // Opens script, or standard input for NULL, as the script of the request.
@@ -238,18 +279,24 @@ static int cli_request(const cairo_cli_options *o, const char *script, int argc,
 				zend_printf("Errors parsing %s\n", cli_self);
 				EG(exit_status) = 255;
 			}
-		} else if (!cli_load_runtime(o->runtime)) {
-			EG(exit_status) = 255;
 		} else {
-			cli_register_file_handles();
-			if (o->mode == CAIRO_CLI_CODE) {
-				zend_eval_string_ex(o->code, NULL, "Command line code", 1);
-			} else {
-				php_execute_script(&fh);
+			cli_pending = o;
+			cli_file = has_file ? &fh : NULL;
+			cli_runtime(o->runtime);
+			if (cli_pending != NULL) {
+				EG(exit_status) = 255;   // the runtime failed ahead of the script
 			}
 		}
 	} zend_end_try();
 
+	if (cli_running) {
+		// The request ends ahead of the script: another fiber called exit(),
+		// or nothing could wake the script. PHP unwinds the script's fiber
+		// when it destroys it, and would hand what unwinds it, which is no
+		// Throwable, to the exception handler the script set.
+		zval_ptr_dtor(&EG(user_exception_handler));
+		ZVAL_UNDEF(&EG(user_exception_handler));
+	}
 	if (has_file) {
 		zend_destroy_file_handle(&fh);
 	}
@@ -281,6 +328,9 @@ static int cli_run(cairo_cli_options *o)
 	}
 	int status = 0;
 	if (o->mode != CAIRO_CLI_LINT) {
+		if (o->scheduled) {
+			cairo_thread_adopt(0);
+		}
 		status = cli_request(o, o->mode == CAIRO_CLI_FILE ? o->argv[0] : NULL, o->argc, o->argv);
 	} else if (o->argc == 0) {
 		status = cli_request(o, NULL, 0, NULL);

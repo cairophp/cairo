@@ -257,6 +257,18 @@ PHP_FUNCTION(cairo_fiber_idle)
 	}
 }
 
+// cairo_fiber_alone(): bool
+// Whether the thread has no other fiber to go on with while the running one
+// waits, as far as this file knows them: none is ready, and none waits for
+// this one to suspend, having started it (async()) or resumed it. Whether
+// one is parked or waits for Go, the scheduler knows.
+PHP_FUNCTION(cairo_fiber_alone)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+	zend_fiber *fiber = EG(active_fiber);
+	RETURN_BOOL(fiber != NULL && fiber->caller == EG(main_fiber_context) && ready_len == 0);
+}
+
 uint32_t cairo_fibers_queued(void)
 {
 	return ready_len;

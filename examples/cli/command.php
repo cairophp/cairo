@@ -8,12 +8,21 @@
  *   echo some text | cairo php examples/cli/command.php upper
  *   CAIRO_TEST_PGSQL='pgsql:host=127.0.0.1;dbname=cairo' CAIRO_TEST_PGSQL_USER=cairo \
  *     CAIRO_TEST_PGSQL_PASSWORD=cairo cairo php examples/cli/command.php migrate pgsql
+ *   cairo php examples/cli/command.php together 50          (50 waits of a second, in a second)
+ *   cairo php examples/cli/command.php together 20 pgsql    (20 queries of a second, in a second)
+ *
+ * The script runs under Cairo's scheduler, as a request handler does: what
+ * it starts with async() runs beside it, and a wait suspends only its fiber.
  *
  * With a link named php to the binary (the official image has one), the
  * first line of this file runs it too: ./examples/cli/command.php about
  */
 
 declare(strict_types=1);
+
+use function Cairo\all;
+use function Cairo\async;
+use function Cairo\await;
 
 /** What the script was started with, as JSON. */
 function about(): int
@@ -31,13 +40,19 @@ function about(): int
     return 0;
 }
 
+/** A connection to the database that the tests name for $driver. */
+function connect(string $driver): PDO
+{
+    $env = 'CAIRO_TEST_' . strtoupper($driver);
+    return new PDO((string) getenv($env), (string) getenv($env . '_USER'), (string) getenv($env . '_PASSWORD'), [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+    ]);
+}
+
 /** Creates a table, fills it in a transaction and reads it back. */
 function migrate(string $driver): int
 {
-    $env = 'CAIRO_TEST_' . strtoupper($driver);
-    $db = new PDO((string) getenv($env), (string) getenv($env . '_USER'), (string) getenv($env . '_PASSWORD'), [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-    ]);
+    $db = connect($driver);
     if ($driver === 'mysql') {
         // The DSN may name no database: a migration makes its own.
         $db->exec('CREATE DATABASE IF NOT EXISTS cairo_cli');
@@ -51,11 +66,38 @@ function migrate(string $driver): int
         $insert->execute([$version, $notes]);
     }
     $db->commit();
-    // A fiber of the script's own: outside a server its queries wait as usual.
+    // A fiber of the script's own, which Cairo's scheduler did not start:
+    // its queries wait as they do under PHP.
     $count = new Fiber(static fn (): mixed => $db->query('SELECT COUNT(*) FROM cli_releases')->fetchColumn());
     $count->start();
     echo 'migrated ', $count->getReturn(), ' releases with ', $db->getAttribute(PDO::ATTR_DRIVER_NAME), "\n";
     $db->exec('DROP TABLE cli_releases');
+    return 0;
+}
+
+/**
+ * Waits a second $n times at once, each time in a fiber of its own: in PHP's
+ * sleep(), or with $driver in a query on a connection of the fiber's. The
+ * lot takes about a second.
+ */
+function together(int $n, ?string $driver): int
+{
+    $sql = ['pgsql' => 'SELECT pg_sleep(1), CAST(? AS INTEGER)', 'mysql' => 'SELECT SLEEP(1), ?'];
+    $start = microtime(true);
+    $tasks = [];
+    for ($i = 0; $i < $n; $i++) {
+        $tasks[] = async(static function () use ($i, $driver, $sql): int {
+            if ($driver === null) {
+                sleep(1);
+                return $i;
+            }
+            $query = connect($driver)->prepare($sql[$driver]);
+            $query->execute([$i]);
+            return (int) $query->fetch(PDO::FETCH_NUM)[1];
+        });
+    }
+    $sum = array_sum(await(all($tasks)));
+    printf("%d waits of 1 s, sum %d, in %.1f s\n", $n, $sum, microtime(true) - $start);
     return 0;
 }
 
@@ -78,6 +120,8 @@ switch ($command) {
         exit((int) ($argv[2] ?? 1));
     case 'migrate':
         exit(migrate($argv[2] ?? 'pgsql'));
+    case 'together':
+        exit(together((int) ($argv[2] ?? 50), $argv[3] ?? null));
     case 'again':
         exit(again());
     default:

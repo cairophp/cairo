@@ -7,6 +7,7 @@ package core
 import "C"
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"os"
@@ -40,14 +41,20 @@ type CLI struct {
 	// INIPath is a php.ini file or directory; empty searches PHP's usual places.
 	INIPath string
 	// NoINI reads no php.ini at all.
-	NoINI  bool
-	Logger *slog.Logger
+	NoINI bool
+	// NoScheduler runs the script as PHP does, outside Cairo's scheduler:
+	// for a program that brings its own event loop for fibers, which would
+	// suspend the script's fiber where nothing of Cairo's resumes it.
+	NoScheduler bool
+	Logger      *slog.Logger
 }
 
 // RunCLI runs PHP as its own command line does and returns PHP's exit
-// status. No server and no request thread starts: the script runs on one
-// thread, with Cairo's runtime loaded, and what Cairo does in Go for it (a
-// PDO pgsql query) it waits for. Like Start, it can run once per process.
+// status. No server starts: one thread runs the script, as the one request
+// it ever takes. The script is a fiber of that thread's scheduler, and what
+// its fibers ask Go for runs as operations, under a context that ends with
+// the script; with NoScheduler there is none of that, and what Cairo does in
+// Go the thread waits for. Like Start, it can run once per process.
 func RunCLI(o CLI) (int, error) {
 	engineMu.Lock()
 	defer engineMu.Unlock()
@@ -69,6 +76,9 @@ func RunCLI(o CLI) (int, error) {
 		logger = slog.Default()
 	}
 	engine = &Engine{runtimeFile: runtimeFile, log: logger, cli: true}
+	if o.Mode != CLILint && !o.NoScheduler {
+		engine.hostScript()
+	}
 
 	var free []unsafe.Pointer
 	defer func() {
@@ -102,11 +112,38 @@ func RunCLI(o CLI) (int, error) {
 	if o.NoINI {
 		run.ini_ignore = 1
 	}
+	if engine.script != 0 {
+		run.scheduled = 1
+	}
 	return int(C.cairo_cli(&run)), nil
 }
 
+// hostScript makes the Go side of the thread that runs the script: PHP thread
+// 0, which holds one call, the script, for as long as it runs (submit looks
+// up there what an operation runs under). Nothing is queued for the thread
+// but the results of its operations, and it answers nothing: no goroutine
+// collects.
+func (e *Engine) hostScript() {
+	t := e.newThread(0, poolWorker, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	e.script, e.scriptEnd = e.nextID.Add(1), cancel
+	t.calls[e.script] = &call{id: e.script, thread: t, ctx: ctx}
+	setLook()
+}
+
+// goCLIEnded is the script's thread saying that the script has ended: what
+// its fibers still wait for in Go ends, as it does behind a request that was
+// answered.
+//
+//export goCLIEnded
+func goCLIEnded() {
+	if engine.scriptEnd != nil {
+		engine.scriptEnd()
+	}
+}
+
 // goCLILoaded is called once the script's request has loaded Cairo's runtime,
-// all of it. Its files go now and not when the command ends: nothing is left
+// all of it, and the script begins. Its files go now and not when the command ends: nothing is left
 // behind by a command that a signal ends, and many commands are run.
 //
 //export goCLILoaded

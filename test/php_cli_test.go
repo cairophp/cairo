@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 const cliScript = "../examples/cli/command.php"
@@ -136,8 +137,21 @@ func TestPHPCommandLineOptions(t *testing.T) {
 		"an option it lacks":         {cliRun{args: []string{"php", "-a"}}, 1, `^$`},
 		"a shebang line is code":     {cliRun{args: []string{"php", cliScript, "nothing"}}, 2, `^$`},
 		"STDIN is not the code":      {cliRun{args: []string{"php", "-r", `echo strrev(fgets(STDIN));`}, stdin: "abc"}, 0, `^cba$`},
-		"Cairo's tasks run in place": {cliRun{args: []string{"php", "-r", `use function Cairo\{async, await, all, offload}; echo json_encode(await(all([async(fn () => 1), async(function () { Cairo\sleep(0.001); return offload("strtoupper", "x"); })]))); try { await(async(fn () => throw new DomainException("no"))); } catch (DomainException $e) { echo $e->getMessage(); }`}}, 0, `^\[1,"X"\]no$`},
+		"tasks, sleep and offload()": {cliRun{args: []string{"php", "-r", `use function Cairo\{async, await, all, offload}; echo json_encode(await(all([async(fn () => 1), async(function () { Cairo\sleep(0.001); return offload("strtoupper", "x"); })]))); try { await(async(fn () => throw new DomainException("no"))); } catch (DomainException $e) { echo $e->getMessage(); }`}}, 0, `^\[1,"X"\]no$`},
 		"a fiber of the script":      {cliRun{args: []string{"php", "-r", `$f = new Fiber(function () { usleep(1000); echo gethostbyname("localhost"), Fiber::suspend(1); }); echo $f->start(); $f->resume("!");`}}, 0, `^127\.0\.0\.11!$`},
+		// The script is a fiber of Cairo's scheduler, and still the program
+		// PHP runs: its variables are the globals and nothing called it.
+		"the script is a fiber":     {cliRun{args: []string{"php", "-r", `echo Fiber::getCurrent() === null ? "main" : "fiber", count(debug_backtrace());`}}, 0, `^fiber0$`},
+		"its variables are globals": {cliRun{args: []string{"php", "-r", `$x = 7; function f() { global $x; return $x; } echo f(), $GLOBALS["x"];`}}, 0, `^77$`},
+		"it has the thread's stack": {cliRun{args: []string{"php", "-r", `function r($n) { return $n ? array_map("r", [$n - 1])[0] + 1 : 0; } echo r(20000);`}}, 0, `^20000$`},
+		"a channel between fibers":  {cliRun{args: []string{"php", "-r", `$c = new Cairo\Channel(); Cairo\async(function () use ($c) { foreach ([1, 2, 3] as $v) { $c->send($v); } $c->close(); }); foreach ($c as $v) { echo $v; }`}}, 0, `^123$`},
+		"a context with a timeout":  {cliRun{args: []string{"php", "-r", `try { Cairo\Context::current()->withTimeout(0.05)->run(fn () => sleep(30)); } catch (Cairo\Context\DeadlineExceeded $e) { echo "late"; }`}}, 0, `^late$`},
+		"a task left behind ends":   {cliRun{args: []string{"php", "-r", `Cairo\async(function () { try { sleep(30); } catch (Cairo\Context\Canceled $e) { echo "canceled"; } }); echo "done ";`}}, 0, `^done canceled$`},
+		"exit() in a task":          {cliRun{args: []string{"php", "-r", `register_shutdown_function(function () { echo "bye"; }); set_exception_handler(function (Throwable $e) { echo "handled"; }); Cairo\await(Cairo\async(function () { usleep(1000); exit(4); }));`}}, 4, `^bye$`},
+		"a fatal error in a task":   {cliRun{args: []string{"php", "-d", "memory_limit=8M", "-r", `Cairo\await(Cairo\async(function () { usleep(1000); str_repeat("x", 64 << 20); })); echo "no";`}}, 255, `Allowed memory size`},
+		"a wait that nothing ends":  {cliRun{args: []string{"php", "-r", `echo "a"; (new Cairo\Channel())->recv(); echo "b";`}}, 255, `^a$`},
+		"another loop's suspension": {cliRun{args: []string{"php", "-r", `echo "a"; Fiber::suspend(); echo "b";`}}, 255, `^a$`},
+		"outside the scheduler":     {cliRun{args: []string{"php", "-r", `echo Fiber::getCurrent() === null ? "main" : "fiber", Cairo\await(Cairo\async(fn () => 1));`}, env: []string{"CAIRO_SCHEDULER=off"}}, 0, `^main1$`},
 	}
 	for name, c := range cases {
 		got := runCLI(t, c.run)
@@ -164,8 +178,40 @@ func TestPHPCommandLineStreams(t *testing.T) {
 	}
 }
 
+// The script is a request of its thread, as a server's are: fifty fibers
+// that each wait a second, in PHP's sleep() or in a query of a connection of
+// their own, take about a second together.
+func TestPHPCommandLineWaitsSuspendFibers(t *testing.T) {
+	together := func(t *testing.T, n, driver string) {
+		args := []string{"php", cliScript, "together", n}
+		if driver != "" {
+			args = append(args, driver)
+		}
+		start := time.Now()
+		got := runCLI(t, cliRun{args: args})
+		if took := time.Since(start); got.status != 0 || !strings.HasPrefix(got.stdout, n+" waits of 1 s, sum ") || took > 3*time.Second {
+			t.Errorf("status %d, stdout %q, stderr %q, took %v", got.status, got.stdout, got.stderr, took)
+		}
+	}
+	t.Run("sleep", func(t *testing.T) { together(t, "50", "") })
+	for _, driver := range []string{"pgsql", "mysql"} {
+		t.Run(driver, func(t *testing.T) {
+			if os.Getenv("CAIRO_TEST_"+strings.ToUpper(driver)) == "" {
+				t.Skipf("CAIRO_TEST_%s is not set", strings.ToUpper(driver))
+			}
+			together(t, "20", driver)
+		})
+	}
+	// Nothing could wake that script: it is told so, and how to run a
+	// program whose own event loop would.
+	got := runCLI(t, cliRun{args: []string{"php", "-r", `Fiber::suspend();`}})
+	if got.status != 255 || !strings.Contains(got.stderr, "nothing can wake it") || !strings.Contains(got.stderr, "CAIRO_SCHEDULER=off") {
+		t.Errorf("a script that nothing wakes: status %d, stderr %q", got.status, got.stderr)
+	}
+}
+
 // A migration through PDO, with Cairo's own PostgreSQL driver and with
-// PDO MySQL: outside a server a query waits on the thread.
+// PDO MySQL: the only fiber a script has to run waits with its thread.
 func TestPHPCommandLineDatabases(t *testing.T) {
 	for _, driver := range []string{"pgsql", "mysql"} {
 		t.Run(driver, func(t *testing.T) {

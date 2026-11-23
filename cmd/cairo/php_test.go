@@ -79,6 +79,15 @@ func TestParsePHP(t *testing.T) {
 	}
 }
 
+func TestParsePHPSchedulerFromTheEnvironment(t *testing.T) {
+	for value, off := range map[string]bool{"": false, "on": false, "off": true} {
+		t.Setenv("CAIRO_SCHEDULER", value)
+		if got, _, _ := parsePHP([]string{"a.php"}); got.NoScheduler != off {
+			t.Errorf("CAIRO_SCHEDULER=%q: NoScheduler = %v, want %v", value, got.NoScheduler, off)
+		}
+	}
+}
+
 func TestParsePHPIniFromTheEnvironment(t *testing.T) {
 	t.Setenv("CAIRO_PHP_INI", "/etc/cairo/php.ini")
 	if got, _, _ := parsePHP([]string{"a.php"}); got.INIPath != "/etc/cairo/php.ini" {

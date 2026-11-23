@@ -295,9 +295,11 @@ PHP_FUNCTION(cairo_next_event)
 	if (!idle || cairo_fibers_queued() > 0) {
 		wait = 0;
 	}
-	// A thread with nothing else to run takes one socket a turn, as it takes
-	// one event, and runs its fiber: a stretch of PHP stays one fiber's,
-	// which is what dispatch and the probes read it as.
+	// A thread with nothing else to run takes one socket a turn and no event
+	// with it. The fiber that waited goes on before a new request begins:
+	// with requests begun ahead of it, Laravel's dashboard ran 5 to 8%
+	// slower. And one a turn keeps a stretch of PHP one fiber's, which is
+	// what the blocking detector reads it as.
 	int woke = cairo_sockets_take(!idle) || (turn && sockets_ready(box, wait) && cairo_sockets_take(!idle));
 	cairo_msg *m = woke && idle ? NULL : next_msg(box, woke ? 0 : wait, handed, &now);
 	if (m == NULL && !woke) {

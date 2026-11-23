@@ -2,10 +2,10 @@
 
 Cairo is a PHP application server written in Go. You declare HTTP and gRPC
 servers in PHP; Go does the serving. Every request runs in its own PHP Fiber,
-and a fiber that waits on I/O hands the wait to a goroutine, so one PHP thread
-can hold thousands of requests at once while Go does the waiting.
+and a fiber that waits on I/O parks while its thread runs the others, so one
+PHP thread can hold thousands of requests at once.
 
-> Status: v0.4.0. The PHP API may still change before 1.0;
+> Status: v0.5.0. The PHP API may still change before 1.0;
 > [CHANGELOG.md](CHANGELOG.md) lists what changed. Design doc:
 > [Cairo: architecture and design proposal](https://claude.ai/artifact/PBihYMjib8P4eh56BboTPa)
 
@@ -46,14 +46,14 @@ libc, so it also runs in `FROM scratch` images. Download it from the
 it against `SHA256SUMS`:
 
 ```sh
-curl -fsSLO https://github.com/cairophp/cairo/releases/download/v0.4.0/cairo-linux-amd64
-curl -fsSLO https://github.com/cairophp/cairo/releases/download/v0.4.0/SHA256SUMS
+curl -fsSLO https://github.com/cairophp/cairo/releases/download/v0.5.0/cairo-linux-amd64
+curl -fsSLO https://github.com/cairophp/cairo/releases/download/v0.5.0/SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS
 install -m 755 cairo-linux-amd64 /usr/local/bin/cairo
 cairo version
 ```
 
-While the repository is private, download with `gh release download v0.4.0`
+While the repository is private, download with `gh release download v0.5.0`
 instead. In a container:
 
 ```dockerfile

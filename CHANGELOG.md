@@ -7,111 +7,89 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-23
+
+Mostly speed, and a smaller API. A fiber no longer has a goroutine: sleeps,
+channels and socket waits park on their own PHP thread, and Go is asked only
+for what Go does. On the benchmark machine, plain PHP serves about 35% more
+requests per second, a MySQL route about 70% more, gRPC streams 3 to 4 times
+as many messages, and uploads and large answers about twice as many.
+
+**Upgrading from 0.4.** This release removes `Cairo\Sql`, `Cairo\Http\Client`,
+the Revolt driver, `App::repeatedQueries()` and the `cors()`, `rateLimit()`
+and `gzip()` middleware; Removed below says what to use instead. Two
+smaller changes can reach existing code: a fiber whose offload thread dies
+gets an `OffloadException` (was `Context\Canceled`), and
+`Grpc\ClientStream::send()` returns once the request is queued, so a write
+error comes from the next `send()` or `closeSend()`. Update the stubs
+package to `^0.5`, and use `cairophp/octane` with this release for
+Laravel's fiber mode.
+
 ### Added
 
 - `Cairo\RequestLocal::register($class, ...$properties)`: static
   properties that keep one value per request, swapped in C when fibers of
   different requests take turns on a thread. The first step to running
-  Laravel without isolated mode.
+  Laravel without isolated mode (#22).
 - `$http->publicDir($dir)`: serve a document root (Laravel's `public/`) from
   Go, with every path that is not a file going to the routes. PHP files and
-  hidden files are never served.
+  hidden files are never served (#24).
 - `App::detectLeaks()`: a development aid that logs the static properties a
   request changed but that are not request-local, so one request could read
-  another's value. Caches that only gain keys are not reported.
+  another's value. Caches that only gain keys are not reported (#25).
 
 ### Changed
 
 - Isolated mode: requests wait in Go in one first-in, first-out queue and go
   to the next free thread, instead of queuing on a thread behind its slow
-  requests. Laravel (Octane) p99 at 256 connections: 2.1 s to 0.6 s.
-- Internal, no change in behaviour: the Go engine is split by concern
-  (`engine.go` into `dispatch.go`, `fiber.go`, `offload.go` and more), and the
-  operations of the PHP hooks register through the op registry instead of
-  being cases in the engine. First step of separating the core engine from
-  the extensions; `AGENTS.md` describes the line.
-- Internal, no change in behaviour: the runtime hooks leave `cairo.c` for
-  `function_hook.c` and `socket_hook.c`, and the C code of the extensions
-  (hooks, PDO pgsql, the query watcher, curl) registers with the SAPI module
-  instead of being started by name. Second step of the same separation.
-- Internal, no change in behaviour: `php/runtime.php` is split into one file
-  per concern, and it loads the PHP files of the extensions from a list that
-  each extension adds itself to (`registerPHP`) instead of naming them. Third
-  step of the same separation.
-- Internal, no change in behaviour: the fiber scheduler no longer knows HTTP
-  or gRPC. Each server's PHP file registers what answers its requests
-  (`php/http_answer.php`, `php/grpc_answer.php`), and `cairo_respond_http()`
-  leaves `cairo.c` for `http_answer.c`. Fourth step of the same separation.
-- Internal, no change in behaviour: `internal/spec` reads only the core's
-  part of what `server.php` declares. The HTTP and gRPC servers read and
-  check their own (`internal/httpserver/declaration.go`,
-  `internal/grpcserver/declaration.go`), which `Cairo\App` sends under each
-  one's name. Fifth step of the same separation.
-- Internal, no change in behaviour: the engine no longer times requests for
-  the slow log and the heavy routes. It tells a probe what a request waited
-  for and how long its thread ran PHP (`internal/sapi/probe.go`), and the
-  request timing asks for one when either report is on, with its settings in
-  its own part of the declaration. Sixth step of the same separation.
-- Internal, no change in behaviour: the blocking detector leaves the engine
-  and `cairo.c` for its own files (`internal/sapi/blocking.go`, `blocking.c`,
-  `php/blocking.php`). It asks the engine which threads are running PHP and
-  interrupts one through a hook that the C code of any extension can use,
-  with its setting in its own part of the declaration. Seventh step of the
-  same separation.
-- Internal, no change in behaviour: the fiber scheduler no longer starts the
-  repeated query detector and the leak detector or knows how a server names
-  its routes. An extension's PHP file hooks into each request thread
-  (`Scheduler::onStart()`, `afterRequest()`), and what answers a server's
-  requests also names their routes. Eighth step of the same separation.
-- Internal, no change in behaviour: the form in which the status and headers
-  of an HTTP answer cross from PHP to Go leaves the core's wire files
-  (`internal/sapi/wire.c`, `internal/wire`) for the HTTP server's
-  (`internal/sapi/http_answer.c`, `internal/httpserver/answer.go`). Ninth
-  step of the same separation.
-- Internal, no change in behaviour: the core engine has its own Go package,
-  `internal/core`, with its PHP files in `internal/core/php`. The extensions
-  stay in `internal/sapi` and `php/` and use only what the core exports
+  requests. Laravel (Octane) p99 at 256 connections: 2.1 s to 0.6 s (#23).
+- Internal, no change in behaviour: Cairo is split into a core engine and
+  extensions. The core (`internal/core`, with its PHP files in
+  `internal/core/php`) has the PHP threads, the fiber scheduler, dispatch,
+  waiting and the op registry; the servers, clients, hooks, database drivers
+  and diagnostics are extensions in `internal/sapi`, `php/` and the server
+  packages, and join the core only through what it exports
   (`core.RegisterOp`, `RegisterPHP`, `RegisterC` and the rest; `AGENTS.md`
-  has the list), and a test fails when the core names an extension in Go, C
-  or PHP (`internal/core/boundary_test.go`). Tenth and last step of the same
-  separation.
+  has the list). A test fails when the core names an extension in Go, C or
+  PHP (`internal/core/boundary_test.go`). Ten move-only steps, measured at no
+  cost (#26 to #35).
 - Performance: Cairo's own C code is compiled with `-O2`. The build scripts
   set `CGO_CFLAGS` to PHP's include paths, which dropped the optimization
   that Go asks for by default, so every build had compiled that code
   without any. A Go operation or a wait among 64 fibers is about 8% cheaper,
-  and the PostgreSQL benchmark route serves 3.6% more requests per second.
+  and the PostgreSQL benchmark route serves 3.6% more requests per second (#36).
 - Performance: opcache holds Cairo's own PHP files. The engine writes them
   when the server starts, and opcache leaves out a file that changed in the
   last two seconds, so every PHP thread compiled the runtime itself, with no
   optimizer and nothing shared between threads. The files now get an old
-  modification time.
+  modification time (#36).
 - Performance: on glibc builds, a call from a PHP fiber into Go no longer
   makes Go's runtime fetch the thread's stack from the system each time (a
   `sched_getaffinity` system call and an allocation). Cairo reads each
-  thread's stack once and answers from that.
+  thread's stack once and answers from that (#36).
 - Performance: the engine keeps the calls a PHP thread took and the fibers
   that live on it in tables of that thread, which only the thread itself
-  uses, in place of two maps shared and locked by all threads.
+  uses, in place of two maps shared and locked by all threads (#36).
 - Performance: a request's bookkeeping in Go (its call, its root fiber,
   their channels and the buffer of its event) is reused from one request to
   the next instead of allocated for each: eight allocations and about 1 kB
-  less per request.
+  less per request (#36).
 - Performance: a request's fibers wait under the context of the server's
   request itself. The engine made a context of its own under it for every
   request and ended it when PHP answered, which the server's context does
-  anyway once the request is done: five allocations less per request.
+  anyway once the request is done: five allocations less per request (#36).
 - Performance: a request goes to a PHP thread that is already running PHP
   and will be back for its next event within 50 µs, when there is one,
   instead of waking a thread that sleeps. A thread that holds 32 more
   requests than the least busy one, or that has run one fiber for long, is
-  still passed over.
-- Performance: the arguments of a Go operation (`Cairo\Sql`, the HTTP, gRPC
+  still passed over (#36).
+- Performance: the arguments of a Go operation (the gRPC
   and network clients, the cache purge) cross from PHP to Go in the binary
   format that results already come back in, instead of as JSON text: no
   `json_encode()` in PHP, and Go reads them about three times as fast. An
   operation that runs on the PHP thread gets its result back the same way. A
   string argument may now hold any bytes, where JSON refused text that was
-  not UTF-8.
+  not UTF-8 (#36).
 - Performance: a fiber in `Cairo\sleep()`, in a hooked `sleep()` or
   `usleep()`, or blocked on a `Cairo\Channel`, in `select()` or on a
   `Cairo\Pool` now waits on its PHP thread, which keeps the timers itself,
@@ -121,7 +99,7 @@ change the PHP API; patch versions do not.
   and Go's answers every 64 fibers. A thread that gave Go an operation and
   has nothing else to run watches for a few microseconds whether the answer
   is there before it sleeps, which that of a short operation is: about a
-  third off the time of a Go operation when nothing else runs on the thread.
+  third off the time of a Go operation when nothing else runs on the thread (#36).
 - Requests and answers cross between Go and the PHP threads in queues that
   neither side calls the other for. A thread used to call into Go for its
   next event and to hand over an answer, and each call held one of Go's
@@ -132,7 +110,7 @@ change the PHP API; patch versions do not.
   on a route that answers at once and on one MySQL query, 10% more on the
   route that computes. `offload()` and a Go operation of a thread with
   nothing else to do take longer for now (about 28 µs and 6 µs), and one
-  PostgreSQL query per request does 3% fewer requests.
+  PostgreSQL query per request does 3% fewer requests (#36).
 - Performance: a fiber no longer has a goroutine and a context in Go.
   `async()` and the derived contexts (`withTimeout()`, `withDeadline()`,
   `withCancel()`) are PHP alone, a Go operation runs under its request's
@@ -142,9 +120,9 @@ change the PHP API; patch versions do not.
   takes 1.4 µs instead of 3.6, `withTimeout()` + `cancel()` 0.36 µs instead
   of 2.9, and the hello benchmark serves 2.0% more requests per second.
   Derived contexts now also work outside a request thread, and the internal
-  `Context::$fiberId` is gone.
+  `Context::$fiberId` is gone (#36).
 - Performance: a fiber that waits on a socket (PDO MySQL and everything else
-  on PHP's streams, curl, the Revolt driver) no longer asks Go. Each PHP
+  on PHP's streams, curl) no longer asks Go. Each PHP
   thread has an epoll of its own: the fiber arms its socket there and parks
   on the thread, the thread's loop asks once a turn which sockets are ready,
   and a thread with nothing to run sleeps in its epoll, where Go wakes it
@@ -154,7 +132,7 @@ change the PHP API; patch versions do not.
   instead of 1.7; a curl transfer costs 18% less CPU. The wait of a
   millisecond on the thread itself, which stood in for this, is kept only
   where a thread serves one request at a time (isolated mode): next to other
-  requests it cost 4 to 7%.
+  requests it cost 4 to 7% (#36).
 - Performance: an `offload()` job goes from its request thread straight into
   the inbox of an offload thread, and its result straight back, with no
   goroutine on the way and no base64 or JSON around the serialized bytes:
@@ -164,19 +142,19 @@ change the PHP API; patch versions do not.
   fiber whose offload thread stops in the middle of its job now gets an
   `OffloadException` (it was `Context\Canceled`), and a result that cannot
   be serialized is an `OffloadException` for its caller instead of the end
-  of the offload thread.
+  of the offload thread (#36).
 - `Cairo\Channel`: `send()` into a channel with room and `recv()` of a
   buffered value no longer go through `select()`, and neither do `trySend()`
   and `tryRecv()`: a send and a receive with nobody waiting take 0.1 µs
   instead of 1.2 µs, and a `select()` that finds a channel ready less than
-  half its time. Nothing changes in what they do.
+  half its time. Nothing changes in what they do (#36).
 - The scheduler of a PHP thread keeps its fibers in C: the context each
   fiber runs under, the fibers that wait for their next task, the queue of
   those to resume, and the parked waits with their timers. A `sleep(0)`
   takes 0.7 µs instead of 1.4 µs, `Context::current()` 33 ns instead of 69
   ns, and a route that queries MySQL through PDO, which parks its fiber for
   every wait on the socket, answers 16% more requests per second. Fibers
-  that sleep until the same moment wake in the order they went to sleep.
+  that sleep until the same moment wake in the order they went to sleep (#36).
 - Performance: a gRPC message goes between protobuf's bytes and PHP's array
   directly, with no message object and no JSON text in between, in the
   server and in `Cairo\Grpc\Client`. Handlers and generated classes see the
@@ -184,7 +162,7 @@ change the PHP API; patch versions do not.
   that is not proto3 and any unusual value still go through protojson.
   Unary calls served: 11% more per second (ghz at 64 concurrent calls, 4
   PHP threads on 2 CPUs); a route that makes one through the client: 3 to
-  8% more.
+  8% more (#39).
 - Performance: a gRPC stream no longer costs a Go operation per message, on
   either side. `send()` of a handler's stream and of a client's stream
   queues the message in Go with one call, and Go reads what the other side
@@ -193,7 +171,7 @@ change the PHP API; patch versions do not.
   sends them answers 1,539 to 4,337 calls per second and one that reads
   them 977 to 4,082 (ghz, as above); a route that reads them through the
   client 802 to 3,140 requests per second and one that sends them 811 to
-  3,244 (wrk at 32 connections).
+  3,244 (wrk at 32 connections) (#39).
 - gRPC, at the edges: a reply that holds `NAN`, `INF` or a string that is
   not UTF-8 ends its call with INTERNAL (the handler's fiber ended with an
   uncaught exception before). `ClientStream::send()` returns when the
@@ -201,22 +179,22 @@ change the PHP API; patch versions do not.
   not be written is thrown by the next `send()` or by `closeSend()`, which
   returns once all are written. A message that cannot be read ends the
   reading of its stream, where the next `recv()` went on to the message
-  after it.
+  after it (#39).
 - Performance: PDO PostgreSQL sends each request to Go, and gets its
   answer, as an array in Cairo's binary form instead of JSON text, and the
   parameters of a statement, COPY data and the bytes of a large object are
   no longer base64 on the way. A route with one query: 2.6% more requests
-  per second (wrk at 64 connections, 4 PHP threads on 2 CPUs).
+  per second (wrk at 64 connections, 4 PHP threads on 2 CPUs) (#39).
 - Performance, HTTP: a request's way between net/http and PHP allocates
   less (21 allocations where there were 45, for a request with a browser's
   headers): PHP's answer is decoded from one copy with one slice for all
   header values, which the response then shares. A request with 13 headers,
-  two MySQL queries and a 1.5 KB JSON answer: 4% more requests per second.
+  two MySQL queries and a 1.5 KB JSON answer: 4% more requests per second (#40).
 - Performance, HTTP: a route with `->cache()` looks in the cache before it
   reads the request, so a request that the cache answers builds nothing for
   PHP: 6% more requests per second on a cached page. A GET that carries a
   body gets the cached answer without the body being read, also a body past
-  the 32 MiB limit, which was answered with 413 before.
+  the 32 MiB limit, which was answered with 413 before (#40).
 - Performance, HTTP: large bodies are copied less. An upload is read into
   one buffer sized from its `Content-Length` (of which 1 MiB is taken on
   trust; past that the buffer grows with what arrives) and copied once on
@@ -224,21 +202,21 @@ change the PHP API; patch versions do not.
   uploads too. An answer of 32 KiB or more is written to the client from
   the memory PHP's thread handed over, without a copy in Go: 58% more 1 MB
   answers per second, 50% more of 100 KB. A request whose `Content-Length`
-  is past the 32 MiB limit is refused with 413 before its body is read.
+  is past the 32 MiB limit is refused with 413 before its body is read (#40).
 - Performance: `Request::header()` finds a name in its usual spelling
   (`Content-Type`) with one lookup instead of a loop over all headers, and
-  `Request::query()` parses the query string once per request.
+  `Request::query()` parses the query string once per request (#40).
 - Performance: a read or a write on a hooked socket (PDO MySQL, streams) is
   tried at once, and the fiber waits only when the socket is not ready.
   Before, each one first asked the kernel whether the socket was ready. A
   request with two MySQL queries makes 4 system calls fewer, of 20; its
-  requests per second do not change measurably.
+  requests per second do not change measurably (#41).
 - A thread that is recycled (`maxRequests()`, `maxMemory()`) serves until
   its replacement has run `server.php`. Before, the new thread took its
   place while it still booted, and requests waited behind the boot: with
   Laravel through Octane, the slowest 0.1% of requests under a light load
   took 15 ms and now take 8 ms. For the length of the boot the old thread
-  serves past its limit and both hold their memory.
+  serves past its limit and both hold their memory (#41).
 - Performance: a fiber that waits on a hooked socket (a PDO MySQL query, a
   stream, curl) is armed in its thread's epoll and parked by one call into
   C, and the thread's loop wakes it without running PHP. Before, each wait
@@ -246,27 +224,27 @@ change the PHP API; patch versions do not.
   every socket that was ready. A wait takes 2 µs less of the thread's time
   (5.2 to 3.2 µs, measured inside the server). The requests per second of a
   request with two MySQL queries rise by about 2%, which is inside what the
-  benchmark machine can tell apart.
+  benchmark machine can tell apart (#42).
 
 ### Removed
 
 - `App::repeatedQueries()`, the repeated query detector. Find N+1 queries
   with the tools of your framework (Laravel's `preventLazyLoading()`, the
-  Symfony profiler) or the database's own statement log.
+  Symfony profiler) or the database's own statement log (#38).
 - `Cairo\Sql` (`Db`, `Tx`, `SqlException`, `Bytes`). PDO is the way to a
   database: `new PDO('pgsql:...')` is Cairo's Go-backed driver and takes
   `cairo_pool=N` for a pool shared by all threads, and PDO MySQL waits
   without blocking through the socket hook. The binary no longer carries
-  the Go MySQL driver.
+  the Go MySQL driver (#38).
 - `Cairo\Http\Client`. Use curl, or a client built on it such as Guzzle:
   `curl_exec()` suspends only its fiber, and the slow request log still
-  counts the call under `http`.
+  counts the call under `http` (#38).
 - `Cairo\Revolt\Driver`, the driver for Revolt, Amp and ReactPHP's fiber
   adapters. Apps written for those event loops no longer run on Cairo's
-  scheduler.
+  scheduler (#38).
 - `Middleware::cors()`, `Middleware::rateLimit()` and `Middleware::gzip()`.
   Set these in the reverse proxy in front of Cairo or in the framework.
-  `requestId()`, `accessLog()`, `maxBody()` and `timeout()` stay.
+  `requestId()`, `accessLog()`, `maxBody()` and `timeout()` stay (#38).
 
 ### Fixed
 
@@ -276,26 +254,26 @@ change the PHP API; patch versions do not.
   Before, PHP destroyed those fibers where they waited, and fiber mode
   could log `FiberError: Cannot suspend in a force-closed fiber` for each
   (seen under Laravel when a stop met a MySQL connect in flight). The same
-  line after a handler's `exit()` is gone too.
+  line after a handler's `exit()` is gone too (#37).
 - PDO PostgreSQL with `cairo_pool=N`: a statement on a PDO object that was
   just taken from a `Cairo\Pool` could fail with "the connection is busy
   with another query" while the request that had the object before gave its
-  server connection back (7 in 490,000 requests in a benchmark).
+  server connection back (7 in 490,000 requests in a benchmark) (#37).
 - gRPC: a damaged request no longer stops the server. protobuf-go panics on
   a map entry whose key comes a second time with another wire type, and in
   a client-streaming or bidirectional method nothing recovered that panic.
   Such a message now ends its call with INTERNAL, like any other that
-  cannot be read.
+  cannot be read (#39).
 - `Cairo\Grpc\Client`: the same damaged message in a reply, from a server
   that an app calls, no longer stops the Cairo process that made the call.
-  The call ends with INTERNAL.
+  The call ends with INTERNAL (#39).
 - `App::detectBlocking()` no longer blames one fiber for the time of
   several. Fibers that became ready at the same moment (their sleeps ended
   together, or one request began several tasks) run one after the other,
   and the detector counted them as one: ten that each computed for 30 ms
   were reported as a request that kept its thread for 120 ms. It now counts
   each fiber from where it began. Code that really blocks is reported as
-  before.
+  before (#43).
 
 ## [0.4.0] - 2026-11-19
 
@@ -513,7 +491,8 @@ PHP, with many requests per PHP thread as fibers.
 - `Cairo\Sql` returns timestamps in UTC instead of the server's time zone
   (#40).
 
-[Unreleased]: https://github.com/cairophp/cairo/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/cairophp/cairo/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/cairophp/cairo/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/cairophp/cairo/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/cairophp/cairo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/cairophp/cairo/compare/v0.1.1...v0.2.0

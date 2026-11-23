@@ -10,7 +10,37 @@ permissions:
   contents: write
 
 jobs:
+  # The binaries go straight onto a draft release, not through workflow
+  # artifacts, so the release does not depend on the Actions storage quota.
+  draft:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            /^## / { if (found) exit; if (index($0, "[" v "]")) { found = 1; next } }
+            /^\[[^]]*\]: / { if (found) exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "CHANGELOG.md has no section for $version" >&2
+            exit 1
+          fi
+      - name: Create the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A re-run finds the draft of the first run.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then exit 0; fi
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" --draft \
+            --title "Cairo $GITHUB_REF_NAME" --notes-file notes.md --verify-tag $prerelease
+
   build:
+    needs: draft
     strategy:
       matrix:
         include:
@@ -28,7 +58,7 @@ jobs:
       - name: Build the static binary
         uses: docker/build-push-action@v6
         env:
-          DOCKER_BUILD_RECORD_UPLOAD: false   # no .dockerbuild artifact for publish to trip on
+          DOCKER_BUILD_RECORD_UPLOAD: false   # no .dockerbuild artifact, which counts against storage
         with:
           context: .
           file: Dockerfile.static
@@ -44,46 +74,26 @@ jobs:
           test "$(dist/cairo version)" = "cairo ${{ github.ref_name }}"
           go test ./test -count=1 -run 'TestStaticBinary|TestPHPBuildHasOpcacheAndExtensions'
           mv dist/cairo dist/cairo-linux-${{ matrix.arch }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: cairo-linux-${{ matrix.arch }}
-          path: dist/cairo-linux-${{ matrix.arch }}
-          # Only the publish job below reads it; the release keeps the binary.
-          retention-days: 1
+      - name: Attach it to the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/cairo-linux-${{ matrix.arch }} --clobber
 
   publish:
     needs: build
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: cairo-linux-*
-          path: dist
-          merge-multiple: true
       - name: Checksums
-        run: |
-          cd dist
-          chmod +x cairo-linux-*
-          sha256sum cairo-linux-* > SHA256SUMS
-          cat SHA256SUMS
-      - name: Release notes from CHANGELOG.md
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          awk -v v="$version" '
-            /^## / { if (found) exit; if (index($0, "[" v "]")) { found = 1; next } }
-            /^\[[^]]*\]: / { if (found) exit }
-            found { print }
-          ' CHANGELOG.md > notes.md
-          if [ ! -s notes.md ]; then
-            echo "CHANGELOG.md has no section for $version" >&2
-            exit 1
-          fi
-      - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          prerelease=""
-          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" dist/cairo-linux-* dist/SHA256SUMS \
-            --title "Cairo $GITHUB_REF_NAME" --notes-file notes.md --verify-tag $prerelease
+          gh release download "$GITHUB_REF_NAME" --pattern 'cairo-linux-*' --dir dist --clobber
+          cd dist
+          sha256sum cairo-linux-* > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$GITHUB_REF_NAME" SHA256SUMS --clobber
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false

@@ -44,6 +44,7 @@ the operation has for its own length.
 | `internal/httpserver/`, `internal/grpcserver/` | net/http and grpc-go servers built from the declaration. Each reads and checks its own part of it (`declaration.go`); `cmd/cairo` gives both to the engine to run in the declare phase |
 | `internal/pbwire/` | A gRPC message between protobuf's bytes and the array PHP has for it, in `internal/wire`'s form, with no message object or JSON text in between. The array is protojson's, and whatever it does not convert exactly as protojson would (a google.protobuf type, an unusual value, every error) it leaves to `grpcserver/message.go`, which goes through protojson. Its tests compare both directions with protojson on random and damaged messages, and `test/grpc_kinds_test.go` has PHP compare with `json_decode()` |
 | `internal/middleware/` | Go middleware declared from PHP |
+| `internal/servertls/` | The TLS side of a declared server, for `httpserver` and `grpcserver`: a certificate from two files, read again when they change, or certificates from an ACME authority (`golang.org/x/crypto/acme/autocert`) |
 | `internal/telemetry/` | What the process reports of itself: the metrics behind `$http->metrics()`, the traces of `$app->tracing()`, and whether it is ready (`$http->health()`). The servers ask it to wrap their router (`Telemetry.HTTP`) and for their gRPC options (`GRPCServer`, and `GRPCClient` for the clients PHP opens); with nothing declared it wraps nothing. The metrics are Prometheus' library with one histogram per request, by hand (`metrics.go`): OpenTelemetry's instrumentation measured 11 µs of CPU per request for the same. The traces are OpenTelemetry's SDK, which samples, batches and exports. The span of an HTTP request is made by hand on it (`http.go`), because OpenTelemetry's instrumentation of net/http measured 20 µs of CPU for every request, the ones that are not sampled too; the spans of gRPC are its instrumentation of grpc-go. A label or a span's name never comes from what a client can choose freely: the route is the router's pattern, a method outside HTTP's is `other`, an unknown gRPC method is not followed, a span has no Host header, and the values of a span that are the client's (the path, the user agent) are cut at 2048 bytes. `internal/httpserver/ops.go` has the endpoints Go answers itself, and `Engine.Stats()` (`internal/core/stats.go`) is what the metrics read of the PHP threads at each scrape |
 | `internal/cachetag/` | Tags of cached responses: declared by routes in `httpserver`, purged from PHP through `sapi` |
 | `internal/codegen/` | `cairo gen`: PHP classes and clients from `.proto` files |
@@ -74,7 +75,7 @@ The core is `internal/core` (Go and C) with its PHP files in
 `internal/wire`. Everything else is an extension: `internal/sapi` (those that
 are cgo or Go operations) with their PHP files in `php/`, the servers in
 `internal/httpserver` and `internal/grpcserver`, `internal/pbwire`,
-`internal/middleware`, `internal/cachetag`, `internal/telemetry` and
+`internal/middleware`, `internal/servertls`, `internal/cachetag`, `internal/telemetry` and
 `internal/codegen`.
 
 Extensions depend on the core, never the reverse: core code does not name an

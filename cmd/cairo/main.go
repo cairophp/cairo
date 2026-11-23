@@ -184,7 +184,7 @@ func serve(args []string) error {
 			return fmt.Errorf("http %s: %w", decl.Listen, err)
 		}
 		servers = append(servers, s)
-		log.Info("http server listening", "addr", s.Addr(), "routes", len(decl.Routes))
+		log.Info("http server listening", "addr", s.Addr(), "routes", len(decl.Routes), "tls", decl.TLS != nil)
 	}
 	for _, decl := range decls.grpc {
 		s, err := grpcserver.New(decl, engine, log, tel)
@@ -192,7 +192,7 @@ func serve(args []string) error {
 			return fmt.Errorf("grpc %s: %w", decl.Listen, err)
 		}
 		servers = append(servers, s)
-		log.Info("grpc server listening", "addr", s.Addr(), "services", len(decl.Services))
+		log.Info("grpc server listening", "addr", s.Addr(), "services", len(decl.Services), "tls", decl.TLS != nil)
 	}
 
 	errs := make(chan error, len(servers))

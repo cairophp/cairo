@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/cairophp/cairo/internal/middleware"
+	"github.com/cairophp/cairo/internal/servertls"
 	"github.com/cairophp/cairo/internal/spec"
 )
 
@@ -19,6 +20,14 @@ type Declaration struct {
 	// with everything else going to the routes ("" when not set).
 	PublicDir  string                   `json:"public_dir"`
 	Middleware []middleware.Declaration `json:"middleware"`
+	// TLS is $http->tls() or autoTls(): the server speaks HTTPS, and
+	// HTTP/2 with the clients that ask for it. Nil: plain HTTP.
+	TLS *servertls.Declaration `json:"tls"`
+	// H2C is $http->h2c(): HTTP/2 without TLS, for a proxy that speaks it.
+	H2C bool `json:"h2c"`
+	// RedirectHTTP is $http->redirectHttp(): a second, plain listener
+	// that sends its requests to this server ("" when not set).
+	RedirectHTTP string `json:"redirect_http"`
 	// MetricsPath is $http->metrics(), LivePath and ReadyPath are
 	// $http->health(): endpoints Go answers itself ("" when not set).
 	MetricsPath string `json:"metrics"`
@@ -70,6 +79,9 @@ func (d *Declaration) validate(claims *spec.Claims) error {
 	if err := claims.Listen(d.Listen); err != nil {
 		return err
 	}
+	if err := d.validateTLS(claims); err != nil {
+		return fmt.Errorf("http %s: %w", d.Listen, err)
+	}
 	seen := map[string]bool{}
 	for _, r := range d.Routes {
 		key := strings.ToUpper(r.Method) + " " + r.Path
@@ -88,6 +100,24 @@ func (d *Declaration) validate(claims *spec.Claims) error {
 		}
 	}
 	return d.validateOps(seen)
+}
+
+func (d *Declaration) validateTLS(claims *spec.Claims) error {
+	if d.TLS == nil {
+		if d.RedirectHTTP != "" {
+			return fmt.Errorf("redirectHttp() needs tls() or autoTls(): there is no HTTPS to send requests to")
+		}
+		return nil
+	}
+	if d.H2C {
+		return fmt.Errorf("h2c() is HTTP/2 without TLS; with tls() or autoTls() HTTP/2 is already on")
+	}
+	if d.RedirectHTTP != "" {
+		if err := claims.Listen(d.RedirectHTTP); err != nil {
+			return err
+		}
+	}
+	return d.TLS.Validate()
 }
 
 // maxCacheTag is the longest tag name, in bytes.

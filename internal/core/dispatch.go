@@ -299,7 +299,8 @@ func (t *thread) backSoon(ran int64) bool {
 }
 
 // EachBusyThread calls fn for every request thread that is running PHP, with
-// when it took the event it is running.
+// since when it runs the fiber it is in: since it left its loop, or since it
+// went on to that fiber from another that was ready with it.
 func (e *Engine) EachBusyThread(fn func(tid int, since time.Time)) {
 	for i := range e.workers {
 		t := e.workers[i].Load()
@@ -307,7 +308,7 @@ func (e *Engine) EachBusyThread(fn func(tid int, since time.Time)) {
 			continue
 		}
 		if since := t.box.since.Load(); since != 0 {
-			fn(t.id, time.Unix(0, since))
+			fn(t.id, time.Unix(0, max(since, t.box.fiber.Load())))
 		}
 	}
 }

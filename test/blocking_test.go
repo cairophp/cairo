@@ -59,9 +59,10 @@ func TestBlockingDetector(t *testing.T) {
 	fetch("/ok")
 	fetch("/usleep")
 	fetch("/sockets?addr=" + echoAfter(t, 200*time.Millisecond))
+	fetch("/timers")
 	time.Sleep(200 * time.Millisecond)
 	if n := reports(); n != 0 {
-		t.Fatalf("/ok, /usleep and /sockets yield to Go but were reported as blocking:\n%s", stderr.String())
+		t.Fatalf("/ok, /usleep, /sockets and /timers yield to Go but were reported as blocking:\n%s", stderr.String())
 	}
 
 	fetch("/spin")

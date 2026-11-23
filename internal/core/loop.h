@@ -18,10 +18,11 @@ typedef struct {
 	int64_t took;     // how many events the thread has taken out of its inbox, and
 	int64_t served;   // how many of them began a call or were an offload job
 	cairo_msg *next;  // the events it took and has not read yet, oldest first
+	int64_t fiber;    // when it last went on from one fiber to the next without a visit, in unix ns
 	int32_t handed;   // 1 when the thread gave Go an operation or an answer since its last visit
 	// What the thread writes at every visit and what senders write share no
 	// cache line, with each other or with another thread's mailbox.
-	char pad[20];
+	char pad[12];
 	cairo_msg *inbox; // the events queued for the thread (queue.h)
 	int64_t pushed;   // how many events were ever queued for it
 	int32_t asleep;   // while the thread sleeps, 1 on this word or 2 in its epoll (sockets.h): the sender that takes it off wakes the thread
@@ -55,6 +56,13 @@ void cairo_wait_ended(int64_t request, int kind, int64_t began);
 // when requests are probed, Go learns how long the thread ran up to here,
 // before it learns of the answer.
 void cairo_loop_answered(int tid);
+
+// The calling PHP thread is about to resume a fiber that was ready
+// (cairo_run_ready()). When it has run another since it left its loop, it
+// notes the time in its mailbox: whoever asks how long the running code has
+// kept the thread (Engine.EachBusyThread) is told of this fiber's time, not
+// of all that ran since the last visit.
+void cairo_loop_resumes(void);
 
 // What a thread finds in its inbox: an event from Go, which begins a call (a
 // request) or does not, or what another PHP thread queued there, an offload

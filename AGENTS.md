@@ -44,6 +44,7 @@ the operation has for its own length.
 | `internal/httpserver/`, `internal/grpcserver/` | net/http and grpc-go servers built from the declaration. Each reads and checks its own part of it (`declaration.go`); `cmd/cairo` gives both to the engine to run in the declare phase |
 | `internal/pbwire/` | A gRPC message between protobuf's bytes and the array PHP has for it, in `internal/wire`'s form, with no message object or JSON text in between. The array is protojson's, and whatever it does not convert exactly as protojson would (a google.protobuf type, an unusual value, every error) it leaves to `grpcserver/message.go`, which goes through protojson. Its tests compare both directions with protojson on random and damaged messages, and `test/grpc_kinds_test.go` has PHP compare with `json_decode()` |
 | `internal/middleware/` | Go middleware declared from PHP |
+| `internal/telemetry/` | What the process reports of itself: the metrics behind `$http->metrics()`, the traces of `$app->tracing()`, and whether it is ready (`$http->health()`). The servers ask it to wrap their router (`Telemetry.HTTP`) and for their gRPC options (`GRPCServer`, and `GRPCClient` for the clients PHP opens); with nothing declared it wraps nothing. The metrics are Prometheus' library with one histogram per request, by hand (`metrics.go`): OpenTelemetry's instrumentation measured 11 µs of CPU per request for the same. The traces are OpenTelemetry's SDK, which samples, batches and exports. The span of an HTTP request is made by hand on it (`http.go`), because OpenTelemetry's instrumentation of net/http measured 20 µs of CPU for every request, the ones that are not sampled too; the spans of gRPC are its instrumentation of grpc-go. A label or a span's name never comes from what a client can choose freely: the route is the router's pattern, a method outside HTTP's is `other`, an unknown gRPC method is not followed, a span has no Host header, and the values of a span that are the client's (the path, the user agent) are cut at 2048 bytes. `internal/httpserver/ops.go` has the endpoints Go answers itself, and `Engine.Stats()` (`internal/core/stats.go`) is what the metrics read of the PHP threads at each scrape |
 | `internal/cachetag/` | Tags of cached responses: declared by routes in `httpserver`, purged from PHP through `sapi` |
 | `internal/codegen/` | `cairo gen`: PHP classes and clients from `.proto` files |
 | `stubs/` | Generated IDE stubs of the public API in `internal/core/php/` and `php/`; `scripts/publish-stubs.sh` copies this directory to `cairophp/stubs`, the Composer package, on each release |
@@ -66,14 +67,15 @@ yes to either makes it core.
 | Side | What it holds |
 |------|---------------|
 | Core | The SAPI and the PHP threads, their supervision, dispatch (fibers and isolated mode), the fiber scheduler and request-local state, the bridge (wire events, the op registry, the answer path), waiting (the threads' epolls, parked fibers, timers), deadlines and the hard stop, the concurrency API (`Context`, `Channel`, `select()`, `async()`, `await()`, `sleep()`, `offload()`, `RequestLocal`), the declaration and boot |
-| Extensions | Servers (HTTP, its response cache, middleware, gRPC), clients (`Grpc\Client`, `Cairo\Net`), databases (the PDO pgsql driver, `Cairo\Pool`), PHP hooks (streams, sleep, DNS, TLS, curl), bridges (PSR adapters), diagnostics (slow log, heavy routes, leaks, blocking), `cairo gen` |
+| Extensions | Servers (HTTP, its response cache, middleware, gRPC), clients (`Grpc\Client`, `Cairo\Net`), databases (the PDO pgsql driver, `Cairo\Pool`), PHP hooks (streams, sleep, DNS, TLS, curl), bridges (PSR adapters), diagnostics (slow log, heavy routes, leaks, blocking), observability (metrics, probes, tracing), `cairo gen` |
 
 The core is `internal/core` (Go and C) with its PHP files in
 `internal/core/php`, and the two packages it imports, `internal/spec` and
 `internal/wire`. Everything else is an extension: `internal/sapi` (those that
 are cgo or Go operations) with their PHP files in `php/`, the servers in
 `internal/httpserver` and `internal/grpcserver`, `internal/pbwire`,
-`internal/middleware`, `internal/cachetag` and `internal/codegen`.
+`internal/middleware`, `internal/cachetag`, `internal/telemetry` and
+`internal/codegen`.
 
 Extensions depend on the core, never the reverse: core code does not name an
 extension. An extension reaches the core through what `internal/core` exports
@@ -88,6 +90,7 @@ engine starts (`RegisterStart`) and a channel that closes when it stops
 (`Engine.Stopping`), a probe that follows each request through the engine
 (`Engine.ProbeRequests`), the threads that are running PHP
 (`Engine.EachBusyThread`), which it can interrupt (`Engine.InterruptThread`),
+the state of the threads for a report (`Engine.Stats`),
 the engine's logger (`Logger`), and what a request thread runs when it starts
 and after each request (`Scheduler::onStart()`, `afterRequest()`).
 
@@ -97,7 +100,7 @@ where PHP names the servers, as `cmd/cairo` is in Go. It does not look
 inside what a server declared: that goes to Go under the extension's name,
 and only the extension's Go package knows its shape. The settings of an
 extension go the same way (`slowRequests()` and `heavyRoutes()` under
-`timing`, `detectBlocking()` under `blocking`).
+`timing`, `detectBlocking()` under `blocking`, `tracing()` under `tracing`).
 
 `internal/core/boundary_test.go` holds the line from the core's side. The
 core's Go files import the standard library and each other. Its C code

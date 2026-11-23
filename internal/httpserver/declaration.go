@@ -19,6 +19,11 @@ type Declaration struct {
 	// with everything else going to the routes ("" when not set).
 	PublicDir  string                   `json:"public_dir"`
 	Middleware []middleware.Declaration `json:"middleware"`
+	// MetricsPath is $http->metrics(), LivePath and ReadyPath are
+	// $http->health(): endpoints Go answers itself ("" when not set).
+	MetricsPath string `json:"metrics"`
+	LivePath    string `json:"live"`
+	ReadyPath   string `json:"ready"`
 }
 
 // Route maps an HTTP method and path pattern to a PHP handler id.
@@ -82,7 +87,7 @@ func (d *Declaration) validate(claims *spec.Claims) error {
 			return fmt.Errorf("route %s: %w", key, err)
 		}
 	}
-	return nil
+	return d.validateOps(seen)
 }
 
 // maxCacheTag is the longest tag name, in bytes.

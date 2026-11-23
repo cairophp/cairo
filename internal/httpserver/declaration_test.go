@@ -21,6 +21,11 @@ func TestDeclared(t *testing.T) {
 		"cache without ttl":       {`[{"listen":":8080","routes":[{"id":0,"method":"GET","path":"/a","cache":{"ttl":0}}]}]`, 0},
 		"cache vary not a header": {`[{"listen":":8080","routes":[{"id":0,"method":"GET","path":"/a","cache":{"ttl":5,"vary":["a b"]}}]}]`, 0},
 		"empty cache tag":         {`[{"listen":":8080","routes":[{"id":0,"method":"GET","path":"/a","cache":{"ttl":5,"tags":[""]}}]}]`, 0},
+		"metrics and probes":      {`[{"listen":":9100","metrics":"/metrics","live":"/healthz","ready":"/readyz"}]`, 1},
+		"metrics on a route":      {`[{"listen":":8080","routes":[{"id":0,"method":"GET","path":"/metrics"}],"metrics":"/metrics"}]`, 0},
+		"probes on one path":      {`[{"listen":":8080","live":"/health","ready":"/health"}]`, 0},
+		"metrics path a pattern":  {`[{"listen":":8080","metrics":"/metrics/{any}"}]`, 0},
+		"relative metrics path":   {`[{"listen":":8080","metrics":"metrics"}]`, 0},
 	}
 	for name, c := range cases {
 		s, err := spec.Parse([]byte(`{"extensions":{"http":` + c.http + `}}`))

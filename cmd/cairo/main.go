@@ -22,6 +22,7 @@ import (
 	"github.com/cairophp/cairo/internal/httpserver"
 	_ "github.com/cairophp/cairo/internal/sapi" // the extensions: each joins the core from its init()
 	"github.com/cairophp/cairo/internal/spec"
+	"github.com/cairophp/cairo/internal/telemetry"
 )
 
 // version is set at build time: -ldflags "-X main.version=v0.1.0".
@@ -36,7 +37,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  cairo serve <server.php> [--threads N] [--offload-threads N] [--grace 30s] [--php-ini FILE]
+  cairo serve <server.php> [--threads N] [--offload-threads N] [--grace 30s] [--drain 0s] [--php-ini FILE]
   cairo gen [--out DIR] [-I DIR]... <file.proto>...
   cairo version`)
 }
@@ -129,11 +130,22 @@ func (d *declarations) read(s *spec.Spec) error {
 	return nil
 }
 
+// metrics reports whether a server declared a metrics endpoint.
+func (d *declarations) metrics() bool {
+	for _, h := range d.http {
+		if h.MetricsPath != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	threads := fs.Int("threads", 0, "PHP request threads (overrides server.php; default: one per CPU core)")
 	offloadThreads := fs.Int("offload-threads", 0, "PHP threads for Cairo\\offload() jobs (overrides server.php; default: one per CPU core)")
 	grace := fs.Duration("grace", 30*time.Second, "how long to wait for in-flight requests on shutdown")
+	drain := fs.Duration("drain", 0, "how long to keep serving after a stop signal while the readiness endpoint answers 503")
 	phpIni := fs.String("php-ini", os.Getenv("CAIRO_PHP_INI"), "php.ini file or directory (default: $PHPRC, then PHP's own search; also CAIRO_PHP_INI)")
 	// Accept the server file before or after the flags.
 	var file string
@@ -157,9 +169,17 @@ func serve(args []string) error {
 		return err
 	}
 
+	tel, err := telemetry.Start(context.Background(), telemetry.Options{
+		Spec: engine.Spec(), Metrics: decls.metrics(), Log: log,
+		Threads: func() telemetry.Threads { return telemetry.Threads(engine.Stats()) },
+	})
+	if err != nil {
+		return err
+	}
+
 	var servers []server
 	for _, decl := range decls.http {
-		s, err := httpserver.New(decl, engine, log)
+		s, err := httpserver.New(decl, engine, log, tel)
 		if err != nil {
 			return fmt.Errorf("http %s: %w", decl.Listen, err)
 		}
@@ -167,7 +187,7 @@ func serve(args []string) error {
 		log.Info("http server listening", "addr", s.Addr(), "routes", len(decl.Routes))
 	}
 	for _, decl := range decls.grpc {
-		s, err := grpcserver.New(decl, engine, log)
+		s, err := grpcserver.New(decl, engine, log, tel)
 		if err != nil {
 			return fmt.Errorf("grpc %s: %w", decl.Listen, err)
 		}
@@ -186,6 +206,8 @@ func serve(args []string) error {
 	select {
 	case got := <-sig:
 		log.Info("shutting down", "signal", got.String())
+		tel.Drain()
+		keepServing(*drain, sig)
 	case runErr = <-errs:
 	case runErr = <-engine.Errors():
 	}
@@ -198,5 +220,25 @@ func serve(args []string) error {
 	if err := engine.Shutdown(ctx); err != nil {
 		log.Warn("php shutdown", "err", err)
 	}
+	// The last spans get a few seconds: a collector that is down must not
+	// hold the process for the rest of the grace time.
+	flush, cancelFlush := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelFlush()
+	if err := tel.Shutdown(flush); err != nil {
+		log.Warn("telemetry shutdown", "err", err)
+	}
 	return runErr
+}
+
+// keepServing keeps the servers up for d after a stop signal, so that whatever
+// sends them requests sees the readiness endpoint say no and stops first.
+// A second signal ends the wait.
+func keepServing(d time.Duration, sig <-chan os.Signal) {
+	if d <= 0 {
+		return
+	}
+	select {
+	case <-time.After(d):
+	case <-sig:
+	}
 }

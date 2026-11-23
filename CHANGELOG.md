@@ -9,6 +9,17 @@ change the PHP API; patch versions do not.
 
 ### Added
 
+- HTTPS and HTTP/2 on the HTTP server, so that Cairo needs no proxy in front
+  of it. `$http->tls($certFile, $keyFile)` serves a certificate from two PEM
+  files and reads them again when they change. `$http->autoTls($domains,
+  $cacheDir)` gets and renews certificates from Let's Encrypt, or from
+  another ACME authority. Clients that ask for HTTP/2 get it, TLS 1.2 is the
+  oldest version accepted, and `$http->redirectHttp()` adds a plain listener
+  that sends its requests to the HTTPS one.
+- `$http->h2c()`: HTTP/2 without TLS, for a load balancer that speaks it to
+  its backends.
+- `$grpc->tls($certFile, $keyFile)`: gRPC over TLS.
+- `Request::protocol()` and `Request::secure()`.
 - An official image, `ghcr.io/cairophp/cairo`, for amd64 and arm64: the
   release's static binary on Alpine, running as the user `cairo`. The release
   workflow publishes it with every release, tagged `x.y.z`, `x.y` and

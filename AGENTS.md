@@ -45,6 +45,7 @@ the operation has for its own length.
 | `internal/httpserver/`, `internal/grpcserver/` | net/http and grpc-go servers built from the declaration. Each reads and checks its own part of it (`declaration.go`); `cmd/cairo` gives both to the engine to run in the declare phase |
 | `internal/pbwire/` | A gRPC message between protobuf's bytes and the array PHP has for it, in `internal/wire`'s form, with no message object or JSON text in between. The array is protojson's, and whatever it does not convert exactly as protojson would (a google.protobuf type, an unusual value, every error) it leaves to `grpcserver/message.go`, which goes through protojson. Its tests compare both directions with protojson on random and damaged messages, and `test/grpc_kinds_test.go` has PHP compare with `json_decode()` |
 | `internal/middleware/` | Go middleware declared from PHP |
+| `internal/servertls/` | The TLS side of a declared server, for `httpserver` and `grpcserver`: a certificate from two files, read again when they change, or certificates from an ACME authority (`golang.org/x/crypto/acme/autocert`) |
 | `internal/cachetag/` | Tags of cached responses: declared by routes in `httpserver`, purged from PHP through `sapi` |
 | `internal/codegen/` | `cairo gen`: PHP classes and clients from `.proto` files |
 | `stubs/` | Generated IDE stubs of the public API in `internal/core/php/` and `php/`; `scripts/publish-stubs.sh` copies this directory to `cairophp/stubs`, the Composer package, on each release |
@@ -74,7 +75,8 @@ The core is `internal/core` (Go and C) with its PHP files in
 `internal/wire`. Everything else is an extension: `internal/sapi` (those that
 are cgo or Go operations) with their PHP files in `php/`, the servers in
 `internal/httpserver` and `internal/grpcserver`, `internal/pbwire`,
-`internal/middleware`, `internal/cachetag` and `internal/codegen`.
+`internal/middleware`, `internal/servertls`, `internal/cachetag` and
+`internal/codegen`.
 
 Extensions depend on the core, never the reverse: core code does not name an
 extension. An extension reaches the core through what `internal/core` exports

@@ -255,7 +255,7 @@ func TestWatchRestartsForANewDeclaration(t *testing.T) {
 	app.answers("/", "hello")
 	app.declare("/added", "added")
 	app.answers("/added", "added")
-	app.logged("restarting", 1)
+	app.logged("restarting in place", 1)
 	app.logged("watching for changes", 2) // the new process watches too
 
 	app.greet("changed")
@@ -263,6 +263,35 @@ func TestWatchRestartsForANewDeclaration(t *testing.T) {
 	if log := app.logs.String(); strings.Contains(log, "level=ERROR") {
 		t.Errorf("the restart logged an error:\n%s", log)
 	}
+}
+
+// A .env file that changes needs a new process too: what PHP has put in
+// the process's environment with putenv() stays there, and a library that
+// reads the file leaves alone what is set already.
+func TestWatchRestartsForTheEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	copyReload(t, dir)
+	app := &reloadApp{t: t, dir: dir}
+	app.write(".env", "GREETING=one\n")
+	// As vlucas/phpdotenv does: the file's values, unless they are set.
+	app.write("greeting.php", `<?php
+
+foreach (parse_ini_file(__DIR__ . '/.env') as $name => $value) {
+    if (getenv($name) === false) {
+        putenv("$name=$value");
+    }
+}
+
+function greeting(): string
+{
+    return (string) getenv('GREETING');
+}
+`)
+	app = serveReload(t, dir, nil, "--threads", "2", "--watch")
+	app.answers("/", "one")
+	app.write(".env", "GREETING=two\n")
+	app.answers("/", "two")
+	app.logged("the environment files changed", 1)
 }
 
 // SIGUSR1 reloads once, for a deploy. It never restarts: a changed

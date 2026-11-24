@@ -20,8 +20,11 @@ change the PHP API; patch versions do not.
   new thread is tried alone, so code that does not start (a parse error, an
   exception in `server.php`) replaces nothing and the server runs on. What
   `server.php` declares (servers, routes, settings) is built once per
-  process: when that changes, `--watch` starts the process anew in place,
-  and the signal refuses and says so. The watcher looks at the files' times
+  process: when that changes, or a `.env` file does (PHP's `putenv()` is
+  the process's), `--watch` starts the process anew in place, and the signal
+  refuses another declaration and says so. A reload that fills opcache ends
+  in such a restart too, instead of threads that keep the code for
+  themselves. The watcher looks at the files' times
   every 250 ms instead of using the kernel's file events, so it needs no
   dependency and works in a directory shared with a container. See
   `examples/reload`.

@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -59,8 +60,8 @@ func reloadOnSignal(engine *core.Engine, log *slog.Logger) {
 }
 
 // watch reloads the code whenever a file under paths changes, until ctx
-// ends. A change that only a new process can serve is sent on the channel
-// it returns, once.
+// ends. A change that only a new process can serve (another declaration, a
+// .env file) is sent on the channel it returns, once.
 func watch(ctx context.Context, engine *core.Engine, log *slog.Logger, paths []string) <-chan struct{} {
 	restart := make(chan struct{}, 1)
 	go func() {
@@ -69,12 +70,19 @@ func watch(ctx context.Context, engine *core.Engine, log *slog.Logger, paths []s
 			if len(changed) > 1 {
 				because += " and " + plural(len(changed)-1, "other file")
 			}
-			if reload(engine, log, because) {
-				log.Info("restarting: server.php declares other servers, routes or settings", "because", because)
-				select {
-				case restart <- struct{}{}:
-				default:
-				}
+			why := ""
+			switch {
+			case environment(changed):
+				why = "the environment files changed, and what PHP has put in the process's environment stays there"
+			case reload(engine, log, because):
+				why = "server.php declares other servers, routes or settings"
+			default:
+				return
+			}
+			log.Info("restarting in place", "because", because, "why", why)
+			select {
+			case restart <- struct{}{}:
+			default:
 			}
 		})
 		if err != nil {
@@ -82,6 +90,19 @@ func watch(ctx context.Context, engine *core.Engine, log *slog.Logger, paths []s
 		}
 	}()
 	return restart
+}
+
+// environment reports whether a .env file is among paths. A library that
+// reads one (vlucas/phpdotenv, as Laravel uses it) puts its values in the
+// process's environment with putenv() and leaves alone what is set there
+// already: a thread that starts later would keep the old values.
+func environment(paths []string) bool {
+	for _, path := range paths {
+		if name := filepath.Base(path); name == ".env" || strings.HasPrefix(name, ".env.") {
+			return true
+		}
+	}
+	return false
 }
 
 func plural(n int, what string) string {

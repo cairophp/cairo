@@ -32,6 +32,10 @@ uint32_t cairo_fibers_queued(void);
 // At module startup.
 zend_result cairo_fibers_startup(void);
 
+// At request shutdown, after the destructors: frees the stacks of the
+// fibers that a fatal error left suspended.
+void cairo_fibers_shutdown(void);
+
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_fiber_context, 0, 0, 0)
 ZEND_END_ARG_INFO()
 

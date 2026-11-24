@@ -12,7 +12,8 @@ namespace Cairo\Internal {
 
     /**
      * Runs a Go operation (see internal/core/goops.go): in a fiber of a
-     * request the fiber suspends while a goroutine runs it; elsewhere the
+     * request the fiber suspends while a goroutine runs it; elsewhere, and
+     * in the only fiber a script has to run (Scheduler::waitsAlone()), the
      * thread waits for Go.
      */
     final class Go
@@ -20,8 +21,11 @@ namespace Cairo\Internal {
         /** @param array<string, mixed> $payload */
         public static function call(string $op, array $payload): mixed
         {
-            if (Scheduler::running() && Context::current()->requestId !== 0) {
-                return Scheduler::instance()->call($op, $payload);
+            if (Scheduler::running() && ($ctx = Context::current())->requestId !== 0) {
+                $scheduler = Scheduler::instance();
+                if (!$scheduler->script || !$scheduler->waitsAlone($ctx)) {
+                    return $scheduler->call($op, $payload);
+                }
             }
             return self::callNow($op, $payload);
         }

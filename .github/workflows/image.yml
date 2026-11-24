@@ -62,4 +62,6 @@ jobs:
       - name: Check the pushed image
         env:
           VERSION: ${{ steps.meta.outputs.version }}
-        run: test "$(docker run --rm "ghcr.io/cairophp/cairo:$VERSION" version)" = "cairo $TAG"
+        run: |
+          test "$(docker run --rm "ghcr.io/cairophp/cairo:$VERSION" version)" = "cairo $TAG"
+          test "$(docker run --rm --entrypoint php "ghcr.io/cairophp/cairo:$VERSION" -r 'echo PHP_SAPI;')" = cli

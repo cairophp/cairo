@@ -85,6 +85,18 @@ PHP includes the Zend Engine, freely available at
 <http://www.zend.com>.
 
 
+internal/core/cli.c
+-------------------
+
+PHP's command line on Cairo (`cairo php`: the "cli" sapi_module_struct and
+its output, header, variable and logging callbacks, the constants STDIN,
+STDOUT and STDERR in cli_register_file_handles, and the order in which a
+script is opened, run or checked in cli_request and cli_run) is adapted from
+PHP's own command line, sapi/cli/php_cli.c, in the PHP source distribution
+(https://github.com/php/php-src, PHP 8.5), under the PHP License, version
+3.01, reproduced above. Cairo's changes are under Cairo's own license, the
+Apache License 2.0 (LICENSE).
+
 internal/core/fibers.c
 ----------------------
 

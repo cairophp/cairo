@@ -40,6 +40,25 @@ change the PHP API; patch versions do not.
 - `install.sh`, which installs the release binary for the machine it runs
   on after checking it against `SHA256SUMS`.
 - `SECURITY.md`: how to report a vulnerability, and which versions get fixes.
+- `cairo php`: PHP's command line in the binary, for `artisan`, `bin/console`,
+  Composer and any script, with no PHP installed next to Cairo. It runs a
+  file, code (`-r`) or standard input with the SAPI `cli`, `$argv`, `STDIN`,
+  `STDOUT` and `STDERR`, PHP's exit status and the options `-d`, `-c`, `-n`,
+  `-l`, `-i`, `-m`, `-v`, `--ini` and `--ri`. The same extensions as the server
+  are there, Cairo's PDO pgsql driver included. `PHP_BINARY` is the binary,
+  which runs a script when it is given PHP's arguments, so that PHP code can
+  start PHP again; under the name `php` (a link, which the official image
+  has) it is the command line as well. Not there: the interactive shell
+  (`-a`), the built-in web server (`-S`) and `pcntl`.
+- A script of `cairo php` runs under Cairo's fiber scheduler, as a request
+  handler does. `async()`, `await()`, channels, `select()`, contexts with a
+  timeout and Cairo's clients work in it, and a wait in PHP's own functions
+  (`sleep()`, PDO, curl, streams) suspends only its fiber: 50 fibers that
+  each sleep a second, or 20 that each run a query of a second, take a
+  second together. A script that runs one fiber at a time waits as it does
+  under PHP and costs what it did. `CAIRO_SCHEDULER=off` runs a script
+  outside the scheduler, for a program that has an event loop of its own for
+  fibers (amphp, Revolt).
 
 ## [0.5.0] - 2026-11-23
 

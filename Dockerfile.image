@@ -5,9 +5,14 @@
 #   COPY --chown=cairo:cairo . /app
 FROM alpine:3.21
 # Not root: an app that is taken over cannot change the image or bind low ports.
-RUN adduser -D -u 1000 cairo
+# /app is the user's own, so that a command run in the image (composer
+# install, artisan) can write next to the app.
+RUN adduser -D -u 1000 cairo && mkdir /app && chown cairo:cairo /app
 ARG TARGETARCH
 COPY --chmod=755 dist/cairo-linux-${TARGETARCH} /usr/local/bin/cairo
+# Under the name php the binary is PHP's command line (cairo php): for
+# scripts that start with #!/usr/bin/env php and for tools that call php.
+RUN ln -s cairo /usr/local/bin/php
 WORKDIR /app
 USER cairo
 EXPOSE 8080

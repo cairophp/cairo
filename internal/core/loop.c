@@ -342,6 +342,16 @@ PHP_FUNCTION(cairo_next_event)
 	}
 }
 
+// cairo_stuck(): bool
+// Whether nothing on the calling thread can end a wait any more: no fiber
+// is ready, no parked fiber has a time that comes and none waits on a
+// socket. What Go still has to send does not count: the caller knows of that.
+PHP_FUNCTION(cairo_stuck)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+	RETURN_BOOL(cairo_parked_tick() < 0 && cairo_fibers_queued() == 0 && cairo_sockets_armed() == 0);
+}
+
 int64_t cairo_wait_began(int64_t request)
 {
 	if (!__atomic_load_n(&probed, __ATOMIC_SEQ_CST)) {

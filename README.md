@@ -38,6 +38,14 @@ return $app;
 cairo serve server.php
 ```
 
+The same binary is PHP's command line, so an image needs no second PHP for
+`artisan`, `bin/console` or Composer
+([PHP command line](https://github.com/cairophp/docs/blob/main/cli.md)):
+
+```sh
+cairo php artisan migrate
+```
+
 ## Install
 
 Cairo ships as one static binary for Linux on amd64 and arm64, with PHP 8.5,
@@ -72,6 +80,7 @@ yourself, see [Building](https://github.com/cairophp/docs/blob/main/building.md)
 The user documentation is in [cairophp/docs](https://github.com/cairophp/docs):
 
 - **Start:** [install](https://github.com/cairophp/docs/blob/main/install.md), [Docker](https://github.com/cairophp/docs/blob/main/docker.md),
+  [PHP command line](https://github.com/cairophp/docs/blob/main/cli.md),
   [how it works](https://github.com/cairophp/docs/blob/main/how-it-works.md), [stability](https://github.com/cairophp/docs/blob/main/stability.md)
 - **Serving:** [gRPC](https://github.com/cairophp/docs/blob/main/grpc.md), [middleware](https://github.com/cairophp/docs/blob/main/middleware.md),
   [response cache](https://github.com/cairophp/docs/blob/main/response-cache.md), [TLS](https://github.com/cairophp/docs/blob/main/tls.md)
@@ -125,7 +134,7 @@ every performance change with its measured effect, are in
 ## Layout
 
 ```
-cmd/cairo/            the binary (serve, gen)
+cmd/cairo/            the binary (serve, php, gen)
 internal/codegen/     cairo gen: PHP classes and clients from .proto files
 internal/core/        the core engine: embedded PHP (C bridge), PHP threads, the goroutines of Go operations, offload pool
 internal/core/php/    the core's PHP side (embedded in the binary); runtime.php is what every PHP thread runs

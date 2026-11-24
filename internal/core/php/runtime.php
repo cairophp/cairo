@@ -9,6 +9,8 @@
  * description is sent to Go (the declare phase). On worker threads the file
  * then runs the fiber scheduler: each request runs in its own Fiber, and a
  * fiber that waits on Go-backed I/O is suspended so the thread can run others.
+ * Under `cairo php` there is no server.php: the script of the command line
+ * runs under the scheduler as the thread's one request, in a fiber.
  */
 
 declare(strict_types=1);
@@ -55,6 +57,25 @@ namespace Cairo\Internal {
                 require_once __DIR__ . '/' . $onUse[$class];
             }
         });
+        if ($info['mode'] === 'cli') {
+            // Cairo's files are removed once the script begins (goCLILoaded),
+            // so what a first use would load is loaded now.
+            foreach (array_unique($onUse) as $file) {
+                require_once __DIR__ . '/' . $file;
+            }
+            if ($info['script'] === 0) {
+                \cairo_cli_script();   // not scheduled: the thread's own code, as under PHP
+                return;
+            }
+            // The script is this thread's one request, which is what
+            // 'isolated' says of a thread: it may wait with its only fiber.
+            $scheduler = new Scheduler((new App())->concurrency('isolated'));
+            if (!$scheduler->script($info['script'], static fn () => \cairo_cli_script())) {
+                file_put_contents('php://stderr', "cairo: the script waits and nothing can wake it: every fiber is asleep, or code with an event loop of its own suspended one. CAIRO_SCHEDULER=off runs a script outside Cairo's scheduler\n");
+                exit(255);
+            }
+            return;
+        }
         $app = (static fn (string $file): mixed => require $file)($info['server']);
         if (!$app instanceof App) {
             throw new \RuntimeException($info['server'] . ' must return a Cairo\App');

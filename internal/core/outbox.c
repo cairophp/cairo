@@ -96,6 +96,9 @@ static void tell(int tid, int kind, int64_t id)
 
 void cairo_outbox_ready(int tid)
 {
+	if (fd < 0) {
+		return;   // the command line: Go collects nothing
+	}
 	tell(tid, CAIRO_MSG_READY, 0);
 }
 

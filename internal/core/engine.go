@@ -67,6 +67,11 @@ type Engine struct {
 	runtimeFile string
 	log         *slog.Logger
 	phpIni      string
+	cli         bool // PHP's command line runs (RunCLI): no server file, one thread
+	// RunCLI: the call that the script is (0: it runs outside the
+	// scheduler), and what ends its context.
+	script    int64
+	scriptEnd context.CancelFunc
 
 	table   [maxThreads]atomic.Pointer[thread] // live PHP threads by thread id
 	workers []atomic.Pointer[thread]           // run requests as fibers; a slot's thread is replaced on recycle
@@ -411,13 +416,15 @@ func goPHPLog(tid C.int, msg *C.char, syslogType C.int) {
 func goCairoInfo(tid C.int) *C.char {
 	e := engine
 	mode := "declare"
-	if tid >= 0 {
+	if e.cli {
+		mode = "cli"
+	} else if tid >= 0 {
 		mode = "serve"
 		if e.table[int(tid)].Load().pool == poolOffload {
 			mode = "offload"
 		}
 	}
-	b, _ := json.Marshal(map[string]any{"mode": mode, "server": e.serverFile, "thread": int(tid), "php": phpAtStart, "classes": phpOnUse})
+	b, _ := json.Marshal(map[string]any{"mode": mode, "server": e.serverFile, "thread": int(tid), "script": e.script, "php": phpAtStart, "classes": phpOnUse})
 	return C.CString(string(b))
 }
 

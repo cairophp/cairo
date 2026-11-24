@@ -2,6 +2,7 @@
 // in PHP and served by Go.
 //
 //	cairo serve server.php [--threads N] [--offload-threads N]
+//	cairo php artisan migrate
 package main
 
 import (
@@ -29,6 +30,9 @@ import (
 var version = "dev"
 
 func main() {
+	if args, ok := phpCommand(os.Args); ok {
+		os.Exit(php(args))
+	}
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "cairo:", err)
 		os.Exit(1)
@@ -38,6 +42,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   cairo serve <server.php> [--threads N] [--offload-threads N] [--grace 30s] [--drain 0s] [--php-ini FILE]
+  cairo php [options] <file.php> [args...]    PHP's command line (cairo php -h)
   cairo gen [--out DIR] [-I DIR]... <file.proto>...
   cairo version`)
 }
@@ -48,6 +53,9 @@ func run(args []string) error {
 		return errors.New("missing command")
 	}
 	switch args[0] {
+	case "help", "-h", "--help":
+		usage()
+		return nil
 	case "version":
 		fmt.Println("cairo", version)
 		return nil

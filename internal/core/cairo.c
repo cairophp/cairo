@@ -32,6 +32,7 @@
 #include <ext/standard/php_fopen_wrappers.h>
 
 #include "cairo.h"
+#include "module.h"
 #include "extension.h"
 #include "outbox.h"
 #include "wire.h"
@@ -49,6 +50,11 @@ static __thread int cairo_tid = -1;
 int cairo_thread_id(void)
 {
 	return cairo_tid;
+}
+
+void cairo_thread_adopt(int tid)
+{
+	cairo_tid = tid;
 }
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_none, 0, 0, 0)
@@ -164,6 +170,7 @@ PHP_FUNCTION(cairo_go_call)
 
 PHP_FUNCTION(cairo_guard);
 PHP_FUNCTION(cairo_next_event);
+PHP_FUNCTION(cairo_stuck);
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_retire, 0, 0, 1)
 	ZEND_ARG_INFO(0, reason)
@@ -182,6 +189,8 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_info, arginfo_cairo_none)
 	PHP_FE(cairo_spec, arginfo_cairo_spec)
 	PHP_FE(cairo_next_event, arginfo_cairo_next_event)
+	PHP_FE(cairo_stuck, arginfo_cairo_none)
+	PHP_FE(cairo_cli_script, arginfo_cairo_none)
 	PHP_FE(cairo_respond, arginfo_cairo_respond)
 	PHP_FE(cairo_retire, arginfo_cairo_retire)
 	PHP_FE(cairo_wait_socket, arginfo_cairo_wait_socket)
@@ -198,6 +207,7 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_fiber_bind, arginfo_cairo_fiber_bind)
 	PHP_FE(cairo_fiber_reuse, arginfo_cairo_fiber_reuse)
 	PHP_FE(cairo_fiber_idle, arginfo_cairo_fiber_idle)
+	PHP_FE(cairo_fiber_alone, arginfo_cairo_none)
 	PHP_FE(cairo_ready, arginfo_cairo_ready)
 	PHP_FE(cairo_run_ready, arginfo_cairo_run_ready)
 	PHP_FE(cairo_park, arginfo_cairo_park)
@@ -452,7 +462,7 @@ static PHP_MINIT_FUNCTION(cairo)
 	return SUCCESS;
 }
 
-static zend_module_entry cairo_module_entry = {
+zend_module_entry cairo_module_entry = {
 	STANDARD_MODULE_HEADER,
 	"cairo",
 	cairo_functions,
@@ -650,7 +660,6 @@ static int run_file(const char *file)
 // cairo_boot starts PHP (module startup, then a request on this thread for
 // the declare phase) and runs the runtime script. php_ini is a php.ini path
 // (file or directory), or NULL to search the usual places.
-static void cairo_signals_onstack(void);
 
 int cairo_boot(const char *runtime_file, const char *php_ini)
 {
@@ -696,7 +705,7 @@ int cairo_boot(const char *runtime_file, const char *php_ini)
 // otherwise; Go's CPU profiler (SIGPROF) hit that. Handlers keep their
 // function and only gain SA_ONSTACK. Signals are process-wide, so after the
 // first PHP request startup this changes nothing.
-static void cairo_signals_onstack(void)
+void cairo_signals_onstack(void)
 {
 	static const int sigs[] = {SIGPROF, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2, SIGALRM};
 	for (size_t i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) {

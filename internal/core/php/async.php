@@ -21,7 +21,9 @@ namespace Cairo {
 
     /**
      * Run $fn concurrently in its own fiber, under the current context.
-     * It runs until its first suspension, then async() returns.
+     * It runs until its first suspension, then async() returns. Where no
+     * scheduler runs (an offload() job, a shutdown function of a script), $fn
+     * runs to its end before async() returns.
      */
     function async(callable $fn): Task
     {
@@ -82,6 +84,17 @@ namespace Cairo\Internal {
     function spawnTask(Context $parent, callable $fn): \Cairo\Task
     {
         $task = new \Cairo\Task();
+        if (!Scheduler::running()) {
+            // Nothing here could resume a fiber that waits: the task runs
+            // in place, as offload() does off the request threads.
+            try {
+                $task->result = $fn();
+            } catch (\Throwable $e) {
+                $task->error = $e;
+            }
+            $task->done = true;
+            return $task;
+        }
         $context = $parent->child();
         Scheduler::instance()->startFiber(static function () use ($fn, $task, $context): void {
             try {

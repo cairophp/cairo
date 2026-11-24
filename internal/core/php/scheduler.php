@@ -62,6 +62,8 @@ namespace Cairo\Internal {
          * thread from Go's events, nor from telling Go that it is not stuck.
          */
         private const TURN = 64;
+        /** The stack of the fiber that script() runs: what cairo_cli() in cli.c gives the thread. */
+        private const SCRIPT_STACK = 16 << 20;
         /** @var \SplQueue<\Closure> work to start from this loop, outside any fiber */
         private \SplQueue $later;
         /** @var array<int, mixed> handler id => resolved handler */
@@ -86,6 +88,10 @@ namespace Cairo\Internal {
         private bool $retireAsked = false;
         /** No request comes any more: the thread leaves once it holds nothing. */
         private bool $leaving = false;
+        /** @internal The thread runs the script of the command line (script()): it has no offload threads. */
+        public bool $script = false;
+        /** The script's fiber, for as long as the script runs: PHP destroys a suspended fiber that nothing holds. */
+        private ?\Fiber $main = null;
 
         public function __construct(private readonly App $app)
         {
@@ -252,8 +258,10 @@ namespace Cairo\Internal {
                     continue;
                 }
                 // A fiber that still waits for Go counts too: PHP would destroy
-                // it in the middle of its request when the thread ends.
-                if ($this->leaving && $this->active === 0 && $this->io === [] && $idle && $this->pending->isEmpty()) {
+                // it in the middle of its request when the thread ends. A script
+                // that nothing can wake any more would wait for ever.
+                if ($this->leaving && $this->io === [] && $idle && $this->pending->isEmpty()
+                    && ($this->active === 0 || ($this->script && \cairo_stuck()))) {
                     return;
                 }
                 // The thread sleeps there only when this is idle and no fiber is
@@ -277,6 +285,37 @@ namespace Cairo\Internal {
                     $event = !$idle && --$n > 0 ? \cairo_next_event(false, false) : null;
                 }
             }
+        }
+
+        /**
+         * @internal Runs $script, the script of the command line, as the one
+         * request this thread ever takes: in a fiber of its own, under a
+         * context of request $id, which Go holds a call for. The loop runs
+         * until the script and the fibers it started have ended; what runs
+         * after it (shutdown functions, destructors) finds no scheduler, and
+         * blocks as it does under PHP. Returns false when the script still
+         * waits and nothing is left that could wake it.
+         */
+        public function script(int $id, \Closure $script): bool
+        {
+            $this->script = $this->leaving = true;
+            $this->answers['script'] = function () use ($script): void {
+                ini_restore('fiber.stack_size');   // the fibers that the script starts are fibers
+                $this->main = \Fiber::getCurrent();
+                try {
+                    $script();
+                } finally {
+                    $this->main = null;
+                }
+            };
+            $this->routes['script'] = static fn (): string => 'script';
+            // The script gets a stack as large as its thread's, as it has
+            // under PHP, and not the 2 MiB of a fiber.
+            ini_set('fiber.stack_size', (string) self::SCRIPT_STACK);
+            $this->start(['type' => 'script', 'id' => $id]);
+            $this->run();
+            self::$instance = null;
+            return $this->active === 0;
         }
 
         /**
@@ -422,6 +461,21 @@ namespace Cairo\Internal {
         {
             return $this->busy && $this->io === [] && \cairo_parked() === 0 && \cairo_run_ready(0)
                 && $this->later->isEmpty() && \cairo_wait_here($fd, $write);
+        }
+
+        /**
+         * @internal Whether the current fiber, which runs under $ctx, waits
+         * with the whole thread: it is a fiber of a script, the thread could
+         * run nothing else meanwhile (no fiber is ready or waits for this
+         * one to suspend, none waits for Go or is parked on the thread), and
+         * nothing can end $ctx while it waits. So a script that runs one
+         * fiber at a time waits as it does under PHP, at PHP's cost, and its
+         * waits suspend fibers once it has several.
+         */
+        public function waitsAlone(Context $ctx): bool
+        {
+            return $this->script && !$ctx->scoped && $this->io === [] && \cairo_fiber_alone() && \cairo_parked() === 0
+                && $this->later->isEmpty() && $ctx->endedAs() === null;
         }
 
         /** @internal An async() task threw. */

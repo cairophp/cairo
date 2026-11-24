@@ -18,7 +18,7 @@ func mw(name string, opts any) Declaration {
 
 func build(t *testing.T, h http.Handler, decl ...Declaration) http.Handler {
 	t.Helper()
-	out, err := HTTP(h, decl, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	out, err := HTTP(h, decl, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,13 +68,13 @@ func TestMaxBody(t *testing.T) {
 
 func TestOrderAndUnknown(t *testing.T) {
 	// request_id declared first runs first, so access_log (inner) sees the id.
-	if _, err := HTTP(hello, []Declaration{{Name: "nope"}}, slog.Default()); err == nil {
+	if _, err := HTTP(hello, []Declaration{{Name: "nope"}}, slog.Default(), nil); err == nil {
 		t.Fatal("unknown middleware accepted")
 	}
 	if _, err := GRPC([]Declaration{{Name: "max_body"}}, slog.Default()); err == nil {
 		t.Fatal("max_body accepted for gRPC")
 	}
-	if _, err := HTTP(hello, []Declaration{mw("timeout", map[string]int{"seconds": 0})}, slog.Default()); err == nil {
+	if _, err := HTTP(hello, []Declaration{mw("timeout", map[string]int{"seconds": 0})}, slog.Default(), nil); err == nil {
 		t.Fatal("a timeout of 0 seconds accepted")
 	}
 }
@@ -91,7 +91,7 @@ func TestTimeoutSetsADeadline(t *testing.T) {
 	if left <= 0 || left > 500*time.Millisecond {
 		t.Fatalf("deadline in %s, want within 0.5s", left)
 	}
-	if _, err := HTTP(hello, []Declaration{mw("timeout", map[string]any{"seconds": 0})}, slog.Default()); err == nil {
+	if _, err := HTTP(hello, []Declaration{mw("timeout", map[string]any{"seconds": 0})}, slog.Default(), nil); err == nil {
 		t.Fatal("timeout of 0 accepted")
 	}
 	if ics, err := GRPC([]Declaration{mw("timeout", map[string]any{"seconds": 1})}, slog.Default()); err != nil || len(ics) != 2 { // panic recovery, then timeout

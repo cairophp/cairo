@@ -42,6 +42,9 @@ type Route struct {
 	Path   string `json:"path"`
 	// Cache is the route's ->cache(...), nil when it has none.
 	Cache *RouteCache `json:"cache,omitempty"`
+	// NoTimeout is the route's ->noTimeout(): the timeout middleware
+	// leaves its requests alone.
+	NoTimeout bool `json:"no_timeout,omitempty"`
 }
 
 // RouteCache lets Go answer repeated GET requests to a route from memory.

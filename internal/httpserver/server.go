@@ -14,6 +14,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/cairophp/cairo/internal/middleware"
@@ -52,12 +53,24 @@ func New(decl Declaration, php Dispatcher, log *slog.Logger, tel *telemetry.Tele
 		return nil, err
 	}
 	cache := newResponseCache(cacheMaxBytes)
+	var untimed func(*http.Request) bool
+	noTimeout := map[string]bool{}
 	for _, r := range decl.Routes {
 		pattern := r.Method + " " + r.Path
 		if r.Method == "*" {
 			pattern = r.Path // $http->fallback(): any method
 		}
-		mux.Handle(pattern, routeHandler(r, php, cache, log))
+		mux.Handle(pattern, routeHandler(r, php, cache, log, seconds(decl.WriteTimeout)))
+		if r.NoTimeout {
+			noTimeout[pattern] = true
+		}
+	}
+	if len(noTimeout) > 0 {
+		// The timeout runs before the route is known, so it asks.
+		untimed = func(req *http.Request) bool {
+			_, pattern := mux.Handler(req)
+			return noTimeout[pattern]
+		}
 	}
 	for _, s := range decl.Static {
 		prefix := "/" + strings.Trim(s.Prefix, "/") + "/"
@@ -70,7 +83,7 @@ func New(decl Declaration, php Dispatcher, log *slog.Logger, tel *telemetry.Tele
 			return nil, err
 		}
 	}
-	handler, err := middleware.HTTP(tel.HTTP(routes, decl.isOps), decl.Middleware, log)
+	handler, err := middleware.HTTP(tel.HTTP(routes, decl.isOps), decl.Middleware, log, untimed)
 	if err != nil {
 		return nil, err
 	}
@@ -141,8 +154,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.srv.Shutdown(ctx)
 }
 
-// event is a request as PHP receives it (Cairo\Http\Request).
+// event is a request as PHP receives it (Cairo\Http\Request). It is also
+// the context of its call: the request's own, with the client that PHP may
+// answer in pieces (stream.go).
 type event struct {
+	context.Context
+	w      http.ResponseWriter
+	stream atomic.Pointer[stream] // the answer, once PHP has begun to stream it
+	stall  time.Duration          // the server's write timeout, which a stream gives each write
+
 	route   int
 	name    string // "GET /users/{id}", for logs
 	method  string
@@ -218,7 +238,7 @@ func (ev *event) AppendWire(b []byte, id int64, deadline float64) []byte {
 // (wire.TailEvent).
 func (ev *event) Tail() []byte { return ev.body }
 
-func routeHandler(r Route, php Dispatcher, cache *responseCache, log *slog.Logger) http.Handler {
+func routeHandler(r Route, php Dispatcher, cache *responseCache, log *slog.Logger, stall time.Duration) http.Handler {
 	var names []string
 	for _, m := range paramRe.FindAllStringSubmatch(r.Path, -1) {
 		names = append(names, m[1])
@@ -252,10 +272,15 @@ func routeHandler(r Route, php Dispatcher, cache *responseCache, log *slog.Logge
 			}
 			return
 		}
-		ev.name = name
+		ev.name, ev.stall = name, stall
 		defer cleanup()
 		if !cached {
-			resp, err := callPHP(req.Context(), php, ev)
+			resp, err := callPHP(ev, php, ev)
+			if st := ev.stream.Load(); st != nil {
+				resp.free()
+				st.finish(err != nil || resp.status >= http.StatusInternalServerError)
+				return
+			}
 			if err != nil {
 				writeError(w, req, err, log)
 				return
@@ -318,6 +343,8 @@ func newEvent(w http.ResponseWriter, req *http.Request, route int, names []strin
 		body = nil // like PHP, php://input is empty for multipart/form-data
 	}
 	return &event{
+		Context: req.Context(),
+		w:       w,
 		route:   route,
 		method:  req.Method,
 		path:    req.URL.Path,

@@ -25,7 +25,9 @@ type Declaration struct {
 }
 
 // HTTP wraps h with the declared middleware, first declared outermost.
-func HTTP(h http.Handler, decl []Declaration, log *slog.Logger) (http.Handler, error) {
+// untimed, when not nil, says which requests the timeout leaves alone: those
+// of a route that lasts as long as its client stays.
+func HTTP(h http.Handler, decl []Declaration, log *slog.Logger, untimed func(*http.Request) bool) (http.Handler, error) {
 	for i := len(decl) - 1; i >= 0; i-- {
 		m := decl[i]
 		var err error
@@ -44,7 +46,7 @@ func HTTP(h http.Handler, decl []Declaration, log *slog.Logger) (http.Handler, e
 		case "timeout":
 			var d time.Duration
 			if d, err = timeoutOf(m); err == nil {
-				h = timeoutHTTP(h, d)
+				h = timeoutHTTP(h, d, untimed)
 			}
 		default:
 			err = fmt.Errorf("unknown http middleware %q", m.Name)
@@ -71,8 +73,12 @@ func timeoutOf(m Declaration) (time.Duration, error) {
 }
 
 // timeoutHTTP gives each request a deadline; Dispatch answers 504 past it.
-func timeoutHTTP(h http.Handler, d time.Duration) http.Handler {
+func timeoutHTTP(h http.Handler, d time.Duration, untimed func(*http.Request) bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if untimed != nil && untimed(r) {
+			h.ServeHTTP(w, r)
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), d)
 		defer cancel()
 		h.ServeHTTP(w, r.WithContext(ctx))

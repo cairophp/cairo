@@ -59,7 +59,7 @@ func browserRequest() *http.Request {
 // Cairo's own code costs between net/http and the PHP thread.
 func BenchmarkAPIRoute(b *testing.B) {
 	mux := http.NewServeMux()
-	mux.Handle("GET /api/items/{id}", routeHandler(Route{ID: 1, Method: "GET", Path: "/api/items/{id}"}, newAPIPHP(), newResponseCache(cacheMaxBytes), slog.Default()))
+	mux.Handle("GET /api/items/{id}", routeHandler(Route{ID: 1, Method: "GET", Path: "/api/items/{id}"}, newAPIPHP(), newResponseCache(cacheMaxBytes), slog.Default(), 0))
 	req := browserRequest()
 	b.ReportAllocs()
 	for b.Loop() {

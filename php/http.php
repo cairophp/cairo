@@ -107,6 +107,21 @@ namespace Cairo\Http {
         }
 
         /**
+         * Middleware::timeout() does not apply to the route declared just
+         * before this call: for an answer that lasts as long as its client
+         * stays, as Response::events() does, or a long download.
+         */
+        public function noTimeout(): static
+        {
+            $last = array_key_last($this->routes);
+            if ($last === null) {
+                throw new \LogicException('noTimeout() applies to the route declared before it: declare a route first');
+            }
+            $this->routes[$last]['no_timeout'] = true;
+            return $this;
+        }
+
+        /**
          * Handle every request no other route or static path matches, with
          * any method: a Cairo handler, a PSR-15 RequestHandlerInterface, a
          * Symfony HttpKernelInterface or a Laravel HTTP Kernel (see
@@ -349,6 +364,23 @@ namespace Cairo\Http {
             return (string) ($this->event['body'] ?? '');
         }
 
+        /**
+         * Sends 103 Early Hints ahead of the response, so that the browser
+         * can start on what the page needs while the handler makes it:
+         *
+         *     $req->earlyHints(['Link' => '</app.css>; rel=preload; as=style']);
+         *
+         * @param array<string, string|list<string>> $headers
+         */
+        public function earlyHints(array $headers): void
+        {
+            $lists = [];
+            foreach ($headers as $name => $value) {
+                $lists[(string) $name] = array_map('strval', (array) $value);
+            }
+            \Cairo\Internal\Go::call('http.hints', ['status' => 103, 'headers' => $lists]);
+        }
+
         public function json(): mixed
         {
             return json_decode($this->body(), true, 512, JSON_THROW_ON_ERROR);
@@ -428,12 +460,71 @@ namespace Cairo\Http {
 
     final class Response
     {
+        /** What sends the body of a streamed answer, once the head is with the client. */
+        private ?\Closure $writer = null;
+
         /** @param array<string, string|list<string>> $headers */
         public function __construct(
             public readonly int $status = 200,
             public readonly array $headers = [],
             public readonly string $body = '',
         ) {
+        }
+
+        /**
+         * An answer whose body is sent while $writer runs: the client has
+         * the status and the headers first, then every Stream::write() as it
+         * is made, and the answer ends when $writer returns.
+         *
+         *     Response::stream(function (Stream $out) {
+         *         foreach (rows() as $row) {
+         *             $out->write(json_encode($row) . "\n");
+         *         }
+         *     }, headers: ['Content-Type' => 'application/x-ndjson']);
+         *
+         * $writer runs in the request's fiber and may wait like any handler.
+         * When the client leaves, its next wait or write() throws
+         * Cairo\Context\Canceled. A route with cache() cannot stream.
+         *
+         * @param callable(Stream): void $writer
+         * @param array<string, string|list<string>> $headers
+         */
+        public static function stream(callable $writer, int $status = 200, array $headers = []): self
+        {
+            $response = new self($status, $headers);
+            $response->writer = $writer(...);
+            return $response;
+        }
+
+        /**
+         * A Server-Sent Events answer: $source sends events for as long as
+         * it runs, and a browser reads them with EventSource.
+         *
+         *     Response::events(function (Events $events) use ($ctx) {
+         *         while (true) {
+         *             $events->send(json_encode(next_price()), event: 'price');
+         *             \Cairo\sleep(1);
+         *         }
+         *     });
+         *
+         * Give the route noTimeout() when the server has a timeout.
+         *
+         * @param callable(Events): void $source
+         * @param array<string, string|list<string>> $headers
+         */
+        public static function events(callable $source, array $headers = []): self
+        {
+            return self::stream(static fn (Stream $out) => $source(new Events($out)), 200, $headers + [
+                'Content-Type' => 'text/event-stream',
+                'Cache-Control' => 'no-cache',
+                'X-Accel-Buffering' => 'no',   // a proxy of nginx's kind passes each event on
+            ]);
+        }
+
+        /** @internal the writer of a streamed answer */
+        public function writer(): ?\Closure
+        {
+            return $this->writer;
         }
 
         public static function text(string $body, int $status = 200): self

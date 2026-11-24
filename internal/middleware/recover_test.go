@@ -16,7 +16,7 @@ import (
 func TestHTTPPanicBecomes500(t *testing.T) {
 	var logs bytes.Buffer
 	boom := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") })
-	h, err := HTTP(boom, nil, slog.New(slog.NewTextHandler(&logs, nil)))
+	h, err := HTTP(boom, nil, slog.New(slog.NewTextHandler(&logs, nil)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func TestHTTPPanicBecomes500(t *testing.T) {
 
 func TestHTTPAbortHandlerStillAborts(t *testing.T) {
 	abort := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(http.ErrAbortHandler) })
-	h, _ := HTTP(abort, nil, slog.New(slog.DiscardHandler))
+	h, _ := HTTP(abort, nil, slog.New(slog.DiscardHandler), nil)
 	defer func() {
 		if v := recover(); v != http.ErrAbortHandler {
 			t.Fatalf("recovered %v, want http.ErrAbortHandler passed on", v)

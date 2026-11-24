@@ -17,7 +17,7 @@ func (constPHP) DispatchLent(context.Context, wire.Event) ([]byte, []byte, func(
 }
 
 func benchRoute(b *testing.B, c *RouteCache) {
-	h := routeHandler(Route{ID: 1, Method: "GET", Path: "/", Cache: c}, constPHP{}, newResponseCache(cacheMaxBytes), slog.Default())
+	h := routeHandler(Route{ID: 1, Method: "GET", Path: "/", Cache: c}, constPHP{}, newResponseCache(cacheMaxBytes), slog.Default(), 0)
 	req := httptest.NewRequest("GET", "/", nil)
 	b.ReportAllocs()
 	for b.Loop() {

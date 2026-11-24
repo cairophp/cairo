@@ -24,6 +24,8 @@ namespace Cairo\Internal {
     {
         /** @var array<string, true> */
         public static array $files = [];
+        /** declare, serve or offload until serve() has run; '' after */
+        public static string $mode = '';
     }
 
     /**
@@ -88,14 +90,37 @@ namespace Cairo\Internal {
             // threads that run (startgate.h): this thread compiles for itself.
             ini_set('opcache.enable', '0');
         }
+        Runtime::$mode = $info['mode'];
+        // The served file is the script, as under any server: a framework's
+        // front controller finds itself there (Symfony's autoload_runtime.php).
+        $_SERVER['SCRIPT_FILENAME'] = $info['server'];
         $app = (static fn (string $file): mixed => require $file)($info['server']);
+        if (Runtime::$mode === '') {
+            return;   // the file served its App itself
+        }
         if (!$app instanceof App) {
             throw new \RuntimeException($info['server'] . ' must return a Cairo\App');
         }
+        serve($app);
+    }
+
+    /**
+     * Declare $app's servers and serve them on this thread, until the server
+     * stops. server.php returns its App and Cairo calls this; a framework's
+     * runner that never returns to server.php (Symfony's runtime ends the
+     * script with exit) calls it itself.
+     */
+    function serve(App $app): void
+    {
+        if (Runtime::$mode === '') {
+            throw new \LogicException('Cairo\Internal\serve(): the thread serves already, or is not a thread of cairo serve');
+        }
+        $mode = Runtime::$mode;
+        Runtime::$mode = '';
         \cairo_spec(json_encode($app->spec(), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
-        if ($info['mode'] === 'serve') {
+        if ($mode === 'serve') {
             (new Scheduler($app))->run();
-        } elseif ($info['mode'] === 'offload') {
+        } elseif ($mode === 'offload') {
             (new OffloadWorker())->run();
         }
     }

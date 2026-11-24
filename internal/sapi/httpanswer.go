@@ -11,6 +11,7 @@ import "C"
 // response to Go.
 func init() {
 	registerPHP("http.php")
+	registerPHP("http_response.php")
 	registerPHP("form.php")
 	registerPHP("superglobals.php")
 	registerPHP("http_adapter.php")

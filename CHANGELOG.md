@@ -9,6 +9,22 @@ change the PHP API; patch versions do not.
 
 ### Added
 
+- Reloading the code of a running server. `cairo serve --watch` looks at the
+  files of the app (`*.php`, `*.twig`, `*.yaml`, `*.yml`, `.env*` and
+  `composer.lock` under the server file's directory, or under each
+  `--watch-path`; not `vendor`, `node_modules`, `storage`, `var`) and gives
+  the server the new code when one changes, and `kill -USR1 <pid>` does the
+  same once, for a deploy. No request is refused or fails: each PHP thread is
+  replaced by one that has read the code anew, as a recycled thread is, and
+  finishes the requests it holds with the code they began with. The first
+  new thread is tried alone, so code that does not start (a parse error, an
+  exception in `server.php`) replaces nothing and the server runs on. What
+  `server.php` declares (servers, routes, settings) is built once per
+  process: when that changes, `--watch` starts the process anew in place,
+  and the signal refuses and says so. The watcher looks at the files' times
+  every 250 ms instead of using the kernel's file events, so it needs no
+  dependency and works in a directory shared with a container. See
+  `examples/reload`.
 - The Mercure hub. `$http->mercure()` makes a server the hub of the
   [Mercure](https://mercure.rocks) protocol at `/.well-known/mercure`: Go
   serves every subscriber, so a subscriber holds no PHP thread, fiber or

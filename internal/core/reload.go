@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -22,6 +23,12 @@ import (
 // quarter of the threads at a time, so that a reload never doubles the
 // memory of PHP. The offload threads end after the jobs they hold and start
 // anew under their ids, where the jobs that came meanwhile wait.
+//
+// The new code goes into opcache beside the old, which threads still run.
+// When opcache asks for its restart on the way (the cache is full, and what
+// the reload replaced is stale), no thread may start any more
+// (startgate.h): the reload ends with ErrRestartNeeded, and the new process
+// that follows has the new code.
 
 // ErrDeclarationChanged is Reload's error when server.php now declares
 // other servers, routes or settings: those are built once, when the process
@@ -50,10 +57,15 @@ func (e *Engine) Reload() error {
 	case <-e.shutdownCh:
 		return nil
 	}
+	if why := noStarts(); why != "" {
+		// opcache is about to empty its cache: the new code is served by
+		// a new process.
+		err := fmt.Errorf("%w: %s", ErrRestartNeeded, why)
+		e.report(err)
+		return err
+	}
 	switch {
 	case first.came.Load():
-	case first.refused.Load():
-		return ErrRestartNeeded // opcache has a restart to do (startgate.h)
 	case first.differs.Load():
 		return ErrDeclarationChanged
 	default:

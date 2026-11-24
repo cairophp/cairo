@@ -56,10 +56,6 @@ int cairo_thread_id(void)
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_none, 0, 0, 0)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_restart, 0, 0, 1)
-	ZEND_ARG_TYPE_INFO(0, why, IS_STRING, 0)
-ZEND_END_ARG_INFO()
-
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_spec, 0, 0, 1)
 	ZEND_ARG_INFO(0, json)
 ZEND_END_ARG_INFO()
@@ -206,7 +202,6 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_wait_here, arginfo_cairo_wait_here)
 	PHP_FE(cairo_offload_send, arginfo_cairo_offload_send)
 	PHP_FE(cairo_offload_done, arginfo_cairo_offload_done)
-	PHP_FE(cairo_restart, arginfo_cairo_restart)
 	PHP_FE(cairo_fiber_call, arginfo_cairo_fiber_call)
 	PHP_FE(cairo_op_cancel, arginfo_cairo_op_cancel)
 	PHP_FE(cairo_go_call, arginfo_cairo_go_call)

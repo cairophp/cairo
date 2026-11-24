@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -347,4 +348,83 @@ func TestWatchPath(t *testing.T) {
 	app.answers("/", "changed")
 	app.declare("/added", "added")
 	app.answers("/added", "added")
+}
+
+// filler is half a megabyte of PHP functions whose names begin with name.
+func filler(name string) string {
+	var code strings.Builder
+	for i := 0; i < 4000; i++ {
+		n := strconv.Itoa(i)
+		code.WriteString("function " + name + "_" + n + "(): string { static $t = ['" + strings.Repeat(name+"x", 16) + "', " + n + "]; return $t[0]; }\n")
+	}
+	return code.String()
+}
+
+// reloadsUntilRestart calls change and sends the reload signal, again and
+// again, until the server starts anew in place. It returns how many times.
+func (a *reloadApp) reloadsUntilRestart(change func(v int)) int {
+	a.t.Helper()
+	for v := 1; v <= 12; v++ {
+		change(v)
+		if err := a.cmd.Process.Signal(syscall.SIGUSR1); err != nil {
+			a.t.Fatal(err)
+		}
+		restarted := false
+		waitUntil(a.t, "the reload is done", func() bool {
+			log := a.logs.String()
+			restarted = strings.Contains(log, "restarting in place")
+			return restarted || strings.Count(log, "php code reloaded") >= v
+		})
+		if restarted {
+			a.logged("http server listening", 2)
+			if log := a.logs.String(); strings.Contains(log, "level=ERROR") {
+				a.t.Errorf("the restart logged an error:\n%s", log)
+			}
+			return v
+		}
+	}
+	a.t.Fatal("12 reloads filled no cache")
+	return 0
+}
+
+// The new code goes into opcache beside the old, which threads still run.
+// A deploy to a new directory, with a link pointed at it, leaves the whole
+// old release there, and after a few of them opcache asks for its restart
+// while the first new thread reads the code. The reload then gives the
+// server a new process, whose cache is empty, instead of a thread that
+// would wipe the cache under the others (startgate.h).
+func TestReloadThatFillsOpcacheRestartsInPlace(t *testing.T) {
+	if os.Getenv("CAIRO_TEST_NO_OPCACHE") != "" {
+		t.Skip("this binary has no opcache")
+	}
+	root := t.TempDir()
+	release := func(v int) string {
+		name := "r" + strconv.Itoa(v)
+		copyReload(t, filepath.Join(root, name))
+		code := "<?php\n\nfunction greeting(): string\n{\n    return '" + name + "';\n}\n" + filler(name)
+		if err := os.WriteFile(filepath.Join(root, name, "greeting.php"), []byte(code), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return name
+	}
+	current := filepath.Join(root, "current")
+	if err := os.Symlink(release(0), current); err != nil {
+		t.Fatal(err)
+	}
+	ini, _ := filepath.Abs("testdata/opcache/php.ini")
+	app := serveReload(t, current, nil, "--threads", "2", "--php-ini", ini)
+	app.answers("/where", "r0")
+
+	last := app.reloadsUntilRestart(func(v int) {
+		next := filepath.Join(root, "next")
+		if err := os.Symlink(release(v), next); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(next, current); err != nil {
+			t.Fatal(err)
+		}
+	})
+	app.logged("opcache's memory is full", 1)
+	app.answers("/where", "r"+strconv.Itoa(last))
+	app.answers("/", "r"+strconv.Itoa(last))
 }

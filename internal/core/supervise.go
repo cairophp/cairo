@@ -94,7 +94,7 @@ func (e *Engine) threadExited(t *thread, status int) {
 		// It ran no PHP, and none that is started after it would: what is
 		// queued for a thread whose place it was to take waits for the new
 		// process, or for the end of this one.
-		e.report(fmt.Errorf("%w: %s", ErrRestartNeeded, C.GoString(C.cairo_startgate_reason())))
+		e.report(fmt.Errorf("%w: %s", ErrRestartNeeded, noStarts()))
 		return
 	}
 	if t.trial.Load() && !t.came.Load() {
@@ -173,6 +173,9 @@ func (e *Engine) threadExited(t *thread, status int) {
 		e.log.Warn("php thread restarted", "thread", t.id)
 	}()
 }
+
+// noStarts is why no PHP thread starts any more (startgate.h), or "".
+func noStarts() string { return C.GoString(C.cairo_startgate_reason()) }
 
 // level is where the log says that the thread was replaced: a reload says
 // it once, for all of its threads.

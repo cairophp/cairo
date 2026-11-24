@@ -1,8 +1,6 @@
 #ifndef CAIRO_STARTGATE_H
 #define CAIRO_STARTGATE_H
 
-#include <php.h>
-
 // A PHP thread that starts while others run, and opcache.
 //
 // opcache restarts its cache (it is full, or the app called opcache_reset())
@@ -28,13 +26,7 @@ void cairo_startgate_init(void);
 // -1 when PHP could not start the request, or CAIRO_START_REFUSED.
 int cairo_startgate_startup(void);
 
-// Why no thread starts any more, for the log. "" when threads start.
+// Why opcache scheduled its restart, for the log. "" when it has not.
 const char *cairo_startgate_reason(void);
-
-// cairo_restart(string $why): void
-// Has the process start anew for a reason of Cairo's own (a reload found
-// opcache full): no thread starts from now on, as after a restart that
-// opcache scheduled. The thread that calls serves on.
-PHP_FUNCTION(cairo_restart);
 
 #endif

@@ -1,7 +1,6 @@
 // A PHP thread that starts while others run, and opcache. See startgate.h.
 
 #include <pthread.h>
-#include <string.h>
 
 #include <php.h>
 #include <main/php_main.h>
@@ -54,21 +53,6 @@ int cairo_startgate_startup(void)
 	}
 	pthread_mutex_unlock(&gate);
 	return rc;
-}
-
-PHP_FUNCTION(cairo_restart)
-{
-	char *why;
-	size_t len;
-	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_STRING(why, len)
-	ZEND_PARSE_PARAMETERS_END();
-	pthread_mutex_lock(&gate);
-	if (scheduled == NULL) {
-		char *kept = strndup(why, len);   // for the life of the process
-		scheduled = kept != NULL ? kept : "a reload asked for it";
-	}
-	pthread_mutex_unlock(&gate);
 }
 
 const char *cairo_startgate_reason(void)

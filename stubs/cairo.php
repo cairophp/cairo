@@ -1209,7 +1209,66 @@ namespace Cairo\Http {
         {
         }
 
-        /** @internal the writer of a streamed answer */
+        /**
+         * A Server-Sent Events answer that Go serves: the client gets what
+         * is published to $topics (Topic::publish()) for as long as it
+         * stays, and no PHP runs for it. The handler decides who may listen
+         * to what, returns this, and its fiber ends.
+         *
+         *     $http->get('/news', fn (Request $req): Response =>
+         *         Response::eventsFrom(['news', 'user.' . userOf($req)]));
+         *
+         * Go sends a comment every $keepAlive seconds, so that no proxy
+         * closes a quiet connection (0 for none). Nothing is kept for a
+         * client that connects again: it hears what is published from then.
+         *
+         * @param string|list<string> $topics 64 at most
+         * @param array<string, string|list<string>> $headers
+         */
+        public static function eventsFrom(string|array $topics, array $headers = [], float $keepAlive = 15.0): self
+        {
+        }
+
+        /**
+         * A WebSocket: the connection becomes one, and $handler runs with
+         * it in the request's fiber until it returns, which closes the
+         * socket.
+         *
+         *     $http->get('/chat', fn (Request $req): Response => Response::websocket(function (WebSocket $ws): void {
+         *         $ws->subscribe('room');
+         *         while (($message = $ws->receive()) !== null) {
+         *             Topic::publish('room', $message->data);
+         *         }
+         *     }));
+         *
+         * The handler of the route runs first, as for any request: it may
+         * answer with another Response instead (a 401, say), and only this
+         * one makes the handshake. A page of another site may not connect:
+         * the browser's Origin must be the request's own host, or match one
+         * of $origins (a host, with * for any run of characters:
+         * 'app.example.com', '*.example.com'). $protocols are the
+         * subprotocols the client may choose from, in your order of
+         * preference. A message of the client over $maxMessage bytes closes
+         * the socket. Go pings the client every $ping seconds and drops one
+         * that does not answer (0 for no pings).
+         *
+         * Give the route noTimeout() when the server has a timeout.
+         *
+         * @param callable(WebSocket): void $handler
+         * @param list<string> $origins
+         * @param list<string> $protocols
+         */
+        public static function websocket(
+            callable $handler,
+            array $origins = [],
+            array $protocols = [],
+            int $maxMessage = 65536,
+            float $ping = 30.0,
+        ): self
+        {
+        }
+
+        /** @internal what answers in place of a body */
         public function writer(): ?\Closure
         {
         }
@@ -1293,6 +1352,124 @@ namespace Cairo\Http {
 
         /** Tells the browser how long to wait before it connects again. */
         public function retry(int $milliseconds): void
+        {
+        }
+    }
+}
+
+namespace Cairo\Http {
+    use Cairo\Context;
+
+    /** One message of a WebSocket. */
+    final class Message
+    {
+        public function __construct(
+            public readonly string $data,
+            public readonly bool $binary = false,
+        )
+        {
+        }
+    }
+
+    /**
+     * A WebSocket, in the fiber of the request that asked for it
+     * (Response::websocket()). The socket ends when its handler returns.
+     *
+     * A client that leaves does not cut its handler off: receive() still
+     * returns what the client had sent, then null, and send() throws.
+     */
+    final class WebSocket
+    {
+        /**
+         * @internal Makes the running request's connection a WebSocket and
+         * runs $handler with it. A handshake that fails is answered by Go,
+         * and $handler does not run.
+         *
+         * @param callable(self): void $handler
+         * @param array{origins: list<string>, protocols: list<string>, max_message: int, ping: float} $options
+         */
+        public static function serve(callable $handler, array $options): void
+        {
+        }
+
+        /**
+         * The next message of the client. It waits, its fiber only, until
+         * one arrives, and returns null once the client has closed or gone
+         * and all that it sent has been received.
+         *
+         * @throws Context\Canceled the request was ended, by a timeout or a server that stops
+         */
+        public function receive(): ?Message
+        {
+        }
+
+        /**
+         * Sends a message: text, which must be UTF-8, or binary. It returns
+         * at once while Go has room for it, and waits, its fiber only,
+         * behind a client that reads slowly.
+         *
+         * @throws Context\Canceled the client has gone
+         */
+        public function send(string $data, bool $binary = false): void
+        {
+        }
+
+        /**
+         * Closes the socket with a status of your choosing, once what was
+         * sent is with the client. A handler that just returns closes it
+         * with 1000; statuses 3000 to 4999 are an app's own. receive()
+         * returns what the client had still sent, then null.
+         */
+        public function close(int $code = 1000, string $reason = ''): void
+        {
+        }
+
+        /**
+         * The client gets what is published to these topics
+         * (Topic::publish()) as text messages, sent by Go: this fiber does
+         * not run for them.
+         */
+        public function subscribe(string ...$topics): void
+        {
+        }
+
+        /** Ends that for these topics. A socket that ends leaves all of its topics. */
+        public function unsubscribe(string ...$topics): void
+        {
+        }
+    }
+
+    /**
+     * Topics: a message is published once and Go sends it to every client
+     * that listens, the WebSockets that subscribed (WebSocket::subscribe())
+     * and the Server-Sent Events answers of Response::eventsFrom(). The
+     * topics are this server process's, and nothing is kept: a client
+     * hears what is published while it listens.
+     */
+    final class Topic
+    {
+        /**
+         * Publishes $data to $topic and returns how many clients listen to
+         * it. It does not wait for them, and may be called from anywhere:
+         * a handler, a task, defer(). A WebSocket gets $data as a text
+         * message; a Server-Sent Events client gets an event with it,
+         * named $event when given, and with $id.
+         *
+         * A client that reads more slowly than its topics are published to
+         * is dropped once 64 messages wait for it, and connects again.
+         */
+        public static function publish(string $topic, string $data, ?string $event = null, ?string $id = null): int
+        {
+        }
+
+        /**
+         * @internal Makes the running request's answer the events of
+         * $topics, which Go serves once this fiber has ended.
+         *
+         * @param list<string> $topics
+         * @param array<string, string|list<string>> $headers
+         */
+        public static function listen(array $topics, array $headers, float $keepAlive): void
         {
         }
     }

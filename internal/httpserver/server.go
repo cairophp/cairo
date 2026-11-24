@@ -65,6 +65,8 @@ func New(decl Declaration, php Dispatcher, log *slog.Logger, tel *telemetry.Tele
 		ErrorLog:     slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
 	srv.RegisterOnShutdown(stopStreams)
+	srv.RegisterOnShutdown(stopSockets)
+	srv.RegisterOnShutdown(stopTopics)
 	srv.RegisterOnShutdown(hub.Stop)
 	var secure *servertls.TLS
 	if decl.TLS != nil {
@@ -201,7 +203,8 @@ type event struct {
 	w      http.ResponseWriter
 	mu     sync.Mutex    // holds the handler back while an operation of PHP writes (writerOf)
 	ended  bool          // the handler is returning: w is not to be used
-	stream *stream       // the answer, once PHP has begun to stream it
+	began  began         // what PHP made of the client instead of answering: a stream, a WebSocket
+	req    *http.Request // what a WebSocket's handshake reads (websocket.go)
 	stall  time.Duration // the server's write timeout, which a stream gives each write
 	upload *bodyStream   // the request's body, when PHP reads it in pieces (bodystream.go)
 
@@ -401,7 +404,7 @@ func pathParams(req *http.Request, names []string) map[string]string {
 
 // fill sets what an event has of its request apart from the body.
 func (ev *event) fill(w http.ResponseWriter, req *http.Request, route int, params map[string]string) {
-	ev.Context, ev.w = req.Context(), w
+	ev.Context, ev.w, ev.req = req.Context(), w, req
 	ev.route, ev.params = route, params
 	ev.method, ev.path, ev.query = req.Method, req.URL.Path, req.URL.RawQuery
 	ev.headers, ev.host, ev.proto = req.Header, req.Host, req.Proto

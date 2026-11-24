@@ -4,6 +4,7 @@ go 1.27.4
 
 require (
 	github.com/bufbuild/protocompile v0.14.1
+	github.com/coder/websocket v1.8.15
 	github.com/dunglas/mercure v1.1.6
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/prometheus/client_golang v1.25.0

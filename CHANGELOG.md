@@ -48,6 +48,21 @@ change the PHP API; patch versions do not.
   `response()->stream()`, `eventStream()`, downloads) are sent while they
   are made instead of being collected first, and a PSR-7 body of unknown
   size or above 1 MiB is sent in pieces. See `examples/streaming`.
+- WebSockets. `Response::websocket(fn (WebSocket $ws) => ...)` makes the
+  request's connection a WebSocket and runs the function with it in the
+  request's fiber: `$ws->receive()`, `$ws->send()`, `$ws->close()`. The
+  route's handler runs first, so it can answer 401 instead, and a page of
+  another site is refused unless its origin is named. One PHP thread holds
+  as many sockets as it has clients; a slow client holds back only its own
+  handler; Go pings the clients and drops one that does not answer. A
+  server that stops tells its clients to go away (status 1001).
+- Topics. `Topic::publish($topic, $data)` is one call, and Go sends the
+  message to every client that listens: the WebSockets that called
+  `$ws->subscribe()`, and the Server-Sent Events clients of
+  `Response::eventsFrom($topics)`, which hold no PHP memory and no fiber
+  while they listen. A client that does not keep up is dropped instead of
+  holding the others back. The topics are the process's own and keep
+  nothing. See `examples/websocket`.
 - HTTPS and HTTP/2 on the HTTP server, so that Cairo needs no proxy in front
   of it. `$http->tls($certFile, $keyFile)` serves a certificate from two PEM
   files and reads them again when they change. `$http->autoTls($domains,

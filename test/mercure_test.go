@@ -180,9 +180,9 @@ func (s *subscriber) event() map[string]string {
 	}
 }
 
-// publish asks the example to publish the body with mercure_publish() and
+// publishUpdate asks the example to publish the body with mercure_publish() and
 // returns the update's id.
-func publish(t *testing.T, base, query, data string) string {
+func publishUpdate(t *testing.T, base, query, data string) string {
 	t.Helper()
 	resp, err := http.Post(base+"/publish?"+query, "text/plain", strings.NewReader(data))
 	if err != nil {
@@ -206,17 +206,17 @@ func TestMercurePublishReachesSubscribers(t *testing.T) {
 	news, both := subscribe(t, base, match(newsTopic), ""), subscribe(t, base, match(newsTopic, "https://example.com/sport"), "")
 	other := subscribe(t, base, match("https://example.com/weather"), "")
 
-	id := publish(t, base, "type=headline", "first\nsecond line")
+	id := publishUpdate(t, base, "type=headline", "first\nsecond line")
 	for _, s := range []*subscriber{news, both} {
 		if ev := s.event(); ev["id"] != id || ev["data"] != "second line" || ev["event"] != "headline" {
 			t.Errorf("event = %v, want id %s", ev, id)
 		}
 	}
-	weather := publish(t, base, "topic="+url.QueryEscape("https://example.com/weather"), "rain")
+	weather := publishUpdate(t, base, "topic="+url.QueryEscape("https://example.com/weather"), "rain")
 	if ev := other.event(); ev["id"] != weather || ev["data"] != "rain" {
 		t.Errorf("the other topic's subscriber got %v", ev)
 	}
-	sport := publish(t, base, "topic="+url.QueryEscape("https://example.com/sport")+"&id=score-1", "1:0")
+	sport := publishUpdate(t, base, "topic="+url.QueryEscape("https://example.com/sport")+"&id=score-1", "1:0")
 	if ev := both.event(); sport != "score-1" || ev["id"] != "score-1" || ev["data"] != "1:0" {
 		t.Errorf("an update with its own id: %v (%s)", ev, sport)
 	}
@@ -264,11 +264,11 @@ func TestMercureTokens(t *testing.T) {
 	allowed := subscribe(t, base, match(newsTopic), accessToken(t, base, "subscribe", newsTopic))
 	elsewhere := subscribe(t, base, match(newsTopic), accessToken(t, base, "subscribe", "https://example.com/sport"))
 
-	secret := publish(t, base, "private=1", "for some")
+	secret := publishUpdate(t, base, "private=1", "for some")
 	if ev := allowed.event(); ev["id"] != secret || ev["data"] != "for some" {
 		t.Errorf("the allowed subscriber got %v", ev)
 	}
-	open := publish(t, base, "", "for all")
+	open := publishUpdate(t, base, "", "for all")
 	for name, s := range map[string]*subscriber{"anonymous": anonymous, "a token for another topic": elsewhere, "allowed": allowed} {
 		if ev := s.event(); ev["id"] != open {
 			t.Errorf("%s: got %v, want the public update only", name, ev)
@@ -368,7 +368,7 @@ func TestMercureSubscriptionsAndMetrics(t *testing.T) {
 		t.Errorf("the subscriptions: status %d: %s", status, body)
 	}
 
-	publish(t, base, "", "counted")
+	publishUpdate(t, base, "", "counted")
 	metrics := fetchBody(t, "http://"+ops+"/metrics")
 	for _, want := range []string{"mercure_subscribers_connected", "mercure_updates_total", "cairo_http_request_duration_seconds"} {
 		if !strings.Contains(metrics, want) {
@@ -435,7 +435,7 @@ func TestMercureSubscribersHoldNoPHP(t *testing.T) {
 	if wait := 3500*time.Millisecond - time.Since(start); wait > 0 {
 		<-time.After(wait)
 	}
-	last := publish(t, base, "", "still here")
+	last := publishUpdate(t, base, "", "still here")
 	if ev := subs[0].event(); ev["id"] != last {
 		t.Errorf("after the time limit of requests: %v", ev)
 	}
@@ -446,8 +446,8 @@ func TestMercureSubscribersHoldNoPHP(t *testing.T) {
 func TestMercureHistory(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "updates.db")
 	base, stop := runMercure(t, "MERCURE_HISTORY="+file)
-	first := publish(t, base, "", "one")
-	second := publish(t, base, "", "two")
+	first := publishUpdate(t, base, "", "one")
+	second := publishUpdate(t, base, "", "two")
 	back := subscribe(t, base, match(newsTopic)+"&last_event_id="+url.QueryEscape(first), "")
 	if ev := back.event(); ev["id"] != second || ev["data"] != "two" {
 		t.Errorf("after the first update: %v, want the second", ev)
@@ -499,7 +499,7 @@ func TestMercureCompatibility(t *testing.T) {
 func TestMercureStopsWithTheServer(t *testing.T) {
 	base, stop := runMercure(t, "MERCURE_SUBSCRIPTIONS=1")
 	s := subscribe(t, base, match(newsTopic), "")
-	publish(t, base, "", "before")
+	publishUpdate(t, base, "", "before")
 	s.event()
 	start := time.Now()
 	log := stop()
@@ -523,7 +523,7 @@ func TestMercureStopsWithTheServer(t *testing.T) {
 func TestMercureInIsolatedMode(t *testing.T) {
 	base, _ := runMercure(t, "CAIRO_CONCURRENCY=isolated")
 	s := subscribe(t, base, match(newsTopic), "")
-	if id := publish(t, base, "", "isolated"); s.event()["id"] != id {
+	if id := publishUpdate(t, base, "", "isolated"); s.event()["id"] != id {
 		t.Error("the subscriber did not get the update")
 	}
 }

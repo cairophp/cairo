@@ -34,6 +34,7 @@ import (
 
 	"github.com/cairophp/cairo/internal/middleware"
 	"github.com/cairophp/cairo/internal/servertls"
+	"github.com/cairophp/cairo/internal/telemetry"
 	"github.com/cairophp/cairo/internal/wire"
 )
 
@@ -63,7 +64,8 @@ type Server struct {
 }
 
 // New compiles the declared protos, registers the services and opens the listener.
-func New(decl Declaration, php Dispatcher, log *slog.Logger) (*Server, error) {
+// With tel, the calls of its services are traced and measured, as declared.
+func New(decl Declaration, php Dispatcher, log *slog.Logger, tel *telemetry.Telemetry) (*Server, error) {
 	files, err := compileProtos(decl.Protos)
 	if err != nil {
 		return nil, err
@@ -113,7 +115,7 @@ func New(decl Declaration, php Dispatcher, log *slog.Logger) (*Server, error) {
 		}
 		opts = append(opts, grpc.Creds(credentials.NewTLS(secure.Config)))
 	}
-	s.grpc = grpc.NewServer(opts...)
+	s.grpc = grpc.NewServer(append(opts, tel.GRPCServer(s.serves)...)...)
 	healthpb.RegisterHealthServer(s.grpc, hs)
 	reflect := reflection.ServerOptions{Services: s, DescriptorResolver: resolver{files}}
 	reflectionv1.RegisterServerReflectionServer(s.grpc, reflection.NewServerV1(reflect))
@@ -124,6 +126,13 @@ func New(decl Declaration, php Dispatcher, log *slog.Logger) (*Server, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// serves reports whether full names a method of a declared service: those
+// are the calls that telemetry follows.
+func (s *Server) serves(full string) bool {
+	_, ok := s.methods[full]
+	return ok
 }
 
 // Addr is the address the server listens on.
@@ -225,11 +234,15 @@ func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 	if !ok {
 		return status.Errorf(codes.Unimplemented, "unknown method %s", full)
 	}
+	ctx := stream.Context()
+	if tp := telemetry.Traceparent(ctx); tp != "" {
+		ctx = middleware.WithValue(ctx, "traceparent", tp) // for PHP to continue the trace
+	}
 	ev := &event{
 		full:    full,
 		Service: m.serviceID,
 		Method:  m.name,
-		Values:  middleware.Values(stream.Context()),
+		Values:  middleware.Values(ctx),
 	}
 	// A client-streaming method's messages are read by PHP through its
 	// stream; every other method starts with one request message.
@@ -251,7 +264,6 @@ func (s *Server) handle(_ any, stream grpc.ServerStream) error {
 		ev.ServerStreaming = m.desc.IsStreamingServer()
 	}
 
-	ctx := stream.Context()
 	if s.maxDuration > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, s.maxDuration)

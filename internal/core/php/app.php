@@ -20,6 +20,8 @@ namespace Cairo {
         private float $slowRequests = 0.0;
         private float $heavyRoutes = 0.0;
         private int $maxInFlight = 0;
+        /** @var array{on: bool, service: string, endpoint: string, sample: ?float} */
+        private array $tracing = ['on' => false, 'service' => '', 'endpoint' => '', 'sample' => null];
         private bool $detectLeaks = false;
         /** @var list<string> "Class::$property" the leak detector skips */
         private array $leaksIgnored = [];
@@ -179,6 +181,35 @@ namespace Cairo {
         }
 
         /**
+         * Trace every request and gRPC call with OpenTelemetry and send the
+         * spans to a collector with OTLP over HTTP. A request that arrives
+         * with a W3C traceparent header continues that trace. PHP gets the
+         * request's span as $ctx->value('traceparent') in its handler, and
+         * as the traceparent header of an HTTP request, to pass on in its
+         * own calls or to continue with an OpenTelemetry SDK of its own;
+         * calls through Cairo\Grpc\Client carry it by themselves.
+         *
+         * What is null here comes from the standard variables of the
+         * environment: OTEL_SERVICE_NAME, OTEL_EXPORTER_OTLP_ENDPOINT
+         * (http://localhost:4318 for a collector on the same machine) and
+         * OTEL_TRACES_SAMPLER. So do the exporter's headers, timeouts and
+         * certificates (OTEL_EXPORTER_OTLP_HEADERS and the like): keep
+         * tokens there, not in this file.
+         *
+         * @param ?string $service  the service's name in its traces
+         * @param ?string $endpoint the collector's address, as OTEL_EXPORTER_OTLP_ENDPOINT has it
+         * @param ?float  $sample   the share of traces that start here to record, 0 to 1
+         */
+        public function tracing(?string $service = null, ?string $endpoint = null, ?float $sample = null): static
+        {
+            if ($sample !== null && ($sample < 0 || $sample > 1)) {
+                throw new \InvalidArgumentException('tracing: sample must be between 0 and 1');
+            }
+            $this->tracing = ['on' => true, 'service' => $service ?? '', 'endpoint' => $endpoint ?? '', 'sample' => $sample];
+            return $this;
+        }
+
+        /**
          * Backpressure: at most $n requests in flight per request thread (0,
          * the default, means no cap). Further requests wait in Go, which costs
          * a goroutine, not PHP memory, until one finishes or their context
@@ -331,6 +362,7 @@ namespace Cairo {
             }
             $spec['extensions']['timing'] = ['slow_requests' => $this->slowRequests, 'heavy_routes' => $this->isolated() ? 0.0 : $this->heavyRoutes];
             $spec['extensions']['blocking'] = ['after' => $this->detectBlocking];
+            $spec['extensions']['tracing'] = $this->tracing;
             return $spec;
         }
     }

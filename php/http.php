@@ -17,6 +17,9 @@ namespace Cairo\Http {
         /** @var list<array{prefix:string,dir:string}> */
         private array $static = [];
         private string $publicDir = '';
+        private string $metrics = '';
+        private string $live = '';
+        private string $ready = '';
         private float $readTimeout = 0;
         private float $writeTimeout = 0;
         /** @var list<\Cairo\Middleware> */
@@ -145,6 +148,40 @@ namespace Cairo\Http {
             return $this;
         }
 
+        /**
+         * Serve the process's metrics at $path in Prometheus' text format,
+         * and collect them: every HTTP request by method, route and status
+         * with how long it took (cairo_http_request_duration_seconds), the
+         * gRPC calls served (cairo_grpc_call_duration_seconds), the PHP
+         * threads (cairo_php_*), the Go runtime and the process. Go answers;
+         * no PHP runs. Without this call nothing is measured.
+         *
+         * The numbers describe the whole process, so declare the endpoint
+         * on a server that only your monitoring reaches:
+         *
+         *     $app->http('127.0.0.1:9100')->metrics()->health();
+         */
+        public function metrics(string $path = '/metrics'): static
+        {
+            $this->metrics = $path;
+            return $this;
+        }
+
+        /**
+         * Answer health probes without PHP. GET $live is 200 for as long as
+         * the process serves: a liveness probe. GET $ready is 200 once the
+         * PHP threads take requests and 503 from the moment the process is
+         * told to stop: a readiness probe. `cairo serve --drain 5s` keeps
+         * serving for that long after the signal, so a load balancer sees
+         * the 503 and stops sending before connections close.
+         */
+        public function health(string $live = '/healthz', string $ready = '/readyz'): static
+        {
+            $this->live = $live;
+            $this->ready = $ready;
+            return $this;
+        }
+
         public function timeouts(float $read = 0, float $write = 0): static
         {
             $this->readTimeout = $read;
@@ -226,6 +263,9 @@ namespace Cairo\Http {
                 'tls' => $this->tls,
                 'h2c' => $this->h2c,
                 'redirect_http' => $this->redirectHttp,
+                'metrics' => $this->metrics,
+                'live' => $this->live,
+                'ready' => $this->ready,
             ];
         }
     }

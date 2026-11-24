@@ -92,7 +92,8 @@ The user documentation is in [cairophp/docs](https://github.com/cairophp/docs):
   [connection pools](https://github.com/cairophp/docs/blob/main/pools.md), [`Cairo\Net`](https://github.com/cairophp/docs/blob/main/net.md)
 - **Running applications:** [isolated mode](https://github.com/cairophp/docs/blob/main/isolated-mode.md),
   [PSR-15, Symfony and Laravel](https://github.com/cairophp/docs/blob/main/frameworks.md),
-  [thread supervision](https://github.com/cairophp/docs/blob/main/supervision.md)
+  [thread supervision](https://github.com/cairophp/docs/blob/main/supervision.md),
+  [metrics, health probes and tracing](https://github.com/cairophp/docs/blob/main/observability.md)
 - **Tooling:** [IDE and static analysis](https://github.com/cairophp/docs/blob/main/ide.md),
   [building Cairo and PHP settings](https://github.com/cairophp/docs/blob/main/building.md)
 
@@ -142,6 +143,7 @@ internal/spec/        the server declaration sent by server.php
 internal/httpserver/  net/http server built from the declaration
 internal/middleware/  Go middleware declared from PHP (HTTP and gRPC)
 internal/cachetag/    tags of cached responses, for Cairo\Cache::purge()
+internal/telemetry/   metrics (Prometheus), traces (OpenTelemetry) and readiness, as server.php declared them
 internal/grpcserver/  grpc-go server, proto compilation, health, reflection
 php/                  the PHP side of the extensions, one file per concern (embedded in the binary)
 php/cache.php         Cairo\Cache, loaded on first use

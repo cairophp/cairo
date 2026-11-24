@@ -117,6 +117,30 @@ namespace Cairo {
         }
 
         /**
+         * Trace every request and gRPC call with OpenTelemetry and send the
+         * spans to a collector with OTLP over HTTP. A request that arrives
+         * with a W3C traceparent header continues that trace. PHP gets the
+         * request's span as $ctx->value('traceparent') in its handler, and
+         * as the traceparent header of an HTTP request, to pass on in its
+         * own calls or to continue with an OpenTelemetry SDK of its own;
+         * calls through Cairo\Grpc\Client carry it by themselves.
+         *
+         * What is null here comes from the standard variables of the
+         * environment: OTEL_SERVICE_NAME, OTEL_EXPORTER_OTLP_ENDPOINT
+         * (http://localhost:4318 for a collector on the same machine) and
+         * OTEL_TRACES_SAMPLER. So do the exporter's headers, timeouts and
+         * certificates (OTEL_EXPORTER_OTLP_HEADERS and the like): keep
+         * tokens there, not in this file.
+         *
+         * @param ?string $service  the service's name in its traces
+         * @param ?string $endpoint the collector's address, as OTEL_EXPORTER_OTLP_ENDPOINT has it
+         * @param ?float  $sample   the share of traces that start here to record, 0 to 1
+         */
+        public function tracing(?string $service = null, ?string $endpoint = null, ?float $sample = null): static
+        {
+        }
+
+        /**
          * Backpressure: at most $n requests in flight per request thread (0,
          * the default, means no cap). Further requests wait in Go, which costs
          * a goroutine, not PHP memory, until one finishes or their context
@@ -849,6 +873,35 @@ namespace Cairo\Http {
 
         /** Add Go-side middleware; see Cairo\Middleware. */
         public function use(\Cairo\Middleware $middleware): static
+        {
+        }
+
+        /**
+         * Serve the process's metrics at $path in Prometheus' text format,
+         * and collect them: every HTTP request by method, route and status
+         * with how long it took (cairo_http_request_duration_seconds), the
+         * gRPC calls served (cairo_grpc_call_duration_seconds), the PHP
+         * threads (cairo_php_*), the Go runtime and the process. Go answers;
+         * no PHP runs. Without this call nothing is measured.
+         *
+         * The numbers describe the whole process, so declare the endpoint
+         * on a server that only your monitoring reaches:
+         *
+         *     $app->http('127.0.0.1:9100')->metrics()->health();
+         */
+        public function metrics(string $path = '/metrics'): static
+        {
+        }
+
+        /**
+         * Answer health probes without PHP. GET $live is 200 for as long as
+         * the process serves: a liveness probe. GET $ready is 200 once the
+         * PHP threads take requests and 503 from the moment the process is
+         * told to stop: a readiness probe. `cairo serve --drain 5s` keeps
+         * serving for that long after the signal, so a load balancer sees
+         * the 503 and stops sending before connections close.
+         */
+        public function health(string $live = '/healthz', string $ready = '/readyz'): static
         {
         }
 

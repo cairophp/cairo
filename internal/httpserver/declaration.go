@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/cairophp/cairo/internal/mercurehub"
 	"github.com/cairophp/cairo/internal/middleware"
 	"github.com/cairophp/cairo/internal/servertls"
 	"github.com/cairophp/cairo/internal/spec"
@@ -36,6 +37,9 @@ type Declaration struct {
 	MetricsPath string `json:"metrics"`
 	LivePath    string `json:"live"`
 	ReadyPath   string `json:"ready"`
+	// Mercure is $http->mercure(): the Mercure hub, which answers at
+	// mercurehub.Path before any route. Nil: no hub.
+	Mercure *mercurehub.Declaration `json:"mercure"`
 }
 
 // Route maps an HTTP method and path pattern to a PHP handler id.
@@ -108,7 +112,26 @@ func (d *Declaration) validate(claims *spec.Claims) error {
 			return fmt.Errorf("route %s: %w", key, err)
 		}
 	}
+	if d.Mercure != nil {
+		if err := d.validateMercure(); err != nil {
+			return err
+		}
+	}
 	return d.validateOps(seen)
+}
+
+// validateMercure refuses the routes and endpoints that the hub would hide.
+func (d *Declaration) validateMercure() error {
+	paths := []string{d.MetricsPath, d.LivePath, d.ReadyPath}
+	for _, r := range d.Routes {
+		paths = append(paths, r.Path)
+	}
+	for _, p := range paths {
+		if mercurehub.Serves(p) {
+			return fmt.Errorf("%s on %s is the Mercure hub's: mercure() answers there", p, d.Listen)
+		}
+	}
+	return d.Mercure.Validate()
 }
 
 func (d *Declaration) validateTLS(claims *spec.Claims) error {

@@ -30,6 +30,7 @@ namespace Cairo\Http {
         private ?array $tls = null;
         private bool $h2c = false;
         private string $redirectHttp = '';
+        private ?Mercure $mercure = null;
 
         /** @internal */
         public function __construct(private readonly App $app, private readonly string $listen)
@@ -223,6 +224,15 @@ namespace Cairo\Http {
         }
 
         /**
+         * Serve a Mercure hub at /.well-known/mercure and return its
+         * settings: see Mercure. A process has one hub.
+         */
+        public function mercure(): Mercure
+        {
+            return $this->mercure ??= new Mercure();
+        }
+
+        /**
          * Answer health probes without PHP. GET $live is 200 for as long as
          * the process serves: a liveness probe. GET $ready is 200 once the
          * PHP threads take requests and 503 from the moment the process is
@@ -322,6 +332,7 @@ namespace Cairo\Http {
                 'metrics' => $this->metrics,
                 'live' => $this->live,
                 'ready' => $this->ready,
+                'mercure' => $this->mercure?->spec(),
             ];
         }
     }

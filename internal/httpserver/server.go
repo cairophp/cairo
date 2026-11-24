@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cairophp/cairo/internal/mercurehub"
 	"github.com/cairophp/cairo/internal/middleware"
 	"github.com/cairophp/cairo/internal/servertls"
 	"github.com/cairophp/cairo/internal/telemetry"
@@ -45,55 +46,18 @@ type Server struct {
 	log      *slog.Logger
 }
 
-// New builds the router for one declared HTTP server and opens its listener.
-// With tel, its requests are traced and measured, as declared.
-func New(decl Declaration, php Dispatcher, log *slog.Logger, tel *telemetry.Telemetry) (*Server, error) {
-	mux := http.NewServeMux()
-	if err := decl.handleOps(mux, tel); err != nil {
-		return nil, err
-	}
-	cache := newResponseCache(cacheMaxBytes)
-	var untimed func(*http.Request) bool
-	noTimeout := map[string]bool{}
-	for _, r := range decl.Routes {
-		pattern := r.Method + " " + r.Path
-		if r.Method == "*" {
-			pattern = r.Path // $http->fallback(): any method
-		}
-		mux.Handle(pattern, routeHandler(r, php, cache, log, seconds(decl.WriteTimeout)))
-		if r.NoTimeout {
-			noTimeout[pattern] = true
-		}
-	}
-	if len(noTimeout) > 0 {
-		// The timeout runs before the route is known, so it asks.
-		untimed = func(req *http.Request) bool {
-			_, pattern := mux.Handler(req)
-			return noTimeout[pattern]
-		}
-	}
-	for _, s := range decl.Static {
-		prefix := "/" + strings.Trim(s.Prefix, "/") + "/"
-		mux.Handle("GET "+prefix, http.StripPrefix(prefix, http.FileServer(http.Dir(s.Dir))))
-	}
-	var routes http.Handler = mux
-	if len(decl.Sendfile) > 0 {
-		files, err := openSentFiles(decl.Sendfile, log)
-		if err != nil {
-			return nil, err
-		}
-		routes = files.handler(mux)
-	}
-	if decl.PublicDir != "" {
-		var err error
-		if routes, err = publicFiles(decl.PublicDir, mux); err != nil {
-			return nil, err
-		}
-	}
-	handler, err := middleware.HTTP(tel.HTTP(routes, decl.isOps), decl.Middleware, log, untimed)
+// New builds one declared HTTP server and opens its listener. With tel, its
+// requests are traced and measured, as declared.
+func New(decl Declaration, php Dispatcher, log *slog.Logger, tel *telemetry.Telemetry) (_ *Server, err error) {
+	handler, hub, err := decl.handler(php, log, tel)
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if err != nil {
+			hub.Stop() // the process has one hub: a server that does not start gives it back
+		}
+	}()
 	srv := &http.Server{
 		Handler:      handler,
 		ReadTimeout:  seconds(decl.ReadTimeout),
@@ -101,6 +65,7 @@ func New(decl Declaration, php Dispatcher, log *slog.Logger, tel *telemetry.Tele
 		ErrorLog:     slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
 	srv.RegisterOnShutdown(stopStreams)
+	srv.RegisterOnShutdown(hub.Stop)
 	var secure *servertls.TLS
 	if decl.TLS != nil {
 		if secure, err = servertls.New(*decl.TLS, log); err != nil {
@@ -125,6 +90,72 @@ func New(decl Declaration, php Dispatcher, log *slog.Logger, tel *telemetry.Tele
 		log.Info("http redirect listening", "addr", s.redirect.ln.Addr().String(), "to", s.Addr())
 	}
 	return s, nil
+}
+
+// handler builds the server's router with what is around it: the files Go
+// serves, the measuring, the Mercure hub (returned for the server to stop)
+// and the declared middleware.
+func (decl *Declaration) handler(php Dispatcher, log *slog.Logger, tel *telemetry.Telemetry) (http.Handler, *mercurehub.Hub, error) {
+	mux := http.NewServeMux()
+	if err := decl.handleOps(mux, tel); err != nil {
+		return nil, nil, err
+	}
+	cache := newResponseCache(cacheMaxBytes)
+	var untimed func(*http.Request) bool
+	noTimeout := map[string]bool{}
+	for _, r := range decl.Routes {
+		pattern := r.Method + " " + r.Path
+		if r.Method == "*" {
+			pattern = r.Path // $http->fallback(): any method
+		}
+		mux.Handle(pattern, routeHandler(r, php, cache, log, seconds(decl.WriteTimeout)))
+		if r.NoTimeout {
+			noTimeout[pattern] = true
+		}
+	}
+	if len(noTimeout) > 0 || decl.Mercure != nil {
+		// The timeout runs before the route is known, so it asks.
+		untimed = func(req *http.Request) bool {
+			if decl.isMercure(req) {
+				return true
+			}
+			_, pattern := mux.Handler(req)
+			return noTimeout[pattern]
+		}
+	}
+	for _, s := range decl.Static {
+		prefix := "/" + strings.Trim(s.Prefix, "/") + "/"
+		mux.Handle("GET "+prefix, http.StripPrefix(prefix, http.FileServer(http.Dir(s.Dir))))
+	}
+	var routes http.Handler = mux
+	if len(decl.Sendfile) > 0 {
+		files, err := openSentFiles(decl.Sendfile, log)
+		if err != nil {
+			return nil, nil, err
+		}
+		routes = files.handler(mux)
+	}
+	if decl.PublicDir != "" {
+		var err error
+		if routes, err = publicFiles(decl.PublicDir, mux); err != nil {
+			return nil, nil, err
+		}
+	}
+	routes = tel.HTTP(routes, decl.isOps)
+	var hub *mercurehub.Hub
+	if decl.Mercure != nil {
+		var err error
+		if hub, err = mercurehub.Start(*decl.Mercure, log, tel.Registry()); err != nil {
+			return nil, nil, err
+		}
+		routes = hub.Routes(routes)
+	}
+	handler, err := middleware.HTTP(routes, decl.Middleware, log, untimed)
+	if err != nil {
+		hub.Stop()
+		return nil, nil, err
+	}
+	return handler, hub, nil
 }
 
 // Addr is the address the server listens on.

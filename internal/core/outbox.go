@@ -50,6 +50,7 @@ func (e *Engine) collect(wake *os.File) {
 			case C.CAIRO_MSG_ANSWER:
 				lent = t.answer(m)
 			case C.CAIRO_MSG_READY:
+				t.came.Store(true)
 				t.booted()
 			case C.CAIRO_MSG_EXIT:
 				t.booted() // retire does not wait for a thread that ended before its loop

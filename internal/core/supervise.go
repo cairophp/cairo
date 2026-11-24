@@ -7,7 +7,9 @@ package core
 import "C"
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"time"
 )
 
@@ -27,7 +29,8 @@ import (
 // and come to its loop, puts it in the old thread's pool slot, stops queueing
 // requests to the old thread and sends it a "retire" event. The old thread
 // serves until then, so no request waits behind the boot of the new one,
-// finishes the requests it holds, then exits.
+// finishes the requests it holds, then exits. A reload replaces every thread
+// that way (reload.go).
 
 // maxThreads matches CAIRO_MAX_THREADS in extension.h.
 const maxThreads = 4096
@@ -78,6 +81,12 @@ func (e *Engine) threadExited(t *thread, status int) {
 	if e.shuttingDown() {
 		return
 	}
+	if t.trial.Load() && !t.came.Load() {
+		// The first thread of a reload, and the new code does not start:
+		// it had no pool slot, so nothing was queued for it (Reload).
+		e.releaseTid(t)
+		return
+	}
 	if t.pool == poolOffload {
 		e.jobLost(t)
 	}
@@ -96,16 +105,20 @@ func (e *Engine) threadExited(t *thread, status int) {
 	if retiring && status == 0 {
 		e.releaseTid(t)
 		e.counts.recycled.Add(1)
-		e.log.Info("php thread recycled", "thread", t.id, "served", t.box.served.Load()-t.bootMark)
+		e.log.Log(context.Background(), t.level(), "php thread recycled", "thread", t.id, "served", t.box.served.Load()-t.bootMark)
 		return
 	}
-	e.log.Error("php thread stopped unexpectedly", "thread", t.id, "exit_status", status, "failed_calls", failed)
+	// An offload thread that a reload told to end starts anew under its id.
+	renewed := t.renewing.Swap(false) && status == 0
+	if !renewed {
+		e.log.Error("php thread stopped unexpectedly", "thread", t.id, "exit_status", status, "failed_calls", failed)
+	}
 	if retiring {
 		e.releaseTid(t) // its replacement is already running
 		return
 	}
 
-	if t.box.served.Load() == t.bootMark {
+	if t.box.served.Load() == t.bootMark && !renewed {
 		t.crashes++
 	} else {
 		t.crashes = 0
@@ -137,9 +150,21 @@ func (e *Engine) threadExited(t *thread, status int) {
 			e.report(err)
 			return
 		}
+		if renewed {
+			return
+		}
 		e.counts.restarts.Add(1)
 		e.log.Warn("php thread restarted", "thread", t.id)
 	}()
+}
+
+// level is where the log says that the thread was replaced: a reload says
+// it once, for all of its threads.
+func (t *thread) level() slog.Level {
+	if t.quiet.Load() {
+		return slog.LevelDebug
+	}
+	return slog.LevelInfo
 }
 
 // failCalls answers, with nil, the calls that thread t read and, with
@@ -175,26 +200,18 @@ func (e *Engine) retire(old *thread, reason string) {
 	if old.pool != poolWorker || old.retiring.Swap(true) {
 		return
 	}
-	e.lifeMu.Lock()
-	if e.shuttingDown() {
-		e.lifeMu.Unlock()
-		return
-	}
-	tid, ok := e.allocTid()
-	if !ok {
-		e.lifeMu.Unlock()
-		old.retiring.Store(false)
-		e.log.Warn("php thread not recycled: no free thread ids", "thread", old.id)
-		return
-	}
-	nt := e.newThread(tid, poolWorker, old.slot)
-	e.threadsWG.Add(1)
-	e.lifeMu.Unlock()
-	if err := e.startThread(nt); err != nil {
-		e.threadsWG.Done()
-		e.releaseTid(nt)
+	e.replace(old, reason)
+}
+
+// replace is retire for a thread that the caller has marked as retiring.
+func (e *Engine) replace(old *thread, reason string) {
+	nt, err := e.spare(old.slot, false)
+	if err != nil {
 		old.retiring.Store(false)
 		e.log.Error("php thread not recycled", "thread", old.id, "err", err)
+		return
+	}
+	if nt == nil {
 		return
 	}
 	// A new thread that ends before its loop is restarted like any other
@@ -205,12 +222,45 @@ func (e *Engine) retire(old *thread, reason string) {
 	case <-old.left:
 	case <-e.shutdownCh:
 	}
+	e.swap(old, nt, reason)
+}
+
+// spare starts a request thread for a pool slot that another thread still
+// has. nil when the engine is stopping.
+func (e *Engine) spare(slot int, trial bool) (*thread, error) {
+	e.lifeMu.Lock()
+	if e.shuttingDown() {
+		e.lifeMu.Unlock()
+		return nil, nil
+	}
+	tid, ok := e.allocTid()
+	if !ok {
+		e.lifeMu.Unlock()
+		return nil, errors.New("no free thread ids")
+	}
+	nt := e.newThread(tid, poolWorker, slot)
+	nt.trial.Store(trial)
+	e.threadsWG.Add(1)
+	e.lifeMu.Unlock()
+	if err := e.startThread(nt); err != nil {
+		e.threadsWG.Done()
+		e.releaseTid(nt)
+		return nil, err
+	}
+	return nt, nil
+}
+
+// swap puts nt in the pool slot of old, which then gets no more requests,
+// finishes those it holds and exits.
+func (e *Engine) swap(old, nt *thread, reason string) {
+	old.quiet.Store(reason == reasonReload)
 	e.workers[old.slot].Store(nt)
 	old.sendMu.Lock() // waits for requests being queued to old
 	old.retired = true
 	old.sendMu.Unlock()
+	close(old.swapped)
 	e.post(old, map[string]string{"type": "retire"}) // after every request queued to old
-	e.log.Info("recycling php thread", "thread", old.id, "reason", reason, "served", old.box.served.Load()-old.bootMark, "replacement", tid)
+	e.log.Log(context.Background(), old.level(), "recycling php thread", "thread", old.id, "reason", reason, "served", old.box.served.Load()-old.bootMark, "replacement", nt.id)
 }
 
 // booted marks that the thread came to its loop, or ended before it did.

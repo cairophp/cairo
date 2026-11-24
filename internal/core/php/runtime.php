@@ -76,6 +76,13 @@ namespace Cairo\Internal {
             }
             return;
         }
+        if ($info['reloaded']) {
+            // The code has changed since the server started (Engine.Reload):
+            // opcache compares every file it has with the one on disk,
+            // whatever php.ini says, or this thread would run the old code.
+            ini_set('opcache.validate_timestamps', '1');
+            ini_set('opcache.revalidate_freq', '0');
+        }
         $app = (static fn (string $file): mixed => require $file)($info['server']);
         if (!$app instanceof App) {
             throw new \RuntimeException($info['server'] . ' must return a Cairo\App');

@@ -84,10 +84,18 @@ PHP_FUNCTION(cairo_spec)
 		Z_PARAM_STRING(json, len)
 	ZEND_PARSE_PARAMETERS_END();
 	char *err = goCairoSpec(cairo_tid, json, (int)len);
-	if (err != NULL) {
-		zend_throw_exception(NULL, err, 0);
-		free(err);
+	if (err == NULL) {
+		return;
 	}
+	// An empty error is the thread that tries a reload: its declaration is not
+	// the server's, which Go has noted, so it ends as exit() would, with no
+	// error of PHP's in the log.
+	if (err[0] == '\0') {
+		zend_throw_unwind_exit();
+	} else {
+		zend_throw_exception(NULL, err, 0);
+	}
+	free(err);
 }
 
 // cairo_respond(int $id, string $json, string $body = ''): void. $json is

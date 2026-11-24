@@ -65,12 +65,21 @@ namespace Cairo\Http {
             };
         }
 
-        /** The PSR-17 factory of nyholm/psr7 or guzzlehttp/psr7. */
+        /**
+         * The PSR-17 factories of the PSR-7 implementation that is installed:
+         * nyholm/psr7, guzzlehttp/psr7, php-http/discovery's, laminas-diactoros
+         * (Mezzio) or slim/psr7.
+         */
         public static function psr17(): object
         {
-            foreach (['Nyholm\Psr7\Factory\Psr17Factory', 'GuzzleHttp\Psr7\HttpFactory'] as $class) {
+            foreach (['Nyholm\Psr7\Factory\Psr17Factory', 'GuzzleHttp\Psr7\HttpFactory', 'Http\Discovery\Psr17Factory'] as $class) {
                 if (class_exists($class)) {
                     return new $class();
+                }
+            }
+            foreach (['Laminas\Diactoros\\', 'Slim\Psr7\Factory\\'] as $ns) {
+                if (class_exists($ns . 'ServerRequestFactory')) {
+                    return new \Cairo\Internal\Psr17($ns);
                 }
             }
             throw new \LogicException('PSR-15 handlers need a PSR-7 implementation: composer require nyholm/psr7 (or guzzlehttp/psr7), or pass a PSR-17 factory');
@@ -201,6 +210,45 @@ namespace Cairo\Http {
                 $node[$key] ??= [];
                 $node = &$node[$key];
             }
+        }
+    }
+}
+
+namespace Cairo\Internal {
+
+    /** The three PSR-17 factories that Adapter::toPsr7() needs, from an implementation that has them apart. */
+    final class Psr17
+    {
+        private readonly object $requests;
+        private readonly object $streams;
+        private readonly object $files;
+
+        public function __construct(string $ns)
+        {
+            $this->requests = new ($ns . 'ServerRequestFactory')();
+            $this->streams = new ($ns . 'StreamFactory')();
+            $this->files = new ($ns . 'UploadedFileFactory')();
+        }
+
+        /** @param array<string, mixed> $server */
+        public function createServerRequest(string $method, mixed $uri, array $server = []): object
+        {
+            return $this->requests->createServerRequest($method, $uri, $server);
+        }
+
+        public function createStream(string $content = ''): object
+        {
+            return $this->streams->createStream($content);
+        }
+
+        public function createStreamFromFile(string $filename, string $mode = 'r'): object
+        {
+            return $this->streams->createStreamFromFile($filename, $mode);
+        }
+
+        public function createUploadedFile(object $stream, ?int $size = null, int $error = \UPLOAD_ERR_OK, ?string $clientFilename = null, ?string $clientMediaType = null): object
+        {
+            return $this->files->createUploadedFile($stream, $size, $error, $clientFilename, $clientMediaType);
         }
     }
 }

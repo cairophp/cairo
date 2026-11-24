@@ -18,6 +18,7 @@ import (
 
 	"github.com/cairophp/cairo/internal/middleware"
 	"github.com/cairophp/cairo/internal/servertls"
+	"github.com/cairophp/cairo/internal/telemetry"
 	"github.com/cairophp/cairo/internal/wire"
 )
 
@@ -44,8 +45,12 @@ type Server struct {
 }
 
 // New builds the router for one declared HTTP server and opens its listener.
-func New(decl Declaration, php Dispatcher, log *slog.Logger) (*Server, error) {
+// With tel, its requests are traced and measured, as declared.
+func New(decl Declaration, php Dispatcher, log *slog.Logger, tel *telemetry.Telemetry) (*Server, error) {
 	mux := http.NewServeMux()
+	if err := decl.handleOps(mux, tel); err != nil {
+		return nil, err
+	}
 	cache := newResponseCache(cacheMaxBytes)
 	for _, r := range decl.Routes {
 		pattern := r.Method + " " + r.Path
@@ -65,7 +70,7 @@ func New(decl Declaration, php Dispatcher, log *slog.Logger) (*Server, error) {
 			return nil, err
 		}
 	}
-	handler, err := middleware.HTTP(routes, decl.Middleware, log)
+	handler, err := middleware.HTTP(tel.HTTP(routes, decl.isOps), decl.Middleware, log)
 	if err != nil {
 		return nil, err
 	}

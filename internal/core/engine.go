@@ -92,6 +92,7 @@ type Engine struct {
 	newProbe func() Probe
 
 	nextID atomic.Int64 // ids of calls and operations
+	counts counters     // what Stats reports of the threads' lives
 
 	outbox *os.File // what collect waits on; closed once the PHP threads have ended
 

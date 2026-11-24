@@ -28,6 +28,7 @@ import (
 
 	"github.com/cairophp/cairo/internal/core"
 	"github.com/cairophp/cairo/internal/grpcserver"
+	"github.com/cairophp/cairo/internal/telemetry"
 	"github.com/cairophp/cairo/internal/wire"
 )
 
@@ -129,7 +130,8 @@ func grpcConn(target string, o grpcClientTLS) (*grpc.ClientConn, error) {
 	// Requests and replies are frames: the bytes grpcserver.Message made
 	// and reads.
 	frames := grpc.WithDefaultCallOptions(grpc.ForceCodecV2(grpcserver.NewCodec()))
-	c, err := grpc.NewClient(target, grpc.WithTransportCredentials(creds), frames)
+	opts := append([]grpc.DialOption{grpc.WithTransportCredentials(creds), frames}, telemetry.GRPCClient()...)
+	c, err := grpc.NewClient(target, opts...)
 	if err != nil {
 		return nil, err
 	}

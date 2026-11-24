@@ -29,6 +29,11 @@ func TestDeclared(t *testing.T) {
 		"redirect without tls":    {`[{"listen":":8080","redirect_http":":80"}]`, 0},
 		"redirect on its server":  {`[{"listen":":8443","tls":{"cert":"c.pem","key":"k.pem"},"redirect_http":":8443"}]`, 0},
 		"redirect on another":     {`[{"listen":":8080"},{"listen":":8443","tls":{"cert":"c.pem","key":"k.pem"},"redirect_http":":8080"}]`, 0},
+		"metrics and probes":      {`[{"listen":":9100","metrics":"/metrics","live":"/healthz","ready":"/readyz"}]`, 1},
+		"metrics on a route":      {`[{"listen":":8080","routes":[{"id":0,"method":"GET","path":"/metrics"}],"metrics":"/metrics"}]`, 0},
+		"probes on one path":      {`[{"listen":":8080","live":"/health","ready":"/health"}]`, 0},
+		"metrics path a pattern":  {`[{"listen":":8080","metrics":"/metrics/{any}"}]`, 0},
+		"relative metrics path":   {`[{"listen":":8080","metrics":"metrics"}]`, 0},
 	}
 	for name, c := range cases {
 		s, err := spec.Parse([]byte(`{"extensions":{"http":` + c.http + `}}`))

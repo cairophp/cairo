@@ -463,11 +463,17 @@ static PHP_MINIT_FUNCTION(cairo)
 	return SUCCESS;
 }
 
+static PHP_RSHUTDOWN_FUNCTION(cairo)
+{
+	cairo_fibers_shutdown();
+	return SUCCESS;
+}
+
 zend_module_entry cairo_module_entry = {
 	STANDARD_MODULE_HEADER,
 	"cairo",
 	cairo_functions,
-	PHP_MINIT(cairo), NULL, NULL, NULL, NULL,
+	PHP_MINIT(cairo), NULL, NULL, PHP_RSHUTDOWN(cairo), NULL,
 	"0.1.0-dev",
 	STANDARD_MODULE_PROPERTIES
 };

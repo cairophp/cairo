@@ -26,6 +26,8 @@ final class Boot
     public static string $id = '';
     /** @var list<string> grows on every /grow, to stand in for a leak */
     public static array $leak = [];
+    /** How many requests wait in /slow on this thread. */
+    public static int $waiting = 0;
 }
 Boot::$id = bin2hex(random_bytes(6));
 usleep((int) getenv('CAIRO_BOOT_MS') * 1000);
@@ -57,8 +59,18 @@ $http->get('/boot', fn (): Response => Response::text(Boot::$id));
 
 // Waits on Go, so it is in flight when another request kills the thread.
 $http->get('/slow', function (): Response {
+    Boot::$waiting++;
     sleep(1);
     return Response::text(Boot::$id);
+});
+
+$http->get('/waiting', fn (): Response => Response::text((string) Boot::$waiting));
+
+// How many memory mappings the process has: a fiber's stack is one, and its
+// guard page another. 0 where the system does not say.
+$http->get('/mappings', function (): Response {
+    $maps = @file('/proc/self/maps');
+    return Response::text((string) ($maps === false ? 0 : count($maps)));
 });
 
 // The same, from an async() task.

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -236,4 +237,54 @@ func TestMaxInFlightQueuesInGo(t *testing.T) {
 		t.Fatalf("10 requests of 1s with maxInFlight(5) on 1 thread took %s, want about 2s", took)
 	}
 	t.Logf("10 requests of 1s, 5 in flight at a time: %s", took.Round(time.Millisecond))
+}
+
+// A thread that dies of a fatal error holds fibers that are suspended, and
+// PHP ends none of them then. Their stacks go back to the system all the
+// same: the process has no more memory mappings after three threads died
+// with 300 waiting requests each than a thread's idle fibers account for.
+func TestCrashedThreadFreesItsFiberStacks(t *testing.T) {
+	fetch := startSupervise(t)
+	count := func(path string) int {
+		_, body := fetch(path)
+		n, err := strconv.Atoi(body)
+		if err != nil {
+			t.Fatalf("%s: %q", path, body)
+		}
+		return n
+	}
+	before := count("/mappings")
+	if before == 0 {
+		t.Skip("no /proc/self/maps to count the mappings in")
+	}
+
+	const waiting = 300
+	for round := 0; round < 3; round++ {
+		var wg sync.WaitGroup
+		for i := 0; i < waiting; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if code, _ := fetch("/slow"); code != 500 {
+					t.Errorf("/slow while the thread crashed: status %d, want 500", code)
+				}
+			}()
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for count("/waiting") < waiting {
+			if time.Now().After(deadline) {
+				t.Fatalf("round %d: the requests did not reach PHP", round)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if code, _ := fetch("/crash"); code != 500 {
+			t.Fatalf("/crash: status %d, want 500", code)
+		}
+		wg.Wait()
+	}
+
+	// Each fiber is two mappings, and a thread keeps 64 fibers for reuse.
+	if after := count("/mappings"); after > before+waiting {
+		t.Fatalf("%d memory mappings after the crashes, %d before: the fiber stacks of the dead threads are still there", after, before)
+	}
 }

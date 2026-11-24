@@ -75,6 +75,15 @@ change the PHP API; patch versions do not.
   ordinary PHP has and Cairo's does not (`pcntl_fork()`, an extension of
   your own).
 
+### Fixed
+
+- A PHP thread that died of a fatal error left the stacks of the fibers that
+  were waiting on it behind: two memory mappings for each, and the memory
+  they had touched. A server that lost threads while it held thousands of
+  requests ran into the system's limit of mappings, and then no fiber could
+  start (`Fiber stack protect failed`). The stacks are freed when the thread
+  ends.
+
 ## [0.5.0] - 2026-11-23
 
 Mostly speed, and a smaller API. A fiber no longer has a goroutine: sleeps,

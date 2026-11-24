@@ -334,6 +334,28 @@ PHP_FUNCTION(cairo_run_ready)
 	RETURN_BOOL(ready_len == 0);
 }
 
+// PHP frees a fiber's C stack when the fiber ends, and ends the fibers that
+// are still suspended at shutdown from their destructors. After a fatal
+// error no destructor runs: PHP counts on its process ending. Here only the
+// thread ends and another takes its place, so the stacks of its suspended
+// fibers (a mapping each, and one for the guard page) are given back by
+// hand. By now the destructors are over, and what is suspended stays so.
+void cairo_fibers_shutdown(void)
+{
+	zend_objects_store *store = &EG(objects_store);
+	for (uint32_t i = 1; i < store->top; i++) {
+		zend_object *obj = store->object_buckets[i];
+		if (!IS_OBJ_VALID(obj) || obj->ce != zend_ce_fiber) {
+			continue;
+		}
+		zend_fiber *fiber = (zend_fiber *)obj;
+		if (suspended(fiber)) {
+			zend_fiber_destroy_context(&fiber->context);
+			fiber->context.status = ZEND_FIBER_STATUS_DEAD;
+		}
+	}
+}
+
 zend_result cairo_fibers_startup(void)
 {
 	slot = zend_get_resource_handle("cairo fibers");

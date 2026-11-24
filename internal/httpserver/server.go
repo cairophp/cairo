@@ -100,6 +100,7 @@ func New(decl Declaration, php Dispatcher, log *slog.Logger, tel *telemetry.Tele
 		WriteTimeout: seconds(decl.WriteTimeout),
 		ErrorLog:     slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
+	srv.RegisterOnShutdown(stopStreams)
 	var secure *servertls.TLS
 	if decl.TLS != nil {
 		if secure, err = servertls.New(*decl.TLS, log); err != nil {

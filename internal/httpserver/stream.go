@@ -68,11 +68,12 @@ func (ev *event) end() *stream {
 }
 
 type stream struct {
-	id    int64
-	w     http.ResponseWriter
-	rc    *http.ResponseController
-	sends *duplex.SendQueue
-	stall time.Duration // how long one write may take; 0 for no limit
+	id       int64
+	w        http.ResponseWriter
+	rc       *http.ResponseController
+	sends    *duplex.SendQueue
+	stall    time.Duration // how long one write may take; 0 for no limit
+	stopping atomic.Bool   // the server is stopping: PHP's next piece is refused
 }
 
 var (
@@ -82,6 +83,20 @@ var (
 
 // ErrStreamClosed is returned for a stream whose request has ended.
 var ErrStreamClosed = duplex.ErrClosed
+
+// errStopping refuses a piece as a client that has gone does.
+var errStopping = errors.New("the server is stopping")
+
+// stopStreams runs when the server begins to stop. A stream has no end of
+// its own for the server to wait for, so each is refused its next piece:
+// PHP's handler ends there as it does when its client leaves, what it had
+// queued is still written, and the client connects again elsewhere.
+func stopStreams() {
+	streams.Range(func(_, v any) bool {
+		v.(*stream).stopping.Store(true)
+		return true
+	})
+}
 
 // OpenStream begins the answer of the request that ctx is an operation of:
 // it sends the status and the headers, and returns the id under which PHP
@@ -135,21 +150,34 @@ func (st *stream) flush() { _ = st.rc.Flush() }
 // waiting; queued is false when the queue is full and the caller should use
 // Send. b is kept: the caller gives it away.
 func TrySend(id int64, b []byte) (queued bool, err error) {
+	st, err := openStream(id)
+	if err != nil {
+		return false, err
+	}
+	return st.sends.TryPut(b)
+}
+
+// openStream returns stream id while PHP may still send on it.
+func openStream(id int64) (*stream, error) {
 	v, ok := streams.Load(id)
 	if !ok {
-		return false, ErrStreamClosed
+		return nil, ErrStreamClosed
 	}
-	return v.(*stream).sends.TryPut(b)
+	st := v.(*stream)
+	if st.stopping.Load() {
+		return nil, errStopping
+	}
+	return st, nil
 }
 
 // Send queues a piece of the body of stream id, waiting for room until ctx
 // ends: a client that reads slowly holds its handler back there.
 func Send(ctx context.Context, id int64, b []byte) error {
-	v, ok := streams.Load(id)
-	if !ok {
-		return ErrStreamClosed
+	st, err := openStream(id)
+	if err != nil {
+		return err
 	}
-	return v.(*stream).sends.Put(ctx, b)
+	return st.sends.Put(ctx, b)
 }
 
 // finish ends the stream of a request whose call has returned: what PHP

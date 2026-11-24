@@ -16,7 +16,9 @@ change the PHP API; patch versions do not.
   clients, a slow client holds back only its own handler, and the handler
   learns that its client left (`Context\Canceled`). `->noTimeout()` takes a
   route out of `Middleware::timeout()`, and the server's write timeout
-  bounds each write of a stream instead of the whole answer.
+  bounds each write of a stream instead of the whole answer. A server that
+  stops ends its streams at their next write, in the same way, instead of
+  waiting for them until its grace time is over.
 - In isolated mode `echo`, `header()` and `flush()` are the answer, as under
   any PHP server: `flush()` sends what was written so far,
   `headers_send(103)` sends Early Hints and `fastcgi_finish_request()` ends

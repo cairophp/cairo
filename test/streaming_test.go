@@ -25,6 +25,14 @@ import (
 // returns its base URL.
 func startStreaming(t *testing.T, script string, env ...string) string {
 	t.Helper()
+	base, _ := runStreaming(t, script, env...)
+	return base
+}
+
+// runStreaming is startStreaming for a test that stops the server itself:
+// stop asks it to, as a deploy does, and returns once it has.
+func runStreaming(t *testing.T, script string, env ...string) (base string, stop func()) {
+	t.Helper()
 	addr := freeAddr()
 	logs := &syncBuffer{}
 	cmd := exec.Command(cairoBin, "serve", "../examples/streaming/"+script, "--threads", "1", "--offload-threads", "1")
@@ -33,10 +41,13 @@ func startStreaming(t *testing.T, script string, env ...string) string {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		http.DefaultClient.CloseIdleConnections()
+	stop = sync.OnceFunc(func() {
 		_ = cmd.Process.Signal(os.Interrupt)
 		_ = cmd.Wait()
+	})
+	t.Cleanup(func() {
+		http.DefaultClient.CloseIdleConnections()
+		stop()
 		if t.Failed() {
 			t.Logf("server log:\n%s", logs.String())
 		}
@@ -44,7 +55,7 @@ func startStreaming(t *testing.T, script string, env ...string) string {
 	if err := waitFor(addr, 10*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	return "http://" + addr
+	return "http://" + addr, stop
 }
 
 // fetchBody is the body of a GET that must succeed.
@@ -208,6 +219,32 @@ func TestServerSentEvents(t *testing.T) {
 	}
 	if note := seen(t, base, "forever"); note != "ended" {
 		t.Errorf("note = %q", note)
+	}
+}
+
+// A stream has no end for a stopping server to wait for. Its handler is
+// refused its next piece, as when its client leaves, so the server stops at
+// once instead of at the end of its grace time (30 s), and the client gets
+// an answer that ends as one should.
+func TestStreamEndsWhenTheServerStops(t *testing.T) {
+	base, stop := runStreaming(t, "server.php")
+	resp, err := http.Get(base + "/forever")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body := bufio.NewReader(resp.Body)
+	if line, _ := body.ReadString('\n'); line != ": still here\n" {
+		t.Fatalf("comment = %q", line)
+	}
+
+	start := time.Now()
+	stop()
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("the server took %s to stop with a stream open", took)
+	}
+	if _, err := io.ReadAll(body); err != nil {
+		t.Errorf("the stream of a stopped server: %v, want a clean end", err)
 	}
 }
 

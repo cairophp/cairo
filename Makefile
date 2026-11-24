@@ -17,7 +17,7 @@ build:
 
 test:
 	go vet -tags "$(TAGS)" ./...
-	go vet -tags nomercure ./internal/mercurehub ./internal/httpserver
+	go vet -tags nomercure ./...
 	go test -tags "$(TAGS)" ./... -count=1 -v
 	go test -tags nomercure ./internal/mercurehub -count=1
 

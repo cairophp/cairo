@@ -13,6 +13,10 @@ COPY --chmod=755 dist/cairo-linux-${TARGETARCH} /usr/local/bin/cairo
 # Under the name php the binary is PHP's command line (cairo php): for
 # scripts that start with #!/usr/bin/env php and for tools that call php.
 RUN ln -s cairo /usr/local/bin/php
+# The licenses of what the binary contains: Cairo's own (Apache-2.0), PHP's,
+# and the Mercure hub's (AGPL-3.0), which asks that its text goes with it.
+COPY LICENSE NOTICE /usr/share/licenses/cairo/
+COPY third_party /usr/share/licenses/cairo/third_party
 WORKDIR /app
 USER cairo
 EXPOSE 8080

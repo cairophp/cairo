@@ -7,3 +7,9 @@ It includes code adapted from PHP's embed SAPI (PHP License 3.01) and
 follows FrankenPHP (MIT) in places; third_party/NOTICES has both licenses.
 The static binary also links PHP, its extensions and their libraries, each
 under its own license.
+
+A cairo binary built in the default way also contains the Mercure hub
+(https://github.com/dunglas/mercure), which is licensed under the GNU Affero
+General Public License version 3, not under the Apache License: see
+third_party/NOTICES and third_party/mercure/LICENSE. The build tag
+`nomercure` leaves it out.

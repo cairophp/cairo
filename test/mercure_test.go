@@ -25,10 +25,20 @@ const (
 	newsTopic  = "https://example.com/news"
 )
 
+// hasHub is whether the binary under test has the hub: one built with the
+// tag nomercure has no mercure_publish().
+var hasHub = sync.OnceValue(func() bool {
+	out, _ := exec.Command(cairoBin, "php", "-r", `echo function_exists('mercure_publish') ? 'hub' : '';`).Output()
+	return string(out) == "hub"
+})
+
 // runMercure runs examples/mercure on one PHP thread and returns its base
 // URL, and a function that stops it as a deploy does and returns its log.
 func runMercure(t *testing.T, env ...string) (base string, stop func() string) {
 	t.Helper()
+	if !hasHub() {
+		t.Skip("this binary was built without the Mercure hub (nomercure)")
+	}
 	addr := freeAddr()
 	logs := &syncBuffer{}
 	cmd := exec.Command(cairoBin, "serve", "../examples/mercure/server.php", "--threads", "1", "--offload-threads", "1")
@@ -49,12 +59,10 @@ func runMercure(t *testing.T, env ...string) (base string, stop func() string) {
 		}
 	})
 	if err := waitFor(addr, 10*time.Second); err != nil {
-		// A binary built in another way than the Makefile's has no hub
-		// (nomercure), or one that takes no clients from before 1.0.
-		for _, missing := range []string{"built without the Mercure hub", "needs a cairo built with the tags"} {
-			if strings.Contains(logs.String(), missing) {
-				t.Skipf("this binary: %s", missing)
-			}
+		// A binary built without the hub's tags for it takes no clients
+		// from before 1.0.
+		if missing := "needs a cairo built with the tags"; strings.Contains(logs.String(), missing) {
+			t.Skipf("this binary: %s", missing)
 		}
 		t.Fatalf("%v\n%s", err, logs.String())
 	}
@@ -523,6 +531,9 @@ func TestMercureInIsolatedMode(t *testing.T) {
 // What cannot work is refused when the server starts, and a script has no
 // hub to publish to.
 func TestMercureDeclarationAndScripts(t *testing.T) {
+	if !hasHub() {
+		t.Skip("this binary was built without the Mercure hub (nomercure)")
+	}
 	dir := t.TempDir()
 	for name, c := range map[string]struct{ declare, want string }{
 		"nobody could subscribe": {`$http->mercure();`, "issuer() or anonymous()"},

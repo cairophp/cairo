@@ -3,11 +3,13 @@ package core
 /*
 #include "loop.h"
 #include "outbox.h"
+#include "startgate.h"
 */
 import "C"
 
 import (
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -31,6 +33,13 @@ import (
 
 // maxThreads matches CAIRO_MAX_THREADS in extension.h.
 const maxThreads = 4096
+
+// ErrRestartNeeded is what Errors reports, with the reason behind it, when
+// no PHP thread can start any more: opcache has a restart of its cache to
+// do, which is safe only in a process whose threads have all ended
+// (startgate.h). The threads that run serve on. Whoever runs the engine
+// stops it and starts the process anew.
+var ErrRestartNeeded = errors.New("no PHP thread can start until the process has started anew")
 
 // ErrThreadStopped is returned for a request whose PHP thread died before it
 // answered.
@@ -76,6 +85,13 @@ func (e *Engine) shuttingDown() bool {
 func (e *Engine) threadExited(t *thread, status int) {
 	t.endWorkers()
 	if e.shuttingDown() {
+		return
+	}
+	if t.refused.Load() {
+		// It ran no PHP, and none that is started after it would: what is
+		// queued for a thread whose place it was to take waits for the new
+		// process, or for the end of this one.
+		e.report(fmt.Errorf("%w: %s", ErrRestartNeeded, C.GoString(C.cairo_startgate_reason())))
 		return
 	}
 	if t.pool == poolOffload {
@@ -204,6 +220,9 @@ func (e *Engine) retire(old *thread, reason string) {
 	case <-nt.ready:
 	case <-old.left:
 	case <-e.shutdownCh:
+	}
+	if nt.refused.Load() {
+		return // old serves on, until the process starts anew (ErrRestartNeeded)
 	}
 	e.workers[old.slot].Store(nt)
 	old.sendMu.Lock() // waits for requests being queued to old

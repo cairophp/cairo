@@ -42,6 +42,7 @@
 #include "fiber_local.h"
 #include "fibers.h"
 #include "parked.h"
+#include "startgate.h"
 #include "_cgo_export.h"
 
 // -1 is the boot thread (declare phase); 0..n-1 are worker threads.
@@ -621,6 +622,7 @@ static int cairo_sapi_startup(sapi_module_struct *sapi)
 	}
 	int rc = php_module_startup(sapi, &cairo_module_entry);
 	cairo_opcache_restore();
+	cairo_startgate_init();
 	return rc;
 }
 
@@ -744,9 +746,10 @@ int cairo_thread_run(int tid, const char *runtime_file)
 {
 	cairo_tid = tid;
 	(void)ts_resource(0);
-	if (php_request_startup() == FAILURE) {
+	int started = cairo_startgate_startup();
+	if (started != 0) {
 		ts_free_thread();
-		return -1;
+		return started;
 	}
 	cairo_signals_onstack();
 	cairo_interrupt_register();

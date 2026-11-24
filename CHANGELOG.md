@@ -143,6 +143,21 @@ change the PHP API; patch versions do not.
 
 ### Fixed
 
+- A server no longer dies when opcache restarts its cache. opcache does that
+  once the cache is full of stale code (files that changed under a running
+  server) or after `opcache_reset()`, at the start of the next PHP request,
+  which here is the next PHP thread that starts: a recycled one
+  (`maxRequests()`, `maxMemory()`) or one that takes a dead one's place. It
+  then wiped the cache under the threads that were running code from it, and
+  the process ended with `zend_mm_heap corrupted`. Now no thread starts once
+  opcache has scheduled a restart: the server finishes its requests and
+  starts anew in place, under the same process id, with the reason in the
+  log (`restarting in place`). Connections are refused until the new process
+  listens.
+  This needs PHP 8.4 or newer, where opcache tells of the restart; with an
+  older PHP the server still dies.
+- `cairo serve` no longer leaves its directory of runtime files
+  (`cairo-runtime-*` in the temporary directory) behind when it stops.
 - A PHP thread that died of a fatal error left the stacks of the fibers that
   were waiting on it behind: two memory mappings for each, and the memory
   they had touched. A server that lost threads while it held thousands of

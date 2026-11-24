@@ -10,7 +10,10 @@ namespace Cairo\Http {
 
     final class Response
     {
-        /** What sends the body of a streamed answer, once the head is with the client. */
+        /**
+         * What answers in place of a body, while the request's call stays
+         * open: it begins the answer itself (a stream, a WebSocket).
+         */
         private ?\Closure $writer = null;
 
         /** @param array<string, string|list<string>> $headers */
@@ -42,7 +45,7 @@ namespace Cairo\Http {
         public static function stream(callable $writer, int $status = 200, array $headers = []): self
         {
             $response = new self($status, $headers);
-            $response->writer = $writer(...);
+            $response->writer = static fn () => $writer(Stream::open($status, $headers));
             return $response;
         }
 
@@ -85,7 +88,78 @@ namespace Cairo\Http {
             ]);
         }
 
-        /** @internal the writer of a streamed answer */
+        /**
+         * A Server-Sent Events answer that Go serves: the client gets what
+         * is published to $topics (Topic::publish()) for as long as it
+         * stays, and no PHP runs for it. The handler decides who may listen
+         * to what, returns this, and its fiber ends.
+         *
+         *     $http->get('/news', fn (Request $req): Response =>
+         *         Response::eventsFrom(['news', 'user.' . userOf($req)]));
+         *
+         * Go sends a comment every $keepAlive seconds, so that no proxy
+         * closes a quiet connection (0 for none). Nothing is kept for a
+         * client that connects again: it hears what is published from then.
+         *
+         * @param string|list<string> $topics 64 at most
+         * @param array<string, string|list<string>> $headers
+         */
+        public static function eventsFrom(string|array $topics, array $headers = [], float $keepAlive = 15.0): self
+        {
+            $headers += [
+                'Content-Type' => 'text/event-stream',
+                'Cache-Control' => 'no-cache',
+                'X-Accel-Buffering' => 'no',
+            ];
+            $response = new self(200, $headers);
+            $response->writer = static fn () => Topic::listen(array_values((array) $topics), $headers, $keepAlive);
+            return $response;
+        }
+
+        /**
+         * A WebSocket: the connection becomes one, and $handler runs with
+         * it in the request's fiber until it returns, which closes the
+         * socket.
+         *
+         *     $http->get('/chat', fn (Request $req): Response => Response::websocket(function (WebSocket $ws): void {
+         *         $ws->subscribe('room');
+         *         while (($message = $ws->receive()) !== null) {
+         *             Topic::publish('room', $message->data);
+         *         }
+         *     }));
+         *
+         * The handler of the route runs first, as for any request: it may
+         * answer with another Response instead (a 401, say), and only this
+         * one makes the handshake. A page of another site may not connect:
+         * the browser's Origin must be the request's own host, or match one
+         * of $origins (a host, with * for any run of characters:
+         * 'app.example.com', '*.example.com'). $protocols are the
+         * subprotocols the client may choose from, in your order of
+         * preference. A message of the client over $maxMessage bytes closes
+         * the socket. Go pings the client every $ping seconds and drops one
+         * that does not answer (0 for no pings).
+         *
+         * Give the route noTimeout() when the server has a timeout.
+         *
+         * @param callable(WebSocket): void $handler
+         * @param list<string> $origins
+         * @param list<string> $protocols
+         */
+        public static function websocket(
+            callable $handler,
+            array $origins = [],
+            array $protocols = [],
+            int $maxMessage = 65536,
+            float $ping = 30.0,
+        ): self {
+            $options = ['origins' => array_values($origins), 'protocols' => array_values($protocols),
+                'max_message' => $maxMessage, 'ping' => $ping];
+            $response = new self();
+            $response->writer = static fn () => WebSocket::serve($handler, $options);
+            return $response;
+        }
+
+        /** @internal what answers in place of a body */
         public function writer(): ?\Closure
         {
             return $this->writer;

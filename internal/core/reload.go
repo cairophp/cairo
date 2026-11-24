@@ -52,6 +52,8 @@ func (e *Engine) Reload() error {
 	}
 	switch {
 	case first.came.Load():
+	case first.refused.Load():
+		return ErrRestartNeeded // opcache has a restart to do (startgate.h)
 	case first.differs.Load():
 		return ErrDeclarationChanged
 	default:

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"sync/atomic"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
@@ -108,6 +109,15 @@ func (t *Telemetry) Scrape() http.Handler {
 		return nil
 	}
 	return t.metrics.scrape
+}
+
+// Registry is where an extension adds metrics of its own to the endpoint,
+// nil when no server declared one.
+func (t *Telemetry) Registry() prometheus.Registerer {
+	if t == nil || t.metrics == nil {
+		return nil
+	}
+	return t.metrics.reg
 }
 
 // Traceparent is the W3C traceparent of the span ctx is in, for PHP to

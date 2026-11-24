@@ -88,6 +88,13 @@ namespace Cairo\Internal {
             throw new \RuntimeException($info['server'] . ' must return a Cairo\App');
         }
         \cairo_spec(json_encode($app->spec(), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+        // A cache with no room left for the code that changed: this thread
+        // has it for itself alone, as every thread after it would. A new
+        // process has an empty cache.
+        $cache = $info['reloaded'] && \function_exists('opcache_get_status') ? \opcache_get_status(false) : false;
+        if (\is_array($cache) && $cache['cache_full']) {
+            \cairo_restart('opcache is full: the code that changed does not fit beside the code it had (opcache.memory_consumption, opcache.max_accelerated_files)');
+        }
         if ($info['mode'] === 'serve') {
             (new Scheduler($app))->run();
         } elseif ($info['mode'] === 'offload') {

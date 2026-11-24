@@ -32,6 +32,7 @@ var buckets = []float64{0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5,
 type metrics struct {
 	http   *prometheus.HistogramVec // by method, route and status
 	grpc   *prometheus.HistogramVec // by method and code
+	reg    *prometheus.Registry
 	scrape http.Handler
 }
 
@@ -55,6 +56,7 @@ func startMetrics(threads func() Threads) *metrics {
 	if threads != nil {
 		reg.MustRegister(phpThreads(threads))
 	}
+	m.reg = reg
 	m.scrape = promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 	return m
 }

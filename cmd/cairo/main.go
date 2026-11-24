@@ -238,6 +238,10 @@ func serve(args []string) error {
 		restarting = true
 	case runErr = <-errs:
 	case runErr = <-engine.Errors():
+		if errors.Is(runErr, core.ErrRestartNeeded) {
+			log.Warn("restarting in place", "because", runErr)
+			restarting, runErr = true, nil
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *grace)

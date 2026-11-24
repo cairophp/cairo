@@ -19,6 +19,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG CAIRO_VERSION=dev
+ARG CAIRO_TAGS=deprecated_topic,deprecated_claim
 RUN --mount=type=cache,target=/root/.cache/go-build scripts/build-static.sh "$PHP_VERSION" /out/cairo
 
 FROM scratch

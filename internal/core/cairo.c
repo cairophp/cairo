@@ -42,6 +42,7 @@
 #include "fiber_local.h"
 #include "fibers.h"
 #include "parked.h"
+#include "startgate.h"
 #include "_cgo_export.h"
 
 // -1 is the boot thread (declare phase); 0..n-1 are worker threads.
@@ -53,6 +54,10 @@ int cairo_thread_id(void)
 }
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_none, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_restart, 0, 0, 1)
+	ZEND_ARG_TYPE_INFO(0, why, IS_STRING, 0)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_spec, 0, 0, 1)
@@ -201,6 +206,7 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_wait_here, arginfo_cairo_wait_here)
 	PHP_FE(cairo_offload_send, arginfo_cairo_offload_send)
 	PHP_FE(cairo_offload_done, arginfo_cairo_offload_done)
+	PHP_FE(cairo_restart, arginfo_cairo_restart)
 	PHP_FE(cairo_fiber_call, arginfo_cairo_fiber_call)
 	PHP_FE(cairo_op_cancel, arginfo_cairo_op_cancel)
 	PHP_FE(cairo_go_call, arginfo_cairo_go_call)
@@ -629,6 +635,7 @@ static int cairo_sapi_startup(sapi_module_struct *sapi)
 	}
 	int rc = php_module_startup(sapi, &cairo_module_entry);
 	cairo_opcache_restore();
+	cairo_startgate_init();
 	return rc;
 }
 
@@ -752,9 +759,10 @@ int cairo_thread_run(int tid, const char *runtime_file)
 {
 	cairo_tid = tid;
 	(void)ts_resource(0);
-	if (php_request_startup() == FAILURE) {
+	int started = cairo_startgate_startup();
+	if (started != 0) {
 		ts_free_thread();
-		return -1;
+		return started;
 	}
 	cairo_signals_onstack();
 	cairo_interrupt_register();

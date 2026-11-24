@@ -29,6 +29,9 @@ func reload(engine *core.Engine, log *slog.Logger, because string) (declarationC
 		log.Info("php code reloaded", "because", because, "took", time.Since(start).Round(time.Millisecond).String())
 	case errors.Is(err, core.ErrDeclarationChanged):
 		return true
+	case errors.Is(err, core.ErrRestartNeeded):
+		// The engine has reported it: the server starts anew in place, and
+		// has the new code then.
 	default:
 		log.Error("php code not reloaded", "because", because, "err", err)
 	}
@@ -107,15 +110,4 @@ func watchPaths(serverFile string, named []string) ([]string, error) {
 		paths = append(paths, abs)
 	}
 	return paths, nil
-}
-
-// restartProcess replaces this process with a new one of the same command,
-// after the servers and PHP have stopped: the same process id, for whatever
-// started it.
-func restartProcess() error {
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	return syscall.Exec(exe, os.Args, os.Environ())
 }

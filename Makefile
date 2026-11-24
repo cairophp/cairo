@@ -2,6 +2,10 @@ PHP_PREFIX ?= /opt/php-zts
 PHP_CONFIG ?= $(PHP_PREFIX)/bin/php-config
 VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
+# The Mercure hub (AGPL-3.0) is linked in with what it needs to take clients
+# of the protocol before 1.0. `make build TAGS=nomercure` leaves the hub out.
+TAGS ?= deprecated_topic,deprecated_claim
+
 export CGO_ENABLED = 1
 export CGO_CFLAGS  = $(shell $(PHP_CONFIG) --includes)
 export CGO_LDFLAGS = -L$(PHP_PREFIX)/lib -Wl,-rpath,$(PHP_PREFIX)/lib
@@ -9,11 +13,13 @@ export CGO_LDFLAGS = -L$(PHP_PREFIX)/lib -Wl,-rpath,$(PHP_PREFIX)/lib
 .PHONY: build test run php static stubs
 
 build:
-	go build -ldflags "-X main.version=$(VERSION)" -o bin/cairo ./cmd/cairo
+	go build -tags "$(TAGS)" -ldflags "-X main.version=$(VERSION)" -o bin/cairo ./cmd/cairo
 
 test:
-	go vet ./...
-	go test ./... -count=1 -v
+	go vet -tags "$(TAGS)" ./...
+	go vet -tags nomercure ./...
+	go test -tags "$(TAGS)" ./... -count=1 -v
+	go test -tags nomercure ./internal/mercurehub -count=1
 
 run: build
 	./bin/cairo serve examples/greeter/server.php
@@ -25,7 +31,7 @@ php:
 
 # One static binary (musl, PHP and its extensions linked in) in dist/cairo. Needs Docker.
 static:
-	docker build -f Dockerfile.static --build-arg CAIRO_VERSION=$(VERSION) --output dist .
+	docker build -f Dockerfile.static --build-arg CAIRO_VERSION=$(VERSION) --build-arg CAIRO_TAGS=$(TAGS) --output dist .
 
 # Regenerate stubs/cairo.php (Cairo's PHP API for IDEs) from the PHP files of the core and the extensions.
 stubs:

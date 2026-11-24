@@ -2,6 +2,7 @@ package core
 
 /*
 #include "outbox.h"
+#include "startgate.h"
 */
 import "C"
 
@@ -53,6 +54,7 @@ func (e *Engine) collect(wake *os.File) {
 				t.came.Store(true)
 				t.booted()
 			case C.CAIRO_MSG_EXIT:
+				t.refused.Store(m.id == C.CAIRO_START_REFUSED)
 				t.booted() // retire does not wait for a thread that ended before its loop
 				e.threadExited(t, int(m.id))
 				e.threadsWG.Done()

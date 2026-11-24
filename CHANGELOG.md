@@ -9,6 +9,17 @@ change the PHP API; patch versions do not.
 
 ### Added
 
+- The Mercure hub. `$http->mercure()` makes a server the hub of the
+  [Mercure](https://mercure.rocks) protocol at `/.well-known/mercure`: Go
+  serves every subscriber, so a subscriber holds no PHP thread, fiber or
+  memory, and `mercure_publish()` publishes from PHP with one call, with the
+  parameters it has in FrankenPHP. Tokens (`issuer()`), anonymous
+  subscribers, private updates, history in a file (`history()`), the
+  subscription API and clients from before Mercure 1.0 (`compatibility(8)`)
+  are there. **The hub is the Mercure.rocks hub, which is AGPL-3.0, not
+  Apache-2.0**: the released binaries and the official image contain it, and
+  the build tag `nomercure` gives a binary without it (`make build
+  TAGS=nomercure`). See `third_party/NOTICES` and `examples/mercure`.
 - Streamed answers. `Response::stream(fn (Stream $out) => ...)` sends the
   head and then every `$out->write()` while the handler runs, and
   `Response::events(fn (Events $events) => ...)` is Server-Sent Events on
@@ -132,6 +143,19 @@ change the PHP API; patch versions do not.
 
 ### Fixed
 
+- A server no longer dies when opcache restarts its cache. opcache does that
+  once the cache is full of stale code (files that changed under a running
+  server) or after `opcache_reset()`, at the start of the next PHP request,
+  which here is the next PHP thread that starts: a recycled one
+  (`maxRequests()`, `maxMemory()`) or one that takes a dead one's place. It
+  then wiped the cache under the threads that were running code from it, and
+  the process ended with `zend_mm_heap corrupted`. Now no thread starts once
+  opcache has scheduled a restart: the server finishes its requests and
+  starts anew in place, under the same process id, with the reason in the
+  log (`restarting in place`). Connections are refused until the new process
+  listens.
+- `cairo serve` no longer leaves its directory of runtime files
+  (`cairo-runtime-*` in the temporary directory) behind when it stops.
 - A PHP thread that died of a fatal error left the stacks of the fibers that
   were waiting on it behind: two memory mappings for each, and the memory
   they had touched. A server that lost threads while it held thousands of

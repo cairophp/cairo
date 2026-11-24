@@ -146,6 +146,7 @@ type thread struct {
 	sendMu   sync.RWMutex  // held for reading while an event is queued; taken to set retired and gone
 	retired  bool          // no new requests may be queued here
 	gone     bool          // the thread has ended and none takes its place: nothing may be queued here
+	refused  atomic.Bool   // PHP did not let it start: opcache has a restart to do (startgate.h)
 	retiring atomic.Bool   // a replacement was asked for; the thread exits once idle
 	crashes  int           // crashes in a row without taking work in between
 	bootMark int64         // calls served (mailbox) when the thread last started
@@ -321,7 +322,9 @@ func pick(override, declared int) int {
 	return runtime.NumCPU()
 }
 
-// Errors reports a PHP thread that could not be restarted (see supervise.go).
+// Errors reports a PHP thread that could not be restarted, and
+// ErrRestartNeeded (see supervise.go). The engine serves on with the threads
+// it has; its owner stops it.
 func (e *Engine) Errors() <-chan error { return e.threadErrs }
 
 // Spec is what server.php declared. An extension reads its own part of it

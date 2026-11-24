@@ -930,6 +930,14 @@ namespace Cairo\Http {
         }
 
         /**
+         * Serve a Mercure hub at /.well-known/mercure and return its
+         * settings: see Mercure. A process has one hub.
+         */
+        public function mercure(): Mercure
+        {
+        }
+
+        /**
          * Answer health probes without PHP. GET $live is 200 for as long as
          * the process serves: a liveness probe. GET $ready is 200 once the
          * PHP threads take requests and 503 from the moment the process is
@@ -1531,6 +1539,190 @@ namespace Cairo\Http {
         public static function fromSymfony(object $response, ?object $request = null): Response
         {
         }
+    }
+}
+
+namespace Cairo\Http {
+    /**
+     * The Mercure hub of an HTTP server, at /.well-known/mercure: browsers
+     * subscribe to topics with an EventSource, and what is published to a
+     * topic goes to all of its subscribers. PHP publishes with
+     * mercure_publish(); other programs publish with a POST and a token.
+     * Go serves every subscriber: no PHP thread and no fiber is held.
+     *
+     *     $http->mercure()
+     *         ->issuer('https://example.com', publisher: $key, subscriber: $key)
+     *         ->anonymous();
+     *
+     * The hub is the Mercure.rocks hub (github.com/dunglas/mercure), which
+     * is licensed under the AGPL-3.0, not under Cairo's Apache-2.0. A cairo
+     * built with the tag `nomercure` has none, and refuses this declaration.
+     */
+    final class Mercure
+    {
+        /**
+         * Trust the tokens of one issuer: $identifier is their `iss` claim.
+         * $publisher verifies the token of a program that publishes with a
+         * POST, $subscriber the token of a client that subscribes to
+         * private updates; leave one empty and the hub takes no token of
+         * that role. A key is a secret for the HS algorithms, or a public
+         * key in PEM for the others (RS256, ES256, EdDSA and their kin).
+         * Read keys from the environment, never from the code.
+         *
+         * With no publisher key at all, only mercure_publish() publishes.
+         */
+        public function issuer(string $identifier, string $publisher = '', string $subscriber = '', string $algorithm = 'HS256'): static
+        {
+        }
+
+        /** Let clients without a token subscribe. They get the updates that are not private. */
+        public function anonymous(): static
+        {
+        }
+
+        /**
+         * The sites whose pages may subscribe from a browser (CORS), as
+         * origins: 'https://app.example.com', or '*' for any. Pages of the
+         * hub's own origin need none.
+         *
+         * @param list<string> $origins
+         */
+        public function cors(array $origins): static
+        {
+        }
+
+        /**
+         * The sites whose pages may publish with the token cookie. A program
+         * that sends its token in the Authorization header needs none.
+         *
+         * @param list<string> $origins
+         */
+        public function publishOrigins(array $origins): static
+        {
+        }
+
+        /**
+         * Keep the updates in $file, so that a client which comes back with
+         * its last event id gets what it missed, also after a restart.
+         * $size is how many updates are kept, 0 for all of them. Without
+         * this call nothing is kept: a client gets what is published while
+         * it listens.
+         */
+        public function history(string $file, int $size = 0): static
+        {
+        }
+
+        /** Turn on the subscription API and the events that tell who subscribes to what. */
+        public function subscriptions(): static
+        {
+        }
+
+        /**
+         * Also take the clients and tokens of the protocol before Mercure
+         * 1.0 (`?topic=`, the `mercure` claim), for the time it takes to
+         * move them: $version is 8, or 7 for the oldest. It relaxes how
+         * tokens are checked, so turn it off again when the clients moved.
+         */
+        public function compatibility(int $version = 8): static
+        {
+        }
+
+        /**
+         * The audience (`aud`) that tokens must name, as an absolute URL.
+         * Without it, it is the hub's URL as the client asked for it,
+         * which is not the public one behind a proxy that ends TLS: say it
+         * there ('https://example.com/.well-known/mercure').
+         */
+        public function resource(string $identifier): static
+        {
+        }
+
+        /**
+         * Answer only for these public URLs of the server (scheme and
+         * host); a request for another host gets 421.
+         *
+         * @param list<string> $urls
+         */
+        public function publicUrls(array $urls): static
+        {
+        }
+
+        /**
+         * Seconds. $heartbeat: a comment goes to a quiet subscriber that
+         * often, so that no proxy closes its connection. $write: a
+         * subscriber is closed after that long, and connects again.
+         * $dispatch: how long one update may take to reach a subscriber
+         * before the subscriber is dropped. 0 turns the first two off.
+         */
+        public function timeouts(float $heartbeat = 40.0, float $write = 600.0, float $dispatch = 5.0): static
+        {
+        }
+
+        /**
+         * How many subscriptions may be open at once: in all, with one
+         * token, and from one client address. 0 is no limit.
+         */
+        public function limits(int $total = 0, int $perToken = 0, int $perClient = 0): static
+        {
+        }
+
+        /**
+         * The name of the cookie a browser sends its token in. The default,
+         * `__Secure-mercure_access_token`, only travels over HTTPS: give a
+         * name without that prefix for development over plain HTTP.
+         */
+        public function cookie(string $name): static
+        {
+        }
+
+        /** Serve the hub's debugging page at /.well-known/mercure/debug/. Not for production. */
+        public function debugger(): static
+        {
+        }
+
+        /**
+         * @internal
+         * @return array<string, mixed>
+         */
+        public function spec(): array
+        {
+        }
+    }
+}
+
+namespace {
+    /**
+     * Publish an update to the Mercure hub of this process ($http->mercure()),
+     * without HTTP and without a token. Only the calling fiber waits, for as
+     * long as the hub takes to hand the update to its subscribers' queues; it
+     * does not wait for the clients.
+     *
+     *     $id = mercure_publish('https://example.com/books/1', json_encode($book));
+     *
+     * @param string|list<string> $topics the topic, or the topic and its
+     *        alternates: a subscriber to any of them gets the update
+     * @param bool $private only for subscribers whose token names a topic of it
+     * @param ?string $id the update's id; the hub makes one when null
+     * @param ?string $type the event's name, for addEventListener()
+     * @param ?int $retry milliseconds a client waits before it connects again
+     * @return string the update's id, which a client sends as its last event id
+     *         to get what came after it
+     * @throws \ValueError for an update the protocol does not allow: a topic
+     *         below /.well-known/mercure or "*", an id that starts with "#" or
+     *         is "earliest", the type "mercure", data that is not UTF-8, a
+     *         negative $retry
+     * @throws \RuntimeException when no hub runs in this process (in a script
+     *         of `cairo php`, for one), or the hub could not hand the update out
+     */
+    function mercure_publish(
+        string|array $topics,
+        string $data = '',
+        bool $private = false,
+        ?string $id = null,
+        ?string $type = null,
+        ?int $retry = null,
+    ): string
+    {
     }
 }
 

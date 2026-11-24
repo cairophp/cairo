@@ -199,3 +199,35 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+The Mercure hub (internal/mercurehub)
+-------------------------------------
+
+This one is not adapted code but a whole program that is linked in. A cairo
+binary built in the default way (make build, make static, the releases and
+the official image) contains the Mercure.rocks hub,
+https://github.com/dunglas/mercure, which serves `$http->mercure()` and
+`mercure_publish()`:
+
+    Copyright (C) 2018-present Kévin Dunglas
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU Affero General Public License, version 3,
+    as published by the Free Software Foundation.
+
+The hub is NOT under Cairo's Apache License 2.0. Its license, the GNU Affero
+General Public License version 3 (AGPL-3.0), is in third_party/mercure/LICENSE.
+Cairo's own code stays under the Apache License 2.0, which allows it to be
+combined with AGPL-3.0 code; a binary that contains the hub is then a
+combined work, and whoever conveys that binary, or lets users interact with
+it over a network, has the duties of the AGPL-3.0 for it. The sources that
+correspond to a released binary are Cairo's at the release's tag
+(https://github.com/cairophp/cairo) and the hub's at the version go.mod
+names.
+
+A binary without any AGPL code is built with the Go build tag `nomercure`
+(`make build TAGS=nomercure`, or CAIRO_TAGS=nomercure for the static
+build): it has no hub, refuses `$http->mercure()` and has no
+`mercure_publish()`. Only internal/mercurehub imports the hub, and
+internal/mercurehub/nohub.go is what such a build compiles instead. The
+hub's authors also sell it under commercial terms (https://mercure.rocks).

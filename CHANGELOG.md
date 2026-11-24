@@ -9,6 +9,25 @@ change the PHP API; patch versions do not.
 
 ### Added
 
+- Reloading the code of a running server. `cairo serve --watch` looks at the
+  files of the app (`*.php`, `*.twig`, `*.yaml`, `*.yml`, `.env*` and
+  `composer.lock` under the server file's directory, or under each
+  `--watch-path`; not `vendor`, `node_modules`, `storage`, `var`) and gives
+  the server the new code when one changes, and `kill -USR1 <pid>` does the
+  same once, for a deploy. No request is refused or fails: each PHP thread is
+  replaced by one that has read the code anew, as a recycled thread is, and
+  finishes the requests it holds with the code they began with. The first
+  new thread is tried alone, so code that does not start (a parse error, an
+  exception in `server.php`) replaces nothing and the server runs on. What
+  `server.php` declares (servers, routes, settings) is built once per
+  process: when that changes, or a `.env` file does (PHP's `putenv()` is
+  the process's), `--watch` starts the process anew in place, and the signal
+  refuses another declaration and says so. A reload that fills opcache ends
+  in such a restart too (with a PHP older than 8.4, which cannot tell of it,
+  the threads of a reload compile for themselves and leave opcache alone).
+  The watcher looks at the files' times every 250 ms instead of using the
+  kernel's file events, so it needs no dependency and works in a directory
+  shared with a container. See `examples/reload`.
 - The Mercure hub. `$http->mercure()` makes a server the hub of the
   [Mercure](https://mercure.rocks) protocol at `/.well-known/mercure`: Go
   serves every subscriber, so a subscriber holds no PHP thread, fiber or
@@ -143,6 +162,12 @@ change the PHP API; patch versions do not.
 
 ### Fixed
 
+- A thread that `maxRequests()` or `maxMemory()` recycled, while the code on
+  disk did not start (a parse error, other routes in `server.php`), had a
+  replacement that died again and again, and after five tries the server
+  stopped. Now the old thread stays in its place and serves on, and the
+  replacement is tried again after 1 s, 2 s, 4 s and so on, a minute at
+  most, with `php thread not replaced` in the log.
 - A server no longer dies when opcache restarts its cache. opcache does that
   once the cache is full of stale code (files that changed under a running
   server) or after `opcache_reset()`, at the start of the next PHP request,

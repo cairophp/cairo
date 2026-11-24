@@ -107,6 +107,9 @@ type Engine struct {
 	stopped    chan struct{}
 	threadsWG  sync.WaitGroup
 	threadErrs chan error
+
+	reloadMu sync.Mutex   // one Reload at a time
+	reloads  atomic.Int64 // how many began: a thread that starts after the first reads its files anew
 }
 
 type pool int
@@ -146,10 +149,19 @@ type thread struct {
 	refused  atomic.Bool   // PHP did not let it start: opcache has a restart to do (startgate.h)
 	retiring atomic.Bool   // a replacement was asked for; the thread exits once idle
 	crashes  int           // crashes in a row without taking work in between
+	kept     int           // replacements in a row that did not start (keep)
 	bootMark int64         // calls served (mailbox) when the thread last started
 	ready    chan struct{} // closed when the thread first came to its loop, or ended before
 	up       bool          // ready is closed; collect's goroutine alone reads and sets it
 	left     chan struct{} // closed when the thread ended after it asked for a replacement
+
+	// Reloads (see reload.go).
+	swapped  chan struct{} // closed when its replacement has its pool slot
+	place    atomic.Int32  // placed, placeSpare or placeNone (supervise.go)
+	came     atomic.Bool   // it came to its loop
+	differs  atomic.Bool   // it built another declaration than the boot thread
+	renewing atomic.Bool   // an offload thread that a reload told to end and start anew
+	quiet    atomic.Bool   // replaced by a reload, which logs once for all its threads
 }
 
 var (
@@ -281,7 +293,7 @@ func (e *Engine) newThread(tid int, p pool, slot int) *thread {
 	t := &thread{
 		id: tid, pool: p, slot: slot, box: mailboxOf(tid),
 		calls: map[int64]*call{}, scoped: map[int64]context.CancelFunc{},
-		ready: make(chan struct{}), left: make(chan struct{}),
+		ready: make(chan struct{}), left: make(chan struct{}), swapped: make(chan struct{}),
 	}
 	// The mailbox is the thread id's: a thread that had the id before left
 	// its count.
@@ -428,7 +440,10 @@ func goCairoInfo(tid C.int) *C.char {
 			mode = "offload"
 		}
 	}
-	b, _ := json.Marshal(map[string]any{"mode": mode, "server": e.serverFile, "thread": int(tid), "script": e.script, "php": phpAtStart, "classes": phpOnUse})
+	b, _ := json.Marshal(map[string]any{
+		"mode": mode, "server": e.serverFile, "thread": int(tid), "script": e.script, "php": phpAtStart, "classes": phpOnUse,
+		"reloaded": e.reloads.Load() > 0,
+	})
 	return C.CString(string(b))
 }
 
@@ -448,6 +463,11 @@ func goCairoSpec(tid C.int, data *C.char, n C.int) *C.char {
 		return nil
 	}
 	if !bytes.Equal(raw, e.rawSpec) {
+		t := e.table[int(tid)].Load()
+		t.differs.Store(true)
+		if t.place.Load() == placeSpare {
+			return C.CString("") // replace or Reload reports it: the thread only has to end
+		}
 		return C.CString(fmt.Sprintf("php thread %d built a different server declaration than the boot thread; server.php must declare the same servers and routes every time it runs", int(tid)))
 	}
 	return nil

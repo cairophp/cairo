@@ -76,6 +76,18 @@ namespace Cairo\Internal {
             }
             return;
         }
+        if ($info['reloaded'] && PHP_VERSION_ID >= 80400) {
+            // The code has changed since the server started (Engine.Reload):
+            // opcache compares every file it has with the one on disk,
+            // whatever php.ini says, or this thread would run the old code.
+            ini_set('opcache.validate_timestamps', '1');
+            ini_set('opcache.revalidate_freq', '0');
+        } elseif ($info['reloaded']) {
+            // New code beside the old is what fills opcache, and before 8.4
+            // nothing tells that it is about to wipe its cache under the
+            // threads that run (startgate.h): this thread compiles for itself.
+            ini_set('opcache.enable', '0');
+        }
         $app = (static fn (string $file): mixed => require $file)($info['server']);
         if (!$app instanceof App) {
             throw new \RuntimeException($info['server'] . ' must return a Cairo\App');

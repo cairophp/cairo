@@ -42,6 +42,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   cairo serve <server.php> [--threads N] [--offload-threads N] [--grace 30s] [--drain 0s] [--php-ini FILE]
+                           [--watch] [--watch-path PATH]...
   cairo php [options] <file.php> [args...]    PHP's command line (cairo php -h)
   cairo gen [--out DIR] [-I DIR]... <file.proto>...
   cairo version`)
@@ -155,6 +156,9 @@ func serve(args []string) error {
 	grace := fs.Duration("grace", 30*time.Second, "how long to wait for in-flight requests on shutdown")
 	drain := fs.Duration("drain", 0, "how long to keep serving after a stop signal while the readiness endpoint answers 503")
 	phpIni := fs.String("php-ini", os.Getenv("CAIRO_PHP_INI"), "php.ini file or directory (default: $PHPRC, then PHP's own search; also CAIRO_PHP_INI)")
+	watching := fs.Bool("watch", false, "reload the PHP code when a file changes (development)")
+	var watched multiFlag
+	fs.Var(&watched, "watch-path", "a directory or file for --watch to look at instead of the server file's directory (repeatable; implies --watch)")
 	// Accept the server file before or after the flags.
 	var file string
 	if len(args) > 0 && len(args[0]) > 0 && args[0][0] != '-' {
@@ -208,6 +212,19 @@ func serve(args []string) error {
 		go func(s server) { errs <- s.Serve() }(s)
 	}
 
+	reloadOnSignal(engine, log)
+	var restart <-chan struct{}
+	if *watching || len(watched) > 0 {
+		paths, err := watchPaths(file, watched)
+		if err != nil {
+			return err
+		}
+		watchCtx, stopWatching := context.WithCancel(context.Background())
+		defer stopWatching()
+		restart = watch(watchCtx, engine, log, paths)
+		log.Info("watching for changes", "paths", strings.Join(paths, ", "))
+	}
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	var runErr error
@@ -217,6 +234,8 @@ func serve(args []string) error {
 		log.Info("shutting down", "signal", got.String())
 		tel.Drain()
 		keepServing(*drain, sig)
+	case <-restart:
+		restarting = true
 	case runErr = <-errs:
 	case runErr = <-engine.Errors():
 		if errors.Is(runErr, core.ErrRestartNeeded) {

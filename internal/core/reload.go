@@ -48,7 +48,7 @@ func (e *Engine) Reload() error {
 	e.reloadMu.Lock()
 	defer e.reloadMu.Unlock()
 	e.reloads.Add(1)
-	first, err := e.spare(0, true)
+	first, err := e.spare(0)
 	if err != nil || first == nil {
 		return err
 	}
@@ -72,6 +72,7 @@ func (e *Engine) Reload() error {
 		return ErrReloadFailed
 	}
 	if old := e.claim(0); old != nil {
+		first.place.Store(placed)
 		e.swap(old, first, reasonReload)
 	}
 

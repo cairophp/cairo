@@ -226,22 +226,33 @@ func TestWatchReloadsTheCode(t *testing.T) {
 
 // Code that does not start replaces nothing: the server runs on with the
 // code it has, says why, and takes the next change.
+//
+// A thread that is recycled meanwhile (here every 5 requests) reads the
+// broken code too: its replacement does not start, and the old thread stays
+// in its place instead of the server stopping after five tries.
 func TestReloadKeepsTheCodeThatRuns(t *testing.T) {
-	app := startReload(t, "--threads", "2", "--watch")
+	dir := t.TempDir()
+	copyReload(t, dir)
+	app := serveReload(t, dir, []string{"CAIRO_MAX_REQUESTS=5"}, "--threads", "2", "--watch")
 	app.answers("/", "hello")
+	app.answers("/offload", "hello") // the offload thread has the code too
 
 	app.write("greeting.php", "<?php\n\nfunction greeting(): string\n{\n    return 'broken'\n}\n")
 	app.logged("php code not reloaded", 1)
 	if log := app.logs.String(); !strings.Contains(log, "Parse error") {
 		t.Errorf("the log does not say why the code did not start:\n%s", log)
 	}
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 40; i++ {
 		if code, body := app.get("/"); code != 200 || body != "hello" {
 			t.Fatalf("after the refused reload: %d %q, want the old code", code, body)
 		}
 	}
 	if code, body := app.get("/offload"); code != 200 || body != "hello" {
 		t.Errorf("/offload after the refused reload: %d %q, want the old code", code, body)
+	}
+	app.logged("php thread not replaced", 1)
+	if log := app.logs.String(); strings.Contains(log, "keeps stopping") {
+		t.Errorf("a recycled thread that could not start stopped the server:\n%s", log)
 	}
 
 	app.greet("fixed")
@@ -390,15 +401,15 @@ func filler(name string) string {
 }
 
 // reloadsUntilRestart calls change and sends the reload signal, again and
-// again, until the server starts anew in place. It returns how many times.
-func (a *reloadApp) reloadsUntilRestart(change func(v int)) int {
+// again, until the server starts anew in place, twelve times at most. It
+// returns how many times, and whether the server did.
+func (a *reloadApp) reloadsUntilRestart(change func(v int)) (reloads int, restarted bool) {
 	a.t.Helper()
 	for v := 1; v <= 12; v++ {
 		change(v)
 		if err := a.cmd.Process.Signal(syscall.SIGUSR1); err != nil {
 			a.t.Fatal(err)
 		}
-		restarted := false
 		waitUntil(a.t, "the reload is done", func() bool {
 			log := a.logs.String()
 			restarted = strings.Contains(log, "restarting in place")
@@ -409,11 +420,10 @@ func (a *reloadApp) reloadsUntilRestart(change func(v int)) int {
 			if log := a.logs.String(); strings.Contains(log, "level=ERROR") {
 				a.t.Errorf("the restart logged an error:\n%s", log)
 			}
-			return v
+			return v, true
 		}
 	}
-	a.t.Fatal("12 reloads filled no cache")
-	return 0
+	return 12, false
 }
 
 // The new code goes into opcache beside the old, which threads still run.
@@ -421,7 +431,9 @@ func (a *reloadApp) reloadsUntilRestart(change func(v int)) int {
 // old release there, and after a few of them opcache asks for its restart
 // while the first new thread reads the code. The reload then gives the
 // server a new process, whose cache is empty, instead of a thread that
-// would wipe the cache under the others (startgate.h).
+// would wipe the cache under the others (startgate.h). A PHP older than 8.4
+// gives no sign of that restart, so the threads of a reload keep out of
+// opcache there, and no number of releases fills it.
 func TestReloadThatFillsOpcacheRestartsInPlace(t *testing.T) {
 	if os.Getenv("CAIRO_TEST_NO_OPCACHE") != "" {
 		t.Skip("this binary has no opcache")
@@ -444,7 +456,7 @@ func TestReloadThatFillsOpcacheRestartsInPlace(t *testing.T) {
 	app := serveReload(t, current, nil, "--threads", "2", "--php-ini", ini)
 	app.answers("/where", "r0")
 
-	last := app.reloadsUntilRestart(func(v int) {
+	last, restarted := app.reloadsUntilRestart(func(v int) {
 		next := filepath.Join(root, "next")
 		if err := os.Symlink(release(v), next); err != nil {
 			t.Fatal(err)
@@ -453,7 +465,12 @@ func TestReloadThatFillsOpcacheRestartsInPlace(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	app.logged("opcache's memory is full", 1)
+	if tells := opcacheTellsOfRestart(t); restarted != tells {
+		t.Fatalf("restarted in place: %v after %d reloads, want %v", restarted, last, tells)
+	}
+	if restarted {
+		app.logged("opcache's memory is full", 1)
+	}
 	app.answers("/where", "r"+strconv.Itoa(last))
 	app.answers("/", "r"+strconv.Itoa(last))
 }

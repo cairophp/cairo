@@ -32,6 +32,9 @@ $app = new App();
 if (getenv('CAIRO_CONCURRENCY') === 'isolated') {
     $app->concurrency('isolated');
 }
+// A thread that is recycled reads the code on disk too, and one that cannot
+// start leaves the old thread in its place.
+$app->maxRequests((int) (getenv('CAIRO_MAX_REQUESTS') ?: 0));
 
 $http = $app->http(getenv('CAIRO_HTTP') ?: ':8080');
 

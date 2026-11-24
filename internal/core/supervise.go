@@ -33,6 +33,18 @@ import (
 // serves until then, so no request waits behind the boot of the new one,
 // finishes the requests it holds, then exits. A reload replaces every thread
 // that way (reload.go).
+//
+// A replacement that ends before its loop takes no slot: the code on disk
+// does not start (a parse error, an exception, another declaration), and the
+// thread it was to replace is the one that still can serve. That one stays,
+// and is tried again later.
+
+// Where a thread is with its pool slot (thread.place).
+const (
+	placed     = iota // in its slot, or an offload thread: restarted when it dies
+	placeSpare        // started for a slot that another thread still has
+	placeNone         // it ended before its loop as a spare: it is not restarted
+)
 
 // maxThreads matches CAIRO_MAX_THREADS in extension.h.
 const maxThreads = 4096
@@ -97,20 +109,22 @@ func (e *Engine) threadExited(t *thread, status int) {
 		e.report(fmt.Errorf("%w: %s", ErrRestartNeeded, noStarts()))
 		return
 	}
-	if t.trial.Load() && !t.came.Load() {
-		// The first thread of a reload, and the new code does not start:
-		// it had no pool slot, so nothing was queued for it (Reload).
+	if !t.came.Load() && (t.place.CompareAndSwap(placeSpare, placeNone) || t.place.Load() == placeNone) {
+		// The code on disk does not start, and the thread had no pool slot
+		// yet: nothing was queued for it, and the one it was to replace
+		// serves on (replace, Reload).
 		e.releaseTid(t)
 		return
 	}
 	if t.pool == poolOffload {
 		e.jobLost(t)
 	}
-	retiring := t.retiring.Load()
 	// No call is between the thread's tables and its inbox while this is
 	// held, and with retiring, nothing is queued here from now on (a crash
-	// can come before retire() got as far as retired).
+	// can come before retire() got as far as retired). keep reads gone
+	// under it, to learn whether the thread it gives back still runs.
 	t.sendMu.Lock()
+	retiring := t.retiring.Load()
 	t.retired, t.gone = t.retired || retiring, retiring
 	failed := e.failCalls(t, retiring)
 	t.sendMu.Unlock()
@@ -224,18 +238,17 @@ func (e *Engine) retire(old *thread, reason string) {
 
 // replace is retire for a thread that the caller has marked as retiring.
 func (e *Engine) replace(old *thread, reason string) {
-	nt, err := e.spare(old.slot, false)
+	nt, err := e.spare(old.slot)
 	if err != nil {
 		old.retiring.Store(false)
-		e.log.Error("php thread not recycled", "thread", old.id, "err", err)
+		e.log.Error("php thread not replaced", "thread", old.id, "reason", reason, "err", err)
 		return
 	}
 	if nt == nil {
 		return
 	}
-	// A new thread that ends before its loop is restarted like any other
-	// (threadExited), in the slot: the old one has asked to leave. With an
-	// old one that died meanwhile, requests wait in the new one's inbox.
+	// With an old one that dies meanwhile, the new one gets the slot
+	// before it has booted, and requests wait in its inbox.
 	select {
 	case <-nt.ready:
 	case <-old.left:
@@ -244,12 +257,55 @@ func (e *Engine) replace(old *thread, reason string) {
 	if nt.refused.Load() {
 		return // old serves on, until the process starts anew (ErrRestartNeeded)
 	}
+	if isClosed(nt.ready) && !nt.came.Load() && !isClosed(old.left) && !e.shuttingDown() {
+		nt.place.Store(placeNone)
+		e.keep(old, nt, reason)
+		return
+	}
+	if !nt.place.CompareAndSwap(placeSpare, placed) {
+		// It ended before its loop and is not restarted (threadExited),
+		// and old has left: the slot needs a thread, whatever becomes of it.
+		e.replace(old, reason)
+		return
+	}
 	e.swap(old, nt, reason)
+}
+
+// keep gives old, whose replacement nt did not start, its place back, and
+// asks for a replacement again later: 1s, 2s, 4s and so on, a minute at most.
+func (e *Engine) keep(old, nt *thread, reason string) {
+	old.sendMu.Lock()
+	gone := old.gone // it died while it was retiring: nothing restarts it
+	if !gone {
+		old.retiring.Store(false)
+	}
+	old.sendMu.Unlock()
+	if gone {
+		e.replace(old, reason)
+		return
+	}
+	err := errors.New("the code on disk did not start (see the PHP errors above); the thread serves on with the code it has")
+	if nt.differs.Load() {
+		err = ErrDeclarationChanged
+	}
+	again := min(time.Second<<old.kept, time.Minute)
+	old.kept = min(old.kept+1, 6)
+	e.log.Error("php thread not replaced", "thread", old.id, "reason", reason, "err", err, "again_in", again)
+	time.AfterFunc(again, func() { e.retire(old, reason) })
+}
+
+func isClosed(c <-chan struct{}) bool {
+	select {
+	case <-c:
+		return true
+	default:
+		return false
+	}
 }
 
 // spare starts a request thread for a pool slot that another thread still
 // has. nil when the engine is stopping.
-func (e *Engine) spare(slot int, trial bool) (*thread, error) {
+func (e *Engine) spare(slot int) (*thread, error) {
 	e.lifeMu.Lock()
 	if e.shuttingDown() {
 		e.lifeMu.Unlock()
@@ -261,7 +317,7 @@ func (e *Engine) spare(slot int, trial bool) (*thread, error) {
 		return nil, errors.New("no free thread ids")
 	}
 	nt := e.newThread(tid, poolWorker, slot)
-	nt.trial.Store(trial)
+	nt.place.Store(placeSpare)
 	e.threadsWG.Add(1)
 	e.lifeMu.Unlock()
 	if err := e.startThread(nt); err != nil {

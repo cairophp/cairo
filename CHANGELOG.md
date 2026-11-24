@@ -23,11 +23,11 @@ change the PHP API; patch versions do not.
   process: when that changes, or a `.env` file does (PHP's `putenv()` is
   the process's), `--watch` starts the process anew in place, and the signal
   refuses another declaration and says so. A reload that fills opcache ends
-  in such a restart too, instead of threads that keep the code for
-  themselves. The watcher looks at the files' times
-  every 250 ms instead of using the kernel's file events, so it needs no
-  dependency and works in a directory shared with a container. See
-  `examples/reload`.
+  in such a restart too (with a PHP older than 8.4, which cannot tell of it,
+  the threads of a reload compile for themselves and leave opcache alone).
+  The watcher looks at the files' times every 250 ms instead of using the
+  kernel's file events, so it needs no dependency and works in a directory
+  shared with a container. See `examples/reload`.
 - The Mercure hub. `$http->mercure()` makes a server the hub of the
   [Mercure](https://mercure.rocks) protocol at `/.well-known/mercure`: Go
   serves every subscriber, so a subscriber holds no PHP thread, fiber or
@@ -162,6 +162,12 @@ change the PHP API; patch versions do not.
 
 ### Fixed
 
+- A thread that `maxRequests()` or `maxMemory()` recycled, while the code on
+  disk did not start (a parse error, other routes in `server.php`), had a
+  replacement that died again and again, and after five tries the server
+  stopped. Now the old thread stays in its place and serves on, and the
+  replacement is tried again after 1 s, 2 s, 4 s and so on, a minute at
+  most, with `php thread not replaced` in the log.
 - A server no longer dies when opcache restarts its cache. opcache does that
   once the cache is full of stale code (files that changed under a running
   server) or after `opcache_reset()`, at the start of the next PHP request,

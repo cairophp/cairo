@@ -58,13 +58,21 @@ func writerOf(ctx context.Context) (*event, error) {
 	return ev, nil
 }
 
+// began is what PHP made of a request's client while its call was open,
+// instead of answering the call with a response: a streamed answer, a
+// WebSocket, events that Go serves. The handler in Go ends it when the call
+// returns, and failed says that PHP did not end well.
+type began interface {
+	finish(failed bool)
+}
+
 // end is the handler saying that it is about to return: nothing begins to
-// write after it. It returns the answer that PHP began to stream, if any.
-func (ev *event) end() *stream {
+// write after it. It returns what PHP began, if anything.
+func (ev *event) end() began {
 	ev.mu.Lock()
 	defer ev.mu.Unlock()
 	ev.ended = true
-	return ev.stream
+	return ev.began
 }
 
 type stream struct {
@@ -112,12 +120,19 @@ func OpenStream(ctx context.Context, status int, header map[string][]string) (in
 		return 0, err
 	}
 	defer ev.mu.Unlock()
-	if ev.stream != nil {
+	if ev.began != nil {
 		return 0, errors.New("the answer has already begun")
 	}
+	st := ev.openStream(status, header)
+	ev.began = st
+	streams.Store(st.id, st)
+	return st.id, nil
+}
+
+// openStream sends the head of an answer whose body follows in pieces.
+func (ev *event) openStream(status int, header map[string][]string) *stream {
 	st := &stream{id: nextStreamID.Add(1), w: ev.w, rc: http.NewResponseController(ev.w), stall: ev.stall}
 	st.sends = duplex.NewSendQueue(st.write, st.flush)
-	ev.stream = st
 	h := ev.w.Header()
 	for k, vs := range header {
 		h[http.CanonicalHeaderKey(k)] = vs
@@ -125,8 +140,7 @@ func OpenStream(ctx context.Context, status int, header map[string][]string) (in
 	st.extend()
 	ev.w.WriteHeader(status)
 	st.flush()
-	streams.Store(st.id, st)
-	return st.id, nil
+	return st
 }
 
 // extend gives the next write its own time.
@@ -203,7 +217,7 @@ func Hint(ctx context.Context, status int, header map[string][]string) error {
 		return err
 	}
 	defer ev.mu.Unlock()
-	if ev.stream != nil {
+	if ev.began != nil {
 		return errors.New("the answer has already begun")
 	}
 	h := ev.w.Header()

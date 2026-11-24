@@ -16,6 +16,7 @@ type ReadAhead[M ~[]byte] struct {
 	end   error         // how the stream ended, once it has
 	ready chan struct{} // a message or the end is there to take
 	room  chan struct{} // a take emptied what was held
+	done  chan struct{} // closed once the end is kept: nothing more is read
 }
 
 // The bound: 64 messages, or 1 MiB and the message that passed it.
@@ -29,12 +30,17 @@ const (
 // is the stream's: the goroutine ends when recv fails, which it does once
 // ctx has ended.
 func NewReadAhead[M ~[]byte](ctx context.Context, recv func() (M, error)) *ReadAhead[M] {
-	r := &ReadAhead[M]{ready: make(chan struct{}, 1), room: make(chan struct{}, 1)}
+	r := &ReadAhead[M]{ready: make(chan struct{}, 1), room: make(chan struct{}, 1), done: make(chan struct{})}
 	go r.read(ctx, recv)
 	return r
 }
 
+// Done is closed when the stream has ended and how it ended is there to
+// take, behind the messages that came before.
+func (r *ReadAhead[M]) Done() <-chan struct{} { return r.done }
+
 func (r *ReadAhead[M]) read(ctx context.Context, recv func() (M, error)) {
+	defer close(r.done)
 	for {
 		msg, err := recv()
 		full := r.add(msg, err)
@@ -44,7 +50,7 @@ func (r *ReadAhead[M]) read(ctx context.Context, recv func() (M, error)) {
 		for full && ctx.Err() == nil {
 			select {
 			case <-r.room:
-				full = r.full()
+				full = r.Full()
 			case <-ctx.Done():
 			}
 		}
@@ -76,7 +82,9 @@ func (r *ReadAhead[M]) add(msg M, end error) bool {
 	return full
 }
 
-func (r *ReadAhead[M]) full() bool {
+// Full reports whether the bound is reached: nothing is read from the
+// stream until PHP has taken what is held.
+func (r *ReadAhead[M]) Full() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.isFull()
@@ -91,23 +99,39 @@ func (r *ReadAhead[M]) isFull() bool {
 // ended, to every caller. A ctx that ends first is that caller's error.
 func (r *ReadAhead[M]) Take(ctx context.Context) ([]M, error) {
 	for {
-		r.mu.Lock()
-		msgs, end := r.msgs, r.end
-		r.msgs, r.size = nil, 0
-		r.mu.Unlock()
-		if len(msgs) > 0 {
-			signal(r.room)
-			return msgs, nil
+		if msgs, end := r.TryTake(); len(msgs) > 0 || end != nil {
+			return msgs, end
 		}
-		if end != nil {
-			signal(r.ready) // for the callers after this one
-			return nil, end
+		if err := r.Wait(ctx); err != nil {
+			return nil, err
 		}
-		select {
-		case <-r.ready:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
+	}
+}
+
+// TryTake is Take without the wait: it returns nothing when no message has
+// arrived and the stream has not ended.
+func (r *ReadAhead[M]) TryTake() ([]M, error) {
+	r.mu.Lock()
+	msgs, end := r.msgs, r.end
+	r.msgs, r.size = nil, 0
+	r.mu.Unlock()
+	if len(msgs) > 0 {
+		signal(r.room)
+		return msgs, nil
+	}
+	if end != nil {
+		signal(r.ready) // for the callers after this one
+	}
+	return nil, end
+}
+
+// Wait returns when there may be something to take, or with ctx's error.
+func (r *ReadAhead[M]) Wait(ctx context.Context) error {
+	select {
+	case <-r.ready:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

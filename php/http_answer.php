@@ -55,8 +55,7 @@ namespace Cairo\Internal {
                     $response = is_string($response) ? Http\Response::text($response) : Http\Response::json($response);
                 }
                 if (($writer = $response->writer()) !== null) {
-                    $stream = Http\Stream::open($response->status, $response->headers);
-                    \cairo_guard(static fn () => $writer($stream));
+                    \cairo_guard($writer);
                 }
             } catch (Context\DeadlineExceeded) {
                 $response = Http\Response::text("Gateway Timeout\n", 504);

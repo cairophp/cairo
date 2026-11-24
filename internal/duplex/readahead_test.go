@@ -106,7 +106,7 @@ func TestReadAheadKeepsOrderAndTheEnd(t *testing.T) {
 func TestReadAheadIsBounded(t *testing.T) {
 	s, _ := newSource(t, 3*aheadMessages)
 	r := NewReadAhead(s.ctx, s.recv)
-	until(t, "the bound is reached", r.full)
+	until(t, "the bound is reached", r.Full)
 	if left := len(s.feed); left != 2*aheadMessages {
 		t.Fatalf("%d messages were read ahead, the bound is %d", 3*aheadMessages-left, aheadMessages)
 	}
@@ -122,7 +122,7 @@ func TestReadAheadIsBounded(t *testing.T) {
 		big.feed <- make([]byte, aheadBytes/2+1)
 	}
 	rb := NewReadAhead(big.ctx, big.recv)
-	until(t, "the size bound is reached", rb.full)
+	until(t, "the size bound is reached", rb.Full)
 	if left := len(big.feed); left != 2 {
 		t.Fatalf("%d large messages were read ahead, want 2", 4-left)
 	}
@@ -133,7 +133,7 @@ func TestReadAheadIsBounded(t *testing.T) {
 func TestReadAheadStreamEndsAtTheBound(t *testing.T) {
 	s, cancel := newSource(t, 2*aheadMessages)
 	r := NewReadAhead(s.ctx, s.recv)
-	until(t, "the bound is reached", r.full)
+	until(t, "the bound is reached", r.Full)
 	cancel()
 	got, err := takeAll(t, r)
 	if !errors.Is(err, context.Canceled) {
@@ -160,4 +160,37 @@ func TestReadAheadCallerStopsWaiting(t *testing.T) {
 		t.Fatalf("ended with %v", err)
 	}
 	inOrder(t, got, 1)
+}
+
+// A take that does not wait returns nothing while nothing has arrived, and
+// Done says when the stream has ended, before its last messages are taken.
+func TestReadAheadTakesWithoutWaiting(t *testing.T) {
+	s, _ := newSource(t, 0)
+	r := NewReadAhead(s.ctx, s.recv)
+	if msgs, end := r.TryTake(); len(msgs) != 0 || end != nil {
+		t.Fatalf("with nothing sent: %d messages, %v", len(msgs), end)
+	}
+	s.feed <- []byte("0")
+	if err := r.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	close(s.feed)
+	select {
+	case <-r.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Done is open after the stream's end")
+	}
+	msgs, end := r.TryTake()
+	inOrder(t, []string{string(msgs[0])}, 1)
+	if end != nil {
+		t.Fatalf("the end came with the last message: %v", end)
+	}
+	if msgs, end := r.TryTake(); len(msgs) != 0 || !errors.Is(end, io.EOF) {
+		t.Fatalf("after the last message: %d messages, %v", len(msgs), end)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := NewReadAhead(s.ctx, func() ([]byte, error) { <-s.ctx.Done(); return nil, s.ctx.Err() }).Wait(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a wait whose context ended: %v", err)
+	}
 }

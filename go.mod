@@ -4,6 +4,7 @@ go 1.24.7
 
 require (
 	github.com/bufbuild/protocompile v0.14.1
+	github.com/coder/websocket v1.8.15
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/prometheus/client_golang v1.23.2
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.66.0

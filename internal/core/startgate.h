@@ -12,9 +12,10 @@
 // thread that starts: a recycled one, or one that takes a dead one's place.
 //
 // So from the moment opcache schedules a restart, which it tells through a
-// hook, no thread starts here any more: the restart stays pending and the
+// hook since PHP 8.4, no thread starts here any more: the restart stays pending and the
 // threads that run are safe. The process has to start anew to get its cache
 // back; the engine reports that (ErrRestartNeeded in supervise.go).
+// An older PHP has no hook, and no thread is refused there.
 
 // What cairo_thread_run() returns for a thread that was not let in.
 #define CAIRO_START_REFUSED (-2)

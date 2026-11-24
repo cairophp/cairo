@@ -20,6 +20,9 @@ func startOpcache(t *testing.T) (dir string, logs *syncBuffer, get func(path str
 	if os.Getenv("CAIRO_TEST_NO_OPCACHE") != "" {
 		t.Skip("this binary has no opcache")
 	}
+	if !opcacheTellsOfRestart(t) {
+		t.Skip("PHP older than 8.4: opcache does not tell of its restart, and the server still dies of it")
+	}
 	dir = t.TempDir()
 	code, err := os.ReadFile("testdata/opcache/server.php")
 	if err != nil {
@@ -56,6 +59,21 @@ func startOpcache(t *testing.T) (dir string, logs *syncBuffer, get func(path str
 		b, _ := io.ReadAll(resp.Body)
 		return resp.StatusCode, string(b)
 	}
+}
+
+// opcacheTellsOfRestart is whether the binary's PHP has the hook that the
+// start gate needs (zend_accel_schedule_restart_hook, PHP 8.4).
+func opcacheTellsOfRestart(t *testing.T) bool {
+	t.Helper()
+	out, err := exec.Command(cairoBin, "php", "-r", "echo PHP_VERSION_ID;").Output()
+	if err != nil {
+		t.Fatalf("cairo php: %v", err)
+	}
+	id, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		t.Fatalf("PHP_VERSION_ID: %q", out)
+	}
+	return id >= 80400
 }
 
 // bigFile writes version v of big.php into dir: half a megabyte of

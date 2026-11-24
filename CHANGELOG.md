@@ -173,6 +173,8 @@ change the PHP API; patch versions do not.
   starts anew in place, under the same process id, with the reason in the
   log (`restarting in place`). Connections are refused until the new process
   listens.
+  This needs PHP 8.4 or newer, where opcache tells of the restart; with an
+  older PHP the server still dies.
 - `cairo serve` no longer leaves its directory of runtime files
   (`cairo-runtime-*` in the temporary directory) behind when it stops.
 - A PHP thread that died of a fatal error left the stacks of the fibers that

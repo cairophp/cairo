@@ -1,5 +1,5 @@
 # Builds Cairo against a ZTS PHP with the embed SAPI, then ships a slim image.
-FROM golang:1.24-bookworm AS build
+FROM golang:1.27-bookworm AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential autoconf bison re2c pkg-config xz-utils curl ca-certificates \
       libxml2-dev libsqlite3-dev libcurl4-openssl-dev libssl-dev libonig-dev libicu-dev libsodium-dev libzip-dev zlib1g-dev libbz2-dev libgmp-dev libpng-dev libjpeg-dev libwebp-dev libfreetype-dev \

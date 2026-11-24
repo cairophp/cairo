@@ -1,6 +1,6 @@
 module github.com/cairophp/cairo
 
-go 1.24.7
+go 1.27.4
 
 require (
 	github.com/bufbuild/protocompile v0.14.1

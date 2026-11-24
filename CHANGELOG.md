@@ -103,6 +103,18 @@ change the PHP API; patch versions do not.
   ordinary PHP has and Cairo's does not (`pcntl_fork()`, an extension of
   your own).
 
+### Changed
+
+- Cairo is built with Go 1.27 (it was 1.24), and building it from source
+  needs Go 1.27. With it come the defaults of Go 1.25 to 1.27. The one an
+  operator may notice: in a container with a CPU limit, Go now counts the
+  CPUs of the limit and no longer those of the machine, which measured
+  11% more requests under a limit of one CPU than the count Go 1.24
+  arrives at on a machine with 64. The PHP threads are counted as before:
+  `$app->threads()`, or one for each CPU of the machine. `GOMAXPROCS`
+  still overrides Go's count. The static binary is built on Alpine 3.24
+  (it was 3.21).
+
 ### Fixed
 
 - A PHP thread that died of a fatal error left the stacks of the fibers that

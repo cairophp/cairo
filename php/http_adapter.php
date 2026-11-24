@@ -16,6 +16,10 @@ namespace Cairo\Http {
      */
     final class Adapter
     {
+        /** A PSR-7 body up to this size is one answer; a larger one is read and sent in pieces of PIECE. */
+        private const WHOLE = 1 << 20;
+        private const PIECE = 1 << 16;
+
         /** @internal turns a framework object given as a handler into a Cairo handler */
         public static function wrap(object $handler): mixed
         {
@@ -100,14 +104,25 @@ namespace Cairo\Http {
             return $r->withAttribute('cairo.context', \Cairo\Context::current());
         }
 
-        /** A Cairo Response from a PSR-7 ResponseInterface. */
+        /**
+         * A Cairo Response from a PSR-7 ResponseInterface. A body of unknown
+         * size, or a large one, is sent in pieces as it is read.
+         */
         public static function fromPsr7(object $response): Response
         {
             $body = $response->getBody();
             if ($body->isSeekable()) {
                 $body->rewind();
             }
-            return new Response($response->getStatusCode(), $response->getHeaders(), $body->getContents());
+            $size = $body->getSize();
+            if ($size !== null && $size <= self::WHOLE) {
+                return new Response($response->getStatusCode(), $response->getHeaders(), $body->getContents());
+            }
+            return Response::stream(static function (Stream $out) use ($body): void {
+                while (!$body->eof()) {
+                    $out->write($body->read(self::PIECE));
+                }
+            }, $response->getStatusCode(), $response->getHeaders());
         }
 
         /** A Symfony (or Laravel) Request for $req; route parameters become attributes. */
@@ -124,11 +139,27 @@ namespace Cairo\Http {
             return $request;
         }
 
-        /** A Cairo Response from a Symfony (or Laravel) Response, streamed ones included. */
+        /**
+         * A Cairo Response from a Symfony (or Laravel) Response. A streamed
+         * response, and a file that no X-Sendfile header leaves to the
+         * server, is sent right here, while its callback writes it: the
+         * Response that comes back then only stands for it.
+         */
         public static function fromSymfony(object $response, ?object $request = null): Response
         {
             if ($request !== null) {
                 $response->prepare($request);
+            }
+            $headers = $response->headers->allPreserveCaseWithoutCookies();
+            foreach ($response->headers->getCookies() as $cookie) {
+                $headers['Set-Cookie'][] = (string) $cookie;
+            }
+            $status = $response->getStatusCode();
+            $file = $response instanceof \Symfony\Component\HttpFoundation\BinaryFileResponse
+                && !$response->headers->has('X-Sendfile') && !$response->headers->has('X-Accel-Redirect');
+            if ($file || $response instanceof \Symfony\Component\HttpFoundation\StreamedResponse) {
+                \Cairo\Internal\HttpOutput::send($status, $headers, static fn () => $response->sendContent());
+                return new Response($status);
             }
             ob_start();
             try {
@@ -136,11 +167,7 @@ namespace Cairo\Http {
             } finally {
                 $body = (string) ob_get_clean();
             }
-            $headers = $response->headers->allPreserveCaseWithoutCookies();
-            foreach ($response->headers->getCookies() as $cookie) {
-                $headers['Set-Cookie'][] = (string) $cookie;
-            }
-            return new Response($response->getStatusCode(), $headers, $body);
+            return new Response($status, $headers, $body);
         }
 
         private static function url(array $event): string

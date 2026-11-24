@@ -163,26 +163,28 @@ namespace Cairo\Internal {
 
         /**
          * The running fiber's answer begins now, with this head, and what
-         * the fiber writes with echo until end() is its body.
+         * $write echoes is its body: a framework's streamed response.
          *
          * @param array<string, string|list<string>> $headers
+         * @param callable(): mixed $write
          */
-        public static function begin(int $status, array $headers): self
+        public static function send(int $status, array $headers, callable $write): void
         {
             $out = self::$of[\Fiber::getCurrent()] ?? null;
-            if ($out === null) {
-                $out = new self();
-                try {
-                    $out->stream = Http\Stream::open($status, $headers);
-                } catch (\Throwable $e) {
-                    $out->end();
-                    throw $e;
-                }
-                return $out;
+            if ($out !== null) {
+                // Classic PHP has taken the fiber's output already, and ends it.
+                $out->stream ??= Http\Stream::open($status, $headers);
+                $write();
+                return;
             }
-            // Classic PHP has taken the fiber's output already.
-            $out->stream ??= Http\Stream::open($status, $headers);
-            return $out;
+            $out = new self();
+            try {
+                $out->stream = Http\Stream::open($status, $headers);
+                $write();
+            } finally {
+                $rest = $out->end();
+            }
+            $out->stream->write($rest);
         }
 
         /** @internal for http_stream.c: flush(), or the output has grown large */

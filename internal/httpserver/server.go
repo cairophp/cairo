@@ -14,7 +14,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/cairophp/cairo/internal/middleware"
@@ -167,9 +167,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 type event struct {
 	context.Context
 	w      http.ResponseWriter
-	stream atomic.Pointer[stream] // the answer, once PHP has begun to stream it
-	stall  time.Duration          // the server's write timeout, which a stream gives each write
-	upload *bodyStream            // the request's body, when PHP reads it in pieces (bodystream.go)
+	mu     sync.Mutex    // holds the handler back while an operation of PHP writes (writerOf)
+	ended  bool          // the handler is returning: w is not to be used
+	stream *stream       // the answer, once PHP has begun to stream it
+	stall  time.Duration // the server's write timeout, which a stream gives each write
+	upload *bodyStream   // the request's body, when PHP reads it in pieces (bodystream.go)
 
 	route   int
 	name    string // "GET /users/{id}", for logs
@@ -284,7 +286,7 @@ func routeHandler(r Route, php Dispatcher, cache *responseCache, log *slog.Logge
 		defer cleanup()
 		if !cached {
 			resp, err := callPHP(ev, php, ev)
-			if st := ev.stream.Load(); st != nil {
+			if st := ev.end(); st != nil {
 				resp.free()
 				st.finish(err != nil || resp.status >= http.StatusInternalServerError)
 				return

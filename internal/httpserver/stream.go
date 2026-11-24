@@ -41,6 +41,32 @@ func exchangeOf(ctx context.Context) (*event, error) {
 	return ev, nil
 }
 
+// writerOf is exchangeOf for an operation that writes to the client. The
+// request's handler in Go returns without PHP when the client has gone, and
+// its ResponseWriter is no longer to be used then: until the caller unlocks
+// the event, the handler stays.
+func writerOf(ctx context.Context) (*event, error) {
+	ev, err := exchangeOf(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ev.mu.Lock()
+	if ev.ended {
+		ev.mu.Unlock()
+		return nil, context.Canceled
+	}
+	return ev, nil
+}
+
+// end is the handler saying that it is about to return: nothing begins to
+// write after it. It returns the answer that PHP began to stream, if any.
+func (ev *event) end() *stream {
+	ev.mu.Lock()
+	defer ev.mu.Unlock()
+	ev.ended = true
+	return ev.stream
+}
+
 type stream struct {
 	id    int64
 	w     http.ResponseWriter
@@ -63,18 +89,20 @@ var ErrStreamClosed = duplex.ErrClosed
 // write timeout bounds each of its writes instead of the whole answer: a
 // client that stops reading is dropped, and one that reads may stay.
 func OpenStream(ctx context.Context, status int, header map[string][]string) (int64, error) {
-	ev, err := exchangeOf(ctx)
-	if err != nil {
-		return 0, err
-	}
 	if status < 200 || status > 599 {
 		return 0, fmt.Errorf("a streamed answer cannot have status %d", status)
 	}
-	st := &stream{id: nextStreamID.Add(1), w: ev.w, rc: http.NewResponseController(ev.w), stall: ev.stall}
-	st.sends = duplex.NewSendQueue(st.write, st.flush)
-	if !ev.stream.CompareAndSwap(nil, st) {
+	ev, err := writerOf(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer ev.mu.Unlock()
+	if ev.stream != nil {
 		return 0, errors.New("the answer has already begun")
 	}
+	st := &stream{id: nextStreamID.Add(1), w: ev.w, rc: http.NewResponseController(ev.w), stall: ev.stall}
+	st.sends = duplex.NewSendQueue(st.write, st.flush)
+	ev.stream = st
 	h := ev.w.Header()
 	for k, vs := range header {
 		h[http.CanonicalHeaderKey(k)] = vs
@@ -139,14 +167,15 @@ func (st *stream) finish(failed bool) {
 // the client of the request that ctx is an operation of, ahead of its
 // answer. The headers are the hint's alone: the answer names its own.
 func Hint(ctx context.Context, status int, header map[string][]string) error {
-	ev, err := exchangeOf(ctx)
-	if err != nil {
-		return err
-	}
 	if status <= 101 || status > 199 {
 		return fmt.Errorf("%d is not the status of a hint", status)
 	}
-	if ev.stream.Load() != nil {
+	ev, err := writerOf(ctx)
+	if err != nil {
+		return err
+	}
+	defer ev.mu.Unlock()
+	if ev.stream != nil {
 		return errors.New("the answer has already begun")
 	}
 	h := ev.w.Header()

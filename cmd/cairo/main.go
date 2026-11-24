@@ -211,6 +211,7 @@ func serve(args []string) error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	var runErr error
+	restarting := false
 	select {
 	case got := <-sig:
 		log.Info("shutting down", "signal", got.String())
@@ -218,6 +219,10 @@ func serve(args []string) error {
 		keepServing(*drain, sig)
 	case runErr = <-errs:
 	case runErr = <-engine.Errors():
+		if errors.Is(runErr, core.ErrRestartNeeded) {
+			log.Warn("restarting in place", "because", runErr)
+			restarting, runErr = true, nil
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *grace)
@@ -234,6 +239,9 @@ func serve(args []string) error {
 	defer cancelFlush()
 	if err := tel.Shutdown(flush); err != nil {
 		log.Warn("telemetry shutdown", "err", err)
+	}
+	if restarting {
+		return restartProcess()
 	}
 	return runErr
 }

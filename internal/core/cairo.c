@@ -42,6 +42,7 @@
 #include "fiber_local.h"
 #include "fibers.h"
 #include "parked.h"
+#include "startgate.h"
 #include "_cgo_export.h"
 
 // -1 is the boot thread (declare phase); 0..n-1 are worker threads.

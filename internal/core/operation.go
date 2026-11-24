@@ -88,20 +88,26 @@ func CtxError(ctx context.Context) string {
 // PHP derived from that context for the code that asks (Context::goScope()):
 // 0 for nothing, a deadline as a Unix time, or +Inf for no deadline of its
 // own; an operation with a scope gets a context that PHP can end (goOpCancel).
-// Returns -1 for a request that this thread does not hold: it was answered,
-// or the caller is in none.
+// Returns -1 for a request that this thread does not hold: the caller is in
+// none. A request that PHP has answered comes with its sign turned
+// (-request): its fiber runs on (Context::defer(), work after
+// fastcgi_finish_request()), and its operations have no context of Go's
+// left, which ended with the answer, only the scope PHP gave them.
 func (e *Engine) submit(tid C.int, request int64, scope float64, o op) C.longlong {
 	t := e.own(tid)
 	if t == nil {
 		return -1
 	}
+	run := operation{op: o, ctx: context.Background(), thread: t, request: -request}
 	t.mu.Lock()
-	c := t.calls[request]
-	if c == nil {
-		t.mu.Unlock()
-		return -1
+	if request >= 0 {
+		c := t.calls[request]
+		if c == nil {
+			t.mu.Unlock()
+			return -1
+		}
+		run.ctx, run.request, run.probe = c.ctx, request, c.probe
 	}
-	run := operation{op: o, ctx: c.ctx, thread: t, request: request, probe: c.probe}
 	w := t.worker()
 	t.mu.Unlock()
 	run.ID = e.nextID.Add(1)

@@ -37,7 +37,7 @@ func (f *fakePHP) DispatchLent(ctx context.Context, _ wire.Event) ([]byte, []byt
 
 func cachedRoute(t *testing.T, php *fakePHP, c RouteCache) func(req *http.Request) string {
 	t.Helper()
-	h := routeHandler(Route{ID: 1, Method: "GET", Path: "/", Cache: &c}, php, newResponseCache(cacheMaxBytes), slog.Default())
+	h := routeHandler(Route{ID: 1, Method: "GET", Path: "/", Cache: &c}, php, newResponseCache(cacheMaxBytes), slog.Default(), 0)
 	return func(req *http.Request) string {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, req)
@@ -178,7 +178,7 @@ func (r *countingReader) Read(p []byte) (int, error) {
 func TestCacheRefusedRequestGivesItsRefreshBack(t *testing.T) {
 	php := &fakePHP{}
 	c := newResponseCache(cacheMaxBytes)
-	h := routeHandler(Route{ID: 1, Method: "GET", Path: "/", Cache: &RouteCache{TTL: 0.02, StaleWhileRevalidate: 60}}, php, c, slog.Default())
+	h := routeHandler(Route{ID: 1, Method: "GET", Path: "/", Cache: &RouteCache{TTL: 0.02, StaleWhileRevalidate: 60}}, php, c, slog.Default(), 0)
 	serve := func(req *http.Request) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, req)

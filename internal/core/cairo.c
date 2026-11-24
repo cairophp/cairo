@@ -484,7 +484,7 @@ static void cairo_ini_defaults(HashTable *configuration_hash)
 {
 	static const char *defaults[][2] = {
 		{"html_errors", "0"},
-		{"implicit_flush", "1"},
+		{"implicit_flush", "0"},   // a flush is a call into an extension, when one streams an answer
 		{"output_buffering", "0"},
 		{"register_argc_argv", "0"},   // PHP 8.5 deprecates argv from the query string
 		{"display_errors", "0"},   // errors go to the log (below), once
@@ -506,8 +506,11 @@ static const char cairo_forced_ini[] =
 
 static size_t cairo_ub_write(const char *str, size_t len)
 {
-	// Output outside an output buffer (isolated mode buffers each request)
-	// goes to stdout, as with the CLI.
+	// Output outside an output buffer is an extension's, when one answers a
+	// request with it, and goes to stdout otherwise, as with the CLI.
+	if (cairo_extensions_output(str, len)) {
+		return len;
+	}
 	size_t done = 0;
 	while (done < len) {
 		ssize_t n = write(STDOUT_FILENO, str + done, len - done);
@@ -524,6 +527,7 @@ static size_t cairo_ub_write(const char *str, size_t len)
 
 static void cairo_flush(void *server_context)
 {
+	cairo_extensions_flush();
 }
 
 static void cairo_send_header(sapi_header_struct *sapi_header, void *server_context)

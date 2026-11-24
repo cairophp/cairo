@@ -9,6 +9,34 @@ change the PHP API; patch versions do not.
 
 ### Added
 
+- Streamed answers. `Response::stream(fn (Stream $out) => ...)` sends the
+  head and then every `$out->write()` while the handler runs, and
+  `Response::events(fn (Events $events) => ...)` is Server-Sent Events on
+  top of it. Each stream is a fiber: a PHP thread holds as many as it has
+  clients, a slow client holds back only its own handler, and the handler
+  learns that its client left (`Context\Canceled`). `->noTimeout()` takes a
+  route out of `Middleware::timeout()`, and the server's write timeout
+  bounds each write of a stream instead of the whole answer. A server that
+  stops ends its streams at their next write, in the same way, instead of
+  waiting for them until its grace time is over.
+- In isolated mode `echo`, `header()` and `flush()` are the answer, as under
+  any PHP server: `flush()` sends what was written so far,
+  `headers_send(103)` sends Early Hints and `fastcgi_finish_request()` ends
+  the answer while the handler works on.
+- `Request::earlyHints()`: 103 Early Hints from a handler.
+- `$http->sendfile($dir)`: an answer names a file and Go sends it, with
+  ranges and `If-Modified-Since`, while the PHP thread is free.
+  `Response::file($path)` names one, and so do the headers `X-Sendfile`
+  and, under a prefix, `X-Accel-Redirect`, as code written for Apache or
+  nginx sets them. A path cannot leave the directory.
+- `->streamBody()` on a route and `Request::read()`: the handler reads the
+  request's body in pieces while the client sends it, so an upload is never
+  in memory and a handler can answer while its client still sends (full
+  duplex, on HTTP/1 too).
+- Symfony's and Laravel's streamed responses (`StreamedResponse`,
+  `response()->stream()`, `eventStream()`, downloads) are sent while they
+  are made instead of being collected first, and a PSR-7 body of unknown
+  size or above 1 MiB is sent in pieces. See `examples/streaming`.
 - HTTPS and HTTP/2 on the HTTP server, so that Cairo needs no proxy in front
   of it. `$http->tls($certFile, $keyFile)` serves a certificate from two PEM
   files and reads them again when they change. `$http->autoTls($domains,

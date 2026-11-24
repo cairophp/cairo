@@ -45,7 +45,7 @@ func (p *lendingPHP) check(t *testing.T) {
 func TestLentBodyIsWrittenThenReleased(t *testing.T) {
 	for _, method := range []string{"GET", "HEAD", "POST"} {
 		php := &lendingPHP{}
-		h := routeHandler(Route{ID: 1, Method: method, Path: "/"}, php, nil, slog.Default())
+		h := routeHandler(Route{ID: 1, Method: method, Path: "/"}, php, nil, slog.Default(), 0)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest(method, "/", nil))
 		if got := w.Body.String(); got != lentText {
@@ -59,7 +59,7 @@ func TestLentBodyIsWrittenThenReleased(t *testing.T) {
 // requests that waited for the same answer: they need a copy of a lent body.
 func TestLentBodyIsCopiedForTheCache(t *testing.T) {
 	php := &lendingPHP{}
-	h := routeHandler(Route{ID: 1, Method: "GET", Path: "/", Cache: &RouteCache{TTL: 60}}, php, newResponseCache(cacheMaxBytes), slog.Default())
+	h := routeHandler(Route{ID: 1, Method: "GET", Path: "/", Cache: &RouteCache{TTL: 60}}, php, newResponseCache(cacheMaxBytes), slog.Default(), 0)
 	for range 3 {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
@@ -75,7 +75,7 @@ func TestLentBodyIsCopiedForTheCache(t *testing.T) {
 
 func TestLentBodyIsReleasedWhenTheAnswerIsMalformed(t *testing.T) {
 	php := &lendingPHP{meta: []byte{0xff}}
-	h := routeHandler(Route{ID: 1, Method: "GET", Path: "/"}, php, nil, slog.New(slog.DiscardHandler))
+	h := routeHandler(Route{ID: 1, Method: "GET", Path: "/"}, php, nil, slog.New(slog.DiscardHandler), 0)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
 	if w.Code != http.StatusInternalServerError || strings.Contains(w.Body.String(), lentText) {
@@ -87,7 +87,7 @@ func TestLentBodyIsReleasedWhenTheAnswerIsMalformed(t *testing.T) {
 // A handler that panics while it writes must not keep the body.
 func TestLentBodyIsReleasedWhenTheWriteFails(t *testing.T) {
 	php := &lendingPHP{}
-	h := routeHandler(Route{ID: 1, Method: "GET", Path: "/"}, php, nil, slog.Default())
+	h := routeHandler(Route{ID: 1, Method: "GET", Path: "/"}, php, nil, slog.Default(), 0)
 	func() {
 		defer func() { _ = recover() }()
 		h.ServeHTTP(panicWriter{httptest.NewRecorder()}, httptest.NewRequest("GET", "/", nil))

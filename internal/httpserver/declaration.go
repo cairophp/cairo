@@ -18,7 +18,10 @@ type Declaration struct {
 	Static       []StaticPath `json:"static"`
 	// PublicDir is $http->publicDir(): files served at their own paths,
 	// with everything else going to the routes ("" when not set).
-	PublicDir  string                   `json:"public_dir"`
+	PublicDir string `json:"public_dir"`
+	// Sendfile is $http->sendfile(): the directories whose files an answer
+	// may name for Go to send (X-Sendfile).
+	Sendfile   []SentDir                `json:"sendfile"`
 	Middleware []middleware.Declaration `json:"middleware"`
 	// TLS is $http->tls() or autoTls(): the server speaks HTTPS, and
 	// HTTP/2 with the clients that ask for it. Nil: plain HTTP.
@@ -42,6 +45,12 @@ type Route struct {
 	Path   string `json:"path"`
 	// Cache is the route's ->cache(...), nil when it has none.
 	Cache *RouteCache `json:"cache,omitempty"`
+	// NoTimeout is the route's ->noTimeout(): the timeout middleware
+	// leaves its requests alone.
+	NoTimeout bool `json:"no_timeout,omitempty"`
+	// StreamBody is the route's ->streamBody(): PHP reads the request's
+	// body in pieces instead of getting it whole.
+	StreamBody bool `json:"stream_body,omitempty"`
 }
 
 // RouteCache lets Go answer repeated GET requests to a route from memory.

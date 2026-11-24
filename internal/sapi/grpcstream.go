@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/cairophp/cairo/internal/core"
+	"github.com/cairophp/cairo/internal/duplex"
 	"github.com/cairophp/cairo/internal/grpcserver"
 	"github.com/cairophp/cairo/internal/wire"
 )
@@ -39,11 +40,11 @@ type clientStream struct {
 	cancel context.CancelFunc
 
 	// The requests wait here for their writer, in the order PHP sent them.
-	sends *grpcserver.SendQueue
+	sends *duplex.SendQueue
 
 	// The replies are read ahead of PHP, from its first recv.
 	readOnce sync.Once
-	ahead    *grpcserver.ReadAhead
+	ahead    *duplex.ReadAhead[wire.Raw]
 }
 
 var (
@@ -136,7 +137,7 @@ func grpcStreamOpen(ctx context.Context, req grpcStreamRequest) map[string]any {
 		return grpcStatusFail(err)
 	}
 	id := clientNextID.Add(1)
-	sends := grpcserver.NewSendQueue(func(in []byte) error { return cs.SendMsg(&grpcserver.Frame{Data: in}) })
+	sends := duplex.NewSendQueue(func(in []byte) error { return cs.SendMsg(&grpcserver.Frame{Data: in}) }, nil)
 	clientStreams.Store(id, &clientStream{cs: cs, method: m, cancel: cancel, sends: sends})
 	return map[string]any{"ok": true, "id": id}
 }
@@ -181,7 +182,7 @@ func grpcStreamSend(ctx context.Context, req grpcStreamRequest) map[string]any {
 	}
 	in, err := st.method.request(req.Message)
 	if err == nil {
-		err = sent(st.sends.Put(ctx, in))
+		err = grpcserver.CtxStatus(sent(st.sends.Put(ctx, in)))
 	}
 	if err != nil {
 		if ctx.Err() != nil {
@@ -218,8 +219,9 @@ func grpcStreamRecv(ctx context.Context, req grpcStreamRequest) map[string]any {
 	if fail != nil {
 		return fail
 	}
-	st.readOnce.Do(func() { st.ahead = grpcserver.NewReadAhead(st.cs.Context(), st.recv) })
+	st.readOnce.Do(func() { st.ahead = duplex.NewReadAhead(st.cs.Context(), st.recv) })
 	msgs, err := st.ahead.Take(ctx)
+	err = grpcserver.CtxStatus(err)
 	switch {
 	case err == nil:
 		return map[string]any{"ok": true, "messages": msgs}

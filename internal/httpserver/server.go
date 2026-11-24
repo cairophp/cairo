@@ -14,6 +14,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cairophp/cairo/internal/middleware"
@@ -52,25 +53,44 @@ func New(decl Declaration, php Dispatcher, log *slog.Logger, tel *telemetry.Tele
 		return nil, err
 	}
 	cache := newResponseCache(cacheMaxBytes)
+	var untimed func(*http.Request) bool
+	noTimeout := map[string]bool{}
 	for _, r := range decl.Routes {
 		pattern := r.Method + " " + r.Path
 		if r.Method == "*" {
 			pattern = r.Path // $http->fallback(): any method
 		}
-		mux.Handle(pattern, routeHandler(r, php, cache, log))
+		mux.Handle(pattern, routeHandler(r, php, cache, log, seconds(decl.WriteTimeout)))
+		if r.NoTimeout {
+			noTimeout[pattern] = true
+		}
+	}
+	if len(noTimeout) > 0 {
+		// The timeout runs before the route is known, so it asks.
+		untimed = func(req *http.Request) bool {
+			_, pattern := mux.Handler(req)
+			return noTimeout[pattern]
+		}
 	}
 	for _, s := range decl.Static {
 		prefix := "/" + strings.Trim(s.Prefix, "/") + "/"
 		mux.Handle("GET "+prefix, http.StripPrefix(prefix, http.FileServer(http.Dir(s.Dir))))
 	}
 	var routes http.Handler = mux
+	if len(decl.Sendfile) > 0 {
+		files, err := openSentFiles(decl.Sendfile, log)
+		if err != nil {
+			return nil, err
+		}
+		routes = files.handler(mux)
+	}
 	if decl.PublicDir != "" {
 		var err error
 		if routes, err = publicFiles(decl.PublicDir, mux); err != nil {
 			return nil, err
 		}
 	}
-	handler, err := middleware.HTTP(tel.HTTP(routes, decl.isOps), decl.Middleware, log)
+	handler, err := middleware.HTTP(tel.HTTP(routes, decl.isOps), decl.Middleware, log, untimed)
 	if err != nil {
 		return nil, err
 	}
@@ -80,6 +100,7 @@ func New(decl Declaration, php Dispatcher, log *slog.Logger, tel *telemetry.Tele
 		WriteTimeout: seconds(decl.WriteTimeout),
 		ErrorLog:     slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
+	srv.RegisterOnShutdown(stopStreams)
 	var secure *servertls.TLS
 	if decl.TLS != nil {
 		if secure, err = servertls.New(*decl.TLS, log); err != nil {
@@ -141,8 +162,18 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.srv.Shutdown(ctx)
 }
 
-// event is a request as PHP receives it (Cairo\Http\Request).
+// event is a request as PHP receives it (Cairo\Http\Request). It is also
+// the context of its call: the request's own, with the client that PHP may
+// answer in pieces (stream.go).
 type event struct {
+	context.Context
+	w      http.ResponseWriter
+	mu     sync.Mutex    // holds the handler back while an operation of PHP writes (writerOf)
+	ended  bool          // the handler is returning: w is not to be used
+	stream *stream       // the answer, once PHP has begun to stream it
+	stall  time.Duration // the server's write timeout, which a stream gives each write
+	upload *bodyStream   // the request's body, when PHP reads it in pieces (bodystream.go)
+
 	route   int
 	name    string // "GET /users/{id}", for logs
 	method  string
@@ -218,7 +249,7 @@ func (ev *event) AppendWire(b []byte, id int64, deadline float64) []byte {
 // (wire.TailEvent).
 func (ev *event) Tail() []byte { return ev.body }
 
-func routeHandler(r Route, php Dispatcher, cache *responseCache, log *slog.Logger) http.Handler {
+func routeHandler(r Route, php Dispatcher, cache *responseCache, log *slog.Logger, stall time.Duration) http.Handler {
 	var names []string
 	for _, m := range paramRe.FindAllStringSubmatch(r.Path, -1) {
 		names = append(names, m[1])
@@ -245,17 +276,22 @@ func routeHandler(r Route, php Dispatcher, cache *responseCache, log *slog.Logge
 			// GET stored and never fills the cache.
 			cached = req.Method == http.MethodGet
 		}
-		ev, cleanup, ok := newEvent(w, req, r.ID, names)
+		ev, cleanup, ok := newEvent(w, req, r, names)
 		if !ok {
 			if stale != nil {
 				cache.release(key)
 			}
 			return
 		}
-		ev.name = name
+		ev.name, ev.stall = name, stall
 		defer cleanup()
 		if !cached {
-			resp, err := callPHP(req.Context(), php, ev)
+			resp, err := callPHP(ev, php, ev)
+			if st := ev.end(); st != nil {
+				resp.free()
+				st.finish(err != nil || resp.status >= http.StatusInternalServerError)
+				return
+			}
 			if err != nil {
 				writeError(w, req, err, log)
 				return
@@ -293,18 +329,16 @@ func isMultipart(h http.Header) bool {
 
 // newEvent reads req into the event PHP receives. It answers the client
 // itself and returns false when the request is malformed.
-func newEvent(w http.ResponseWriter, req *http.Request, route int, names []string) (*event, func(), bool) {
+func newEvent(w http.ResponseWriter, req *http.Request, route Route, names []string) (*event, func(), bool) {
+	if route.StreamBody {
+		ev := &event{upload: openBody(w, req)}
+		ev.fill(w, req, route.ID, pathParams(req, names))
+		return ev, func() {}, true
+	}
 	body, err := readBody(w, req)
 	if err != nil {
 		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		return nil, nil, false
-	}
-	var params map[string]string // nil crosses as an empty array, as a route without parameters has
-	if len(names) > 0 {
-		params = make(map[string]string, len(names))
-		for _, n := range names {
-			params[n] = req.PathValue(n)
-		}
 	}
 	cleanup := func() {}
 	var form *multipartForm
@@ -317,21 +351,31 @@ func newEvent(w http.ResponseWriter, req *http.Request, route int, names []strin
 		cleanup = form.cleanup
 		body = nil // like PHP, php://input is empty for multipart/form-data
 	}
-	return &event{
-		route:   route,
-		method:  req.Method,
-		path:    req.URL.Path,
-		query:   req.URL.RawQuery,
-		headers: req.Header,
-		params:  params,
-		body:    body,
-		remote:  req.RemoteAddr,
-		host:    req.Host,
-		proto:   req.Proto,
-		tls:     req.TLS != nil,
-		values:  middleware.Values(req.Context()),
-		form:    form,
-	}, cleanup, true
+	ev := &event{body: body, form: form}
+	ev.fill(w, req, route.ID, pathParams(req, names))
+	return ev, cleanup, true
+}
+
+// pathParams are the values of the route's parameters in req's path.
+func pathParams(req *http.Request, names []string) map[string]string {
+	if len(names) == 0 {
+		return nil // crosses as an empty array, as a route without parameters has
+	}
+	params := make(map[string]string, len(names))
+	for _, n := range names {
+		params[n] = req.PathValue(n)
+	}
+	return params
+}
+
+// fill sets what an event has of its request apart from the body.
+func (ev *event) fill(w http.ResponseWriter, req *http.Request, route int, params map[string]string) {
+	ev.Context, ev.w = req.Context(), w
+	ev.route, ev.params = route, params
+	ev.method, ev.path, ev.query = req.Method, req.URL.Path, req.URL.RawQuery
+	ev.headers, ev.host, ev.proto = req.Header, req.Host, req.Proto
+	ev.remote, ev.tls = req.RemoteAddr, req.TLS != nil
+	ev.values = middleware.Values(req.Context())
 }
 
 // response is PHP's answer to one request. With release, its body is lent

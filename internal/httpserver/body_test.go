@@ -60,7 +60,7 @@ func TestReadBodyRefusesALengthPastTheLimit(t *testing.T) {
 		t.Fatalf("read %d bytes of a body that is refused for its length", body.n)
 	}
 	w := httptest.NewRecorder()
-	if _, _, ok := newEvent(w, req, 1, nil); ok || w.Code != http.StatusRequestEntityTooLarge {
+	if _, _, ok := newEvent(w, req, Route{ID: 1}, nil); ok || w.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("newEvent: ok %v, status %d, want 413", ok, w.Code)
 	}
 }

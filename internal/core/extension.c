@@ -53,3 +53,22 @@ void cairo_extensions_interrupt(int tid)
 		}
 	}
 }
+
+bool cairo_extensions_output(const char *str, size_t len)
+{
+	for (int i = 0; i < extension_count; i++) {
+		if (extensions[i]->output != NULL && extensions[i]->output(str, len)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void cairo_extensions_flush(void)
+{
+	for (int i = 0; i < extension_count; i++) {
+		if (extensions[i]->flush != NULL) {
+			extensions[i]->flush();
+		}
+	}
+}

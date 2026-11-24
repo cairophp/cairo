@@ -17,6 +17,8 @@ namespace Cairo\Http {
         /** @var list<array{prefix:string,dir:string}> */
         private array $static = [];
         private string $publicDir = '';
+        /** @var list<array{dir:string,prefix:string}> */
+        private array $sendfile = [];
         private string $metrics = '';
         private string $live = '';
         private string $ready = '';
@@ -107,6 +109,40 @@ namespace Cairo\Http {
         }
 
         /**
+         * Middleware::timeout() does not apply to the route declared just
+         * before this call: for an answer that lasts as long as its client
+         * stays, as Response::events() does, or a long download.
+         */
+        public function noTimeout(): static
+        {
+            $last = array_key_last($this->routes);
+            if ($last === null) {
+                throw new \LogicException('noTimeout() applies to the route declared before it: declare a route first');
+            }
+            $this->routes[$last]['no_timeout'] = true;
+            return $this;
+        }
+
+        /**
+         * The handler of the route declared just before this call reads
+         * the request's body in pieces, with Request::read(), while the
+         * client sends it: an upload that is larger than memory, or a client
+         * that goes on speaking while it is answered. body() is empty then,
+         * a form is not parsed, and neither the 32 MiB limit nor the
+         * server's read timeout applies: the handler says when it has
+         * read enough.
+         */
+        public function streamBody(): static
+        {
+            $last = array_key_last($this->routes);
+            if ($last === null) {
+                throw new \LogicException('streamBody() applies to the route declared before it: declare a route first');
+            }
+            $this->routes[$last]['stream_body'] = true;
+            return $this;
+        }
+
+        /**
          * Handle every request no other route or static path matches, with
          * any method: a Cairo handler, a PSR-15 RequestHandlerInterface, a
          * Symfony HttpKernelInterface or a Laravel HTTP Kernel (see
@@ -138,6 +174,25 @@ namespace Cairo\Http {
                 throw new \InvalidArgumentException("publicDir: {$dir} is not a directory");
             }
             $this->publicDir = $dir;
+            return $this;
+        }
+
+        /**
+         * Let an answer name a file under $dir, which Go then sends in its
+         * place: Response::file(), or the header X-Sendfile with the file's
+         * path, as code written for Apache sets it. Symfony's and Laravel's
+         * file responses do after BinaryFileResponse::trustXSendfileTypeHeader().
+         * With $prefix, the header X-Accel-Redirect and a URL path under it
+         * name the file too, as code written for nginx has it. Go sends
+         * the file with ranges and If-Modified-Since while the PHP thread
+         * goes on; a path cannot leave $dir, symlinks included.
+         */
+        public function sendfile(string $dir, string $prefix = ''): static
+        {
+            if (!is_dir($dir)) {
+                throw new \InvalidArgumentException("sendfile: {$dir} is not a directory");
+            }
+            $this->sendfile[] = ['dir' => $dir, 'prefix' => $prefix];
             return $this;
         }
 
@@ -259,6 +314,7 @@ namespace Cairo\Http {
                 'routes' => $this->routes,
                 'static' => $this->static,
                 'public_dir' => $this->publicDir,
+                'sendfile' => $this->sendfile,
                 'middleware' => array_map(static fn ($m) => $m->spec(), $this->middleware),
                 'tls' => $this->tls,
                 'h2c' => $this->h2c,
@@ -349,6 +405,40 @@ namespace Cairo\Http {
             return (string) ($this->event['body'] ?? '');
         }
 
+        /**
+         * The next piece of the body, of $max bytes at most (1 MiB at most),
+         * on a route with streamBody(); null once the client has sent
+         * it all. Waits, its fiber only, for the client to send.
+         *
+         *     while (($piece = $req->read()) !== null) {
+         *         fwrite($file, $piece);
+         *     }
+         *
+         * @throws \Cairo\Context\Canceled the client has gone
+         * @throws \RuntimeException the body cannot be read: its route has no streamBody()
+         */
+        public function read(int $max = 65536): ?string
+        {
+            return \Cairo\Internal\Go::call('http.body.read', ['max' => $max]);
+        }
+
+        /**
+         * Sends 103 Early Hints ahead of the response, so that the browser
+         * can start on what the page needs while the handler makes it:
+         *
+         *     $req->earlyHints(['Link' => '</app.css>; rel=preload; as=style']);
+         *
+         * @param array<string, string|list<string>> $headers
+         */
+        public function earlyHints(array $headers): void
+        {
+            $lists = [];
+            foreach ($headers as $name => $value) {
+                $lists[(string) $name] = array_map('strval', (array) $value);
+            }
+            \Cairo\Internal\Go::call('http.hints', ['status' => 103, 'headers' => $lists]);
+        }
+
         public function json(): mixed
         {
             return json_decode($this->body(), true, 512, JSON_THROW_ON_ERROR);
@@ -423,33 +513,6 @@ namespace Cairo\Http {
             if (!$this->ok() || !\Cairo\Internal\Form::move($this->path, $target)) {
                 throw new \RuntimeException("cannot move upload {$this->name} to {$target}");
             }
-        }
-    }
-
-    final class Response
-    {
-        /** @param array<string, string|list<string>> $headers */
-        public function __construct(
-            public readonly int $status = 200,
-            public readonly array $headers = [],
-            public readonly string $body = '',
-        ) {
-        }
-
-        public static function text(string $body, int $status = 200): self
-        {
-            return new self($status, ['Content-Type' => 'text/plain; charset=utf-8'], $body);
-        }
-
-        public static function html(string $body, int $status = 200): self
-        {
-            return new self($status, ['Content-Type' => 'text/html; charset=utf-8'], $body);
-        }
-
-        public static function json(mixed $data, int $status = 200): self
-        {
-            $body = json_encode($data, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-            return new self($status, ['Content-Type' => 'application/json'], $body);
         }
     }
 }

@@ -46,28 +46,17 @@ namespace Cairo\Internal {
             if (isset($event['files'])) {
                 Form::track($event['files']);
             }
+            $id = (int) $event['id'];
             try {
-                if ($isolated) {
-                    // Classic PHP style: echo and header() become the response.
-                    ob_start();
-                    header_remove();
-                    http_response_code(200);
-                }
-                try {
-                    $handler = $this->handler((int) $event['route']);
-                    $response = \cairo_guard(static fn () => $handler(new Http\Request($event), Context::current()));
-                } finally {
-                    $output = $isolated ? (string) ob_get_clean() : '';
-                }
-                if ($isolated && $response === null) {
-                    $headers = self::sentHeaders();
-                    if (!isset(array_change_key_case($headers)['content-type'])) {
-                        $headers['Content-Type'] = ['text/html; charset=UTF-8'];   // PHP's default
-                    }
-                    $response = new Http\Response((int) (http_response_code() ?: 200), $headers, $output);
-                }
+                $handler = $this->handler((int) $event['route']);
+                $run = static fn () => $handler(new Http\Request($event), Context::current());
+                $response = $isolated ? self::classic($run) : \cairo_guard($run);
                 if (!$response instanceof Http\Response) {
                     $response = is_string($response) ? Http\Response::text($response) : Http\Response::json($response);
+                }
+                if (($writer = $response->writer()) !== null) {
+                    $stream = Http\Stream::open($response->status, $response->headers);
+                    \cairo_guard(static fn () => $writer($stream));
                 }
             } catch (Context\DeadlineExceeded) {
                 $response = Http\Response::text("Gateway Timeout\n", 504);
@@ -78,29 +67,52 @@ namespace Cairo\Internal {
                 error_log('cairo: ' . $e);
                 $response = Http\Response::text("Internal Server Error\n", 500);
             }
-            Context::current()->markAnswered();
             if (isset($event['files'])) {
                 Form::untrack($event['files']);   // Go removes what is left once we respond
             }
-            \cairo_respond_http((int) $event['id'], $response->status, $response->headers, $response->body);
+            $began = HttpOutput::$began[$id] ?? 0;
+            if ($began === 0) {
+                Context::current()->markAnswered();
+                \cairo_respond_http($id, $response->status, $response->headers, $response->body);
+                return;
+            }
+            unset(HttpOutput::$began[$id]);
+            if ($began === HttpOutput::STREAMING) {
+                // The head is with the client: all that is left to say is
+                // how the handler ended, and Go ends the stream by it.
+                Context::current()->markAnswered();
+                \cairo_respond_http($id, $response->status, [], '');
+            }
+        }
+
+        /**
+         * Classic PHP style: echo and header() become the response, unless
+         * the handler returns one. flush() sends what is written so far, and
+         * the answer is a stream from then on.
+         */
+        private static function classic(\Closure $run): mixed
+        {
+            $out = HttpOutput::classic();
+            try {
+                $response = \cairo_guard($run);
+            } finally {
+                $output = $out->end();
+            }
+            if ($out->stream !== null) {
+                $out->stream->write($output);
+                return new Http\Response();
+            }
+            if ($response !== null) {
+                return $response;
+            }
+            [$status, $headers] = HttpOutput::head();
+            return new Http\Response($status, $headers, $output);
         }
 
         /** @param array<string, mixed> $event */
         public function route(array $event): string
         {
             return $this->app->routeName((int) $event['route']);
-        }
-
-        /** @return array<string, list<string>> the headers set with header() */
-        private static function sentHeaders(): array
-        {
-            $out = [];
-            foreach (headers_list() as $line) {
-                [$name, $value] = array_pad(explode(':', $line, 2), 2, '');
-                $out[trim($name)][] = ltrim($value);
-            }
-            header_remove();
-            return $out;
         }
     }
 

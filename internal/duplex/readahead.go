@@ -1,21 +1,17 @@
-package grpcserver
+package duplex
 
 import (
 	"context"
 	"sync"
-
-	"google.golang.org/grpc/status"
-
-	"github.com/cairophp/cairo/internal/wire"
 )
 
 // ReadAhead reads the messages of a stream before PHP asks for them, so that
 // one Go operation hands PHP all that has arrived instead of one message.
 // What it holds is bounded: at the bound it stops reading, and the sender
 // meets HTTP/2's flow control as it does with a reader that is slow.
-type ReadAhead struct {
+type ReadAhead[M ~[]byte] struct {
 	mu    sync.Mutex
-	msgs  []wire.Raw
+	msgs  []M
 	size  int
 	end   error         // how the stream ended, once it has
 	ready chan struct{} // a message or the end is there to take
@@ -28,17 +24,17 @@ const (
 	aheadBytes    = 1 << 20
 )
 
-// NewReadAhead starts reading with recv, which returns a message as PHP's
-// array, or an error at the end of the stream (io.EOF for a clean one). ctx
+// NewReadAhead starts reading with recv, which returns a message as PHP
+// gets it, or an error at the end of the stream (io.EOF for a clean one). ctx
 // is the stream's: the goroutine ends when recv fails, which it does once
 // ctx has ended.
-func NewReadAhead(ctx context.Context, recv func() (wire.Raw, error)) *ReadAhead {
-	r := &ReadAhead{ready: make(chan struct{}, 1), room: make(chan struct{}, 1)}
+func NewReadAhead[M ~[]byte](ctx context.Context, recv func() (M, error)) *ReadAhead[M] {
+	r := &ReadAhead[M]{ready: make(chan struct{}, 1), room: make(chan struct{}, 1)}
 	go r.read(ctx, recv)
 	return r
 }
 
-func (r *ReadAhead) read(ctx context.Context, recv func() (wire.Raw, error)) {
+func (r *ReadAhead[M]) read(ctx context.Context, recv func() (M, error)) {
 	for {
 		msg, err := recv()
 		full := r.add(msg, err)
@@ -66,7 +62,7 @@ func (r *ReadAhead) read(ctx context.Context, recv func() (wire.Raw, error)) {
 
 // add keeps a message, or the end when there is one, and reports whether
 // the bound is reached.
-func (r *ReadAhead) add(msg wire.Raw, end error) bool {
+func (r *ReadAhead[M]) add(msg M, end error) bool {
 	r.mu.Lock()
 	if end != nil {
 		r.end = end
@@ -80,20 +76,20 @@ func (r *ReadAhead) add(msg wire.Raw, end error) bool {
 	return full
 }
 
-func (r *ReadAhead) full() bool {
+func (r *ReadAhead[M]) full() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.isFull()
 }
 
-func (r *ReadAhead) isFull() bool {
+func (r *ReadAhead[M]) isFull() bool {
 	return len(r.msgs) >= aheadMessages || r.size >= aheadBytes
 }
 
 // Take returns the messages that have arrived, in order, and waits for the
 // first when there is none. Once all are taken it returns how the stream
-// ended, to every caller. A ctx that ends first is that caller's status.
-func (r *ReadAhead) Take(ctx context.Context) ([]wire.Raw, error) {
+// ended, to every caller. A ctx that ends first is that caller's error.
+func (r *ReadAhead[M]) Take(ctx context.Context) ([]M, error) {
 	for {
 		r.mu.Lock()
 		msgs, end := r.msgs, r.end
@@ -110,7 +106,7 @@ func (r *ReadAhead) Take(ctx context.Context) ([]wire.Raw, error) {
 		select {
 		case <-r.ready:
 		case <-ctx.Done():
-			return nil, status.FromContextError(ctx.Err()).Err()
+			return nil, ctx.Err()
 		}
 	}
 }

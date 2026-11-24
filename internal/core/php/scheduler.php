@@ -194,7 +194,10 @@ namespace Cairo\Internal {
         public function call(string $op, string|array $payload): mixed
         {
             $ctx = Context::current();
-            return $this->waitIO($ctx, \cairo_fiber_call($ctx->requestId, $ctx->scoped ? $ctx->goScope() : 0.0, $op, $payload));
+            // Go has no context left for a request that was answered: what
+            // runs on after it (defer()) says so with the sign.
+            $request = $ctx->answered() ? -$ctx->requestId : $ctx->requestId;
+            return $this->waitIO($ctx, \cairo_fiber_call($request, $ctx->scoped ? $ctx->goScope() : 0.0, $op, $payload));
         }
 
         /**

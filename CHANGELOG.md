@@ -24,6 +24,19 @@ change the PHP API; patch versions do not.
   release's static binary on Alpine, running as the user `cairo`. The release
   workflow publishes it with every release, tagged `x.y.z`, `x.y` and
   `latest`.
+- Observability. `$http->metrics()` serves the process's metrics in
+  Prometheus' format: every HTTP request and gRPC call by route and status
+  with its duration (`cairo_http_request_duration_seconds`,
+  `cairo_grpc_call_duration_seconds`), the PHP threads (`cairo_php_*`), the
+  Go runtime and the process. `$http->health()` answers liveness and
+  readiness probes without PHP, and `cairo serve --drain 5s` keeps serving
+  for that long after a stop signal while the readiness probe answers 503.
+  `$app->tracing()` traces every request and gRPC call with OpenTelemetry,
+  continues the trace a request arrives in, sends the spans with OTLP over
+  HTTP, and gives PHP the span to pass on (`$ctx->value('traceparent')`, and
+  the `traceparent` header); calls through `Cairo\Grpc\Client` carry it by
+  themselves. Nothing is measured or traced unless `server.php` asks for
+  it. See `examples/observability`.
 - `install.sh`, which installs the release binary for the machine it runs
   on after checking it against `SHA256SUMS`.
 - `SECURITY.md`: how to report a vulnerability, and which versions get fixes.

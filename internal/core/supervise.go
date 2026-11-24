@@ -95,6 +95,7 @@ func (e *Engine) threadExited(t *thread, status int) {
 
 	if retiring && status == 0 {
 		e.releaseTid(t)
+		e.counts.recycled.Add(1)
 		e.log.Info("php thread recycled", "thread", t.id, "served", t.box.served.Load()-t.bootMark)
 		return
 	}
@@ -136,6 +137,7 @@ func (e *Engine) threadExited(t *thread, status int) {
 			e.report(err)
 			return
 		}
+		e.counts.restarts.Add(1)
 		e.log.Warn("php thread restarted", "thread", t.id)
 	}()
 }

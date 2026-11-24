@@ -1507,7 +1507,11 @@ namespace Cairo\Http {
         {
         }
 
-        /** The PSR-17 factory of nyholm/psr7 or guzzlehttp/psr7. */
+        /**
+         * The PSR-17 factories of the PSR-7 implementation that is installed:
+         * nyholm/psr7, guzzlehttp/psr7, php-http/discovery's, laminas-diactoros
+         * (Mezzio) or slim/psr7.
+         */
         public static function psr17(): object
         {
         }

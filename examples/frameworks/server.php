@@ -18,6 +18,7 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Message\UploadedFileInterface;
 use Psr\Http\Server\RequestHandlerInterface;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\Cookie;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request as SymfonyRequest;
@@ -73,9 +74,13 @@ final class MiniKernel
         if ($request->getPathInfo() === '/sf/stream') {
             return new StreamedResponse(static function (): void {
                 echo "part 1\n";
-                flush();
+                flush();   // the client has it now
+                Cairo\sleep(0.3);
                 echo "part 2\n";
             });
+        }
+        if ($request->getPathInfo() === '/sf/file') {
+            return new BinaryFileResponse(__DIR__ . '/composer.json', 200, ['Content-Type' => 'application/json']);
         }
         if ($request->getPathInfo() === '/sf/terminated') {
             return new JsonResponse(self::$terminated);
@@ -120,7 +125,16 @@ $http->route('POST', '/psr/{id}', new EchoHandler());
 $http->get('/sf/{id}', Adapter::symfony(new MiniKernel()));
 $http->post('/sf/{id}', Adapter::symfony(new MiniKernel()));
 $http->get('/sf/stream', Adapter::symfony(new MiniKernel()));
+$http->get('/sf/file', Adapter::symfony(new MiniKernel()));
 $http->get('/sf/terminated', Adapter::symfony(new MiniKernel()));
+
+// A PSR-7 body too large to be one answer goes out in pieces.
+$http->get('/psr/large', Adapter::psr15(new class implements RequestHandlerInterface {
+    public function handle(ServerRequestInterface $request): ResponseInterface
+    {
+        return new Psr7Response(200, ['Content-Type' => 'text/plain'], str_repeat("0123456789abcde\n", 3 << 16));
+    }
+}));
 
 // Everything else goes to the PSR-15 handler.
 $http->fallback(new EchoHandler());

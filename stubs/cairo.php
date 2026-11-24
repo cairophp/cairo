@@ -845,6 +845,28 @@ namespace Cairo\Http {
         }
 
         /**
+         * Middleware::timeout() does not apply to the route declared just
+         * before this call: for an answer that lasts as long as its client
+         * stays, as Response::events() does, or a long download.
+         */
+        public function noTimeout(): static
+        {
+        }
+
+        /**
+         * The handler of the route declared just before this call reads
+         * the request's body in pieces, with Request::read(), while the
+         * client sends it: an upload that is larger than memory, or a client
+         * that goes on speaking while it is answered. body() is empty then,
+         * a form is not parsed, and neither the 32 MiB limit nor the
+         * server's read timeout applies: the handler says when it has
+         * read enough.
+         */
+        public function streamBody(): static
+        {
+        }
+
+        /**
          * Handle every request no other route or static path matches, with
          * any method: a Cairo handler, a PSR-15 RequestHandlerInterface, a
          * Symfony HttpKernelInterface or a Laravel HTTP Kernel (see
@@ -868,6 +890,20 @@ namespace Cairo\Http {
          * $dir, symlinks included.
          */
         public function publicDir(string $dir): static
+        {
+        }
+
+        /**
+         * Let an answer name a file under $dir, which Go then sends in its
+         * place: Response::file(), or the header X-Sendfile with the file's
+         * path, as code written for Apache sets it. Symfony's and Laravel's
+         * file responses do after BinaryFileResponse::trustXSendfileTypeHeader().
+         * With $prefix, the header X-Accel-Redirect and a URL path under it
+         * name the file too, as code written for nginx has it. Go sends
+         * the file with ranges and If-Modified-Since while the PHP thread
+         * goes on; a path cannot leave $dir, symlinks included.
+         */
+        public function sendfile(string $dir, string $prefix = ''): static
         {
         }
 
@@ -1012,6 +1048,34 @@ namespace Cairo\Http {
         {
         }
 
+        /**
+         * The next piece of the body, of $max bytes at most (1 MiB at most),
+         * on a route with streamBody(); null once the client has sent
+         * it all. Waits, its fiber only, for the client to send.
+         *
+         *     while (($piece = $req->read()) !== null) {
+         *         fwrite($file, $piece);
+         *     }
+         *
+         * @throws \Cairo\Context\Canceled the client has gone
+         * @throws \RuntimeException the body cannot be read: its route has no streamBody()
+         */
+        public function read(int $max = 65536): ?string
+        {
+        }
+
+        /**
+         * Sends 103 Early Hints ahead of the response, so that the browser
+         * can start on what the page needs while the handler makes it:
+         *
+         *     $req->earlyHints(['Link' => '</app.css>; rel=preload; as=style']);
+         *
+         * @param array<string, string|list<string>> $headers
+         */
+        public function earlyHints(array $headers): void
+        {
+        }
+
         public function json(): mixed
         {
         }
@@ -1068,7 +1132,9 @@ namespace Cairo\Http {
         {
         }
     }
+}
 
+namespace Cairo\Http {
     final class Response
     {
         /** @param array<string, string|list<string>> $headers */
@@ -1077,6 +1143,66 @@ namespace Cairo\Http {
             public readonly array $headers = [],
             public readonly string $body = '',
         )
+        {
+        }
+
+        /**
+         * An answer whose body is sent while $writer runs: the client has
+         * the status and the headers first, then every Stream::write() as it
+         * is made, and the answer ends when $writer returns.
+         *
+         *     Response::stream(function (Stream $out) {
+         *         foreach (rows() as $row) {
+         *             $out->write(json_encode($row) . "\n");
+         *         }
+         *     }, headers: ['Content-Type' => 'application/x-ndjson']);
+         *
+         * $writer runs in the request's fiber and may wait like any handler.
+         * When the client leaves, its next wait or write() throws
+         * Cairo\Context\Canceled. A route with cache() cannot stream.
+         *
+         * @param callable(Stream): void $writer
+         * @param array<string, string|list<string>> $headers
+         */
+        public static function stream(callable $writer, int $status = 200, array $headers = []): self
+        {
+        }
+
+        /**
+         * An answer that is the file at $path, which Go sends in place of
+         * a body: with ranges and If-Modified-Since, and without holding
+         * a PHP thread. The file must be under a directory given to
+         * $http->sendfile(). The content type is the file name's, unless
+         * $headers has one.
+         *
+         * @param array<string, string|list<string>> $headers
+         */
+        public static function file(string $path, array $headers = []): self
+        {
+        }
+
+        /**
+         * A Server-Sent Events answer: $source sends events for as long as
+         * it runs, and a browser reads them with EventSource.
+         *
+         *     Response::events(function (Events $events) use ($ctx) {
+         *         while (true) {
+         *             $events->send(json_encode(next_price()), event: 'price');
+         *             \Cairo\sleep(1);
+         *         }
+         *     });
+         *
+         * Give the route noTimeout() when the server has a timeout.
+         *
+         * @param callable(Events): void $source
+         * @param array<string, string|list<string>> $headers
+         */
+        public static function events(callable $source, array $headers = []): self
+        {
+        }
+
+        /** @internal the writer of a streamed answer */
+        public function writer(): ?\Closure
         {
         }
 
@@ -1089,6 +1215,76 @@ namespace Cairo\Http {
         }
 
         public static function json(mixed $data, int $status = 200): self
+        {
+        }
+    }
+}
+
+namespace Cairo\Http {
+    use Cairo\Context;
+
+    /**
+     * The body of an answer that is sent while its handler runs
+     * (Response::stream()). The status and the headers are with the client
+     * before the first write().
+     */
+    final class Stream
+    {
+        /** @internal */
+        public function __construct(private readonly int $id)
+        {
+        }
+
+        /**
+         * @internal Begins the answer of the running request.
+         *
+         * @param array<string, string|list<string>> $headers
+         */
+        public static function open(int $status, array $headers): self
+        {
+        }
+
+        /**
+         * Sends $bytes. It returns at once while Go has room for them, and
+         * waits, its fiber only, behind a client that reads slowly. Pieces
+         * written together leave together.
+         *
+         * @throws Context\Canceled the client has gone
+         */
+        public function write(string $bytes): void
+        {
+        }
+    }
+
+    /**
+     * The events of a Server-Sent Events answer (Response::events()), which a
+     * browser reads with EventSource.
+     */
+    final class Events
+    {
+        /** @internal */
+        public function __construct(private readonly Stream $out)
+        {
+        }
+
+        /**
+         * Sends one event. $event names it for addEventListener(); without
+         * a name it is a "message". The browser sends the last $id it saw
+         * as the Last-Event-ID header when it connects again.
+         *
+         * @throws Context\Canceled the client has gone
+         */
+        public function send(string $data, ?string $event = null, ?string $id = null): void
+        {
+        }
+
+        /** A line that the browser ignores: what keeps a proxy from closing a quiet stream. */
+        public function comment(string $text = ''): void
+        {
+        }
+
+        /** Tells the browser how long to wait before it connects again. */
+        public function retry(int $milliseconds): void
         {
         }
     }
@@ -1136,7 +1332,10 @@ namespace Cairo\Http {
         {
         }
 
-        /** A Cairo Response from a PSR-7 ResponseInterface. */
+        /**
+         * A Cairo Response from a PSR-7 ResponseInterface. A body of unknown
+         * size, or a large one, is sent in pieces as it is read.
+         */
         public static function fromPsr7(object $response): Response
         {
         }
@@ -1146,7 +1345,12 @@ namespace Cairo\Http {
         {
         }
 
-        /** A Cairo Response from a Symfony (or Laravel) Response, streamed ones included. */
+        /**
+         * A Cairo Response from a Symfony (or Laravel) Response. A streamed
+         * response, and a file that no X-Sendfile header leaves to the
+         * server, is sent right here, while its callback writes it: the
+         * Response that comes back then only stands for it.
+         */
         public static function fromSymfony(object $response, ?object $request = null): Response
         {
         }

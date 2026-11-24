@@ -12,6 +12,7 @@ use Cairo\Http\Events;
 use Cairo\Http\Request;
 use Cairo\Http\Response;
 use Cairo\Http\Stream;
+use Cairo\Middleware;
 
 use function Cairo\sleep;
 
@@ -25,6 +26,15 @@ final class Seen
 $app = new App();
 $http = $app->http(getenv('CAIRO_HTTP') ?: ':8080');
 
+// A time limit for requests and one for each write of a stream, when the
+// environment sets them: streams with noTimeout() outlast the first.
+if (($limit = getenv('CAIRO_TIMEOUT')) !== false) {
+    $http->use(Middleware::timeout((float) $limit));
+}
+if (($limit = getenv('CAIRO_WRITE_TIMEOUT')) !== false) {
+    $http->timeouts(write: (float) $limit);
+}
+
 // The client has "first" a second before "second".
 $http->get('/stream', fn (Request $req): Response => Response::stream(function (Stream $out) use ($req): void {
     $out->write("first\n");
@@ -35,8 +45,13 @@ $http->get('/stream', fn (Request $req): Response => Response::stream(function (
 // More than Go queues for a client: the writer waits for its reader.
 $http->get('/large', fn (Request $req): Response => Response::stream(function (Stream $out) use ($req): void {
     $line = str_repeat('x', 1023) . "\n";
-    for ($i = 0, $n = (int) ($req->query('kb') ?? '4096'); $i < $n; $i++) {
-        $out->write($line);
+    try {
+        for ($i = 0, $n = (int) ($req->query('kb') ?? '4096'); $i < $n; $i++) {
+            $out->write($line);
+        }
+    } catch (Context\Canceled $e) {
+        Seen::$log['large'] = 'the client stopped reading';
+        throw $e;
     }
 }, headers: ['Content-Type' => 'text/plain']));
 
@@ -79,6 +94,14 @@ $http->get('/hints', function (Request $req): Response {
     $req->earlyHints(['Link' => '</style.css>; rel=preload; as=style']);
     sleep(0.1);
     return Response::html('<link rel="stylesheet" href="/style.css"><p>Hello</p>');
+});
+
+// Work after the answer may wait as the handler may: here on a DNS lookup.
+$http->get('/after', function (): Response {
+    Context::defer(static function (): void {
+        Seen::$log['after'] = gethostbyname('localhost');
+    });
+    return Response::text('answered');
 });
 
 // A body that is read while the client sends it: its size and a digest,

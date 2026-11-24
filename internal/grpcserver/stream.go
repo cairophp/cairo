@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/cairophp/cairo/internal/duplex"
 	"github.com/cairophp/cairo/internal/wire"
 )
 
@@ -25,11 +26,11 @@ type activeStream struct {
 
 	// The client's messages are read ahead of PHP, from its first recv.
 	readOnce sync.Once
-	ahead    *ReadAhead
+	ahead    *duplex.ReadAhead[wire.Raw]
 
 	// Replies wait here for their writer, so that the client gets them
 	// in order and before the call's status.
-	sends *SendQueue
+	sends *duplex.SendQueue
 }
 
 var (
@@ -39,7 +40,7 @@ var (
 
 func openStream(ss grpc.ServerStream, m method) int64 {
 	id := nextStreamID.Add(1)
-	sends := NewSendQueue(func(reply []byte) error { return ss.SendMsg(&Frame{reply}) })
+	sends := duplex.NewSendQueue(func(reply []byte) error { return ss.SendMsg(&Frame{reply}) }, nil)
 	streams.Store(id, &activeStream{ss: ss, method: m, sends: sends})
 	return id
 }
@@ -55,7 +56,16 @@ func closeStream(id int64) {
 }
 
 // ErrStreamClosed is returned for a stream whose handler has returned.
-var ErrStreamClosed = errors.New("the stream has ended")
+var ErrStreamClosed = duplex.ErrClosed
+
+// CtxStatus is err as a gRPC status when it is how a context ended, which
+// is what the queues of a stream return for a caller that stopped waiting.
+func CtxStatus(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return status.FromContextError(err).Err()
+	}
+	return err
+}
 
 // StreamRecv returns the client's messages that have arrived, each as PHP's
 // array for it, and waits for the first when there is none; eof is true when
@@ -69,12 +79,12 @@ func StreamRecv(ctx context.Context, id int64) (msgs []wire.Raw, eof bool, err e
 	if !st.method.desc.IsStreamingClient() {
 		return nil, false, errors.New("only client-streaming and bidirectional methods receive from the stream")
 	}
-	st.readOnce.Do(func() { st.ahead = NewReadAhead(st.ss.Context(), st.recv) })
+	st.readOnce.Do(func() { st.ahead = duplex.NewReadAhead(st.ss.Context(), st.recv) })
 	msgs, err = st.ahead.Take(ctx)
 	if errors.Is(err, io.EOF) {
 		return nil, true, nil
 	}
-	return msgs, false, err
+	return msgs, false, CtxStatus(err)
 }
 
 func (st *activeStream) recv() (wire.Raw, error) {
@@ -96,7 +106,7 @@ func StreamSend(id int64, msg wire.Raw) error {
 	if err != nil {
 		return err
 	}
-	return st.sends.Put(st.ss.Context(), out)
+	return CtxStatus(st.sends.Put(st.ss.Context(), out))
 }
 
 // StreamTrySend queues one reply if there is room, without waiting; queued

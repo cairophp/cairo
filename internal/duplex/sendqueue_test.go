@@ -1,4 +1,4 @@
-package grpcserver
+package duplex
 
 import (
 	"context"
@@ -6,10 +6,8 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
-
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // sink is where a queue under test writes: it keeps what was written, and
@@ -43,7 +41,7 @@ func (s *sink) all() []string {
 // and puts that do not, and Close returns once all are written.
 func TestSendQueueKeepsOrder(t *testing.T) {
 	var s sink
-	q := NewSendQueue(s.write)
+	q := NewSendQueue(s.write, nil)
 	var want []string
 	for i := 0; i < 1000; i++ {
 		msg := strconv.Itoa(i)
@@ -65,7 +63,7 @@ func TestSendQueueKeepsOrder(t *testing.T) {
 	if err := q.Close(); err != nil {
 		t.Fatalf("a second close: %v", err)
 	}
-	if _, err := q.TryPut(nil); !errors.Is(err, ErrStreamClosed) {
+	if _, err := q.TryPut(nil); !errors.Is(err, ErrClosed) {
 		t.Fatalf("a put after the close: %v", err)
 	}
 }
@@ -75,7 +73,7 @@ func TestSendQueueKeepsOrder(t *testing.T) {
 func TestSendQueueIsBounded(t *testing.T) {
 	var s sink
 	s.hold.Lock()
-	q := NewSendQueue(s.write)
+	q := NewSendQueue(s.write, nil)
 	queued := 0
 	for i := 0; i < 3*sendQueue; i++ {
 		ok, err := q.TryPut([]byte{1})
@@ -96,7 +94,7 @@ func TestSendQueueIsBounded(t *testing.T) {
 	if err == nil {
 		err = q.Put(ctx, []byte{1})
 	}
-	if status.Code(err) != codes.Canceled {
+	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("a put with no room and a context that ended: %v", err)
 	}
 	s.hold.Unlock()
@@ -111,7 +109,7 @@ func TestSendQueueStopsAtAFailedWrite(t *testing.T) {
 	broken := errors.New("the client went away")
 	var s sink
 	s.hold.Lock()
-	q := NewSendQueue(s.write)
+	q := NewSendQueue(s.write, nil)
 	for i := 0; i < 10; i++ {
 		if _, err := q.TryPut([]byte{1}); err != nil {
 			t.Fatal(err)
@@ -128,7 +126,7 @@ func TestSendQueueStopsAtAFailedWrite(t *testing.T) {
 		t.Fatalf("%d messages were written after the write that failed", len(got))
 	}
 
-	q = NewSendQueue(s.write)
+	q = NewSendQueue(s.write, nil)
 	if err := q.Put(context.Background(), []byte{1}); err != nil {
 		t.Fatal(err)
 	}
@@ -140,4 +138,25 @@ func TestSendQueueStopsAtAFailedWrite(t *testing.T) {
 		t.Fatalf("a waiting put after the write that failed: %v", err)
 	}
 	_ = q.Close()
+}
+
+// The writer says when it has caught up: once for messages that were queued
+// together, and not after a write that failed.
+func TestSendQueueTellsWhenIdle(t *testing.T) {
+	var s sink
+	var idle atomic.Int32
+	s.hold.Lock()
+	q := NewSendQueue(s.write, func() { idle.Add(1) })
+	for i := 0; i < 10; i++ {
+		if _, err := q.TryPut([]byte{1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.hold.Unlock()
+	if err := q.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if n := idle.Load(); n < 1 || n > 2 {
+		t.Fatalf("idle was called %d times for 10 messages queued behind a held writer", n)
+	}
 }

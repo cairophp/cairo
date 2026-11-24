@@ -1,4 +1,4 @@
-package grpcserver
+package duplex
 
 import (
 	"context"
@@ -7,35 +7,30 @@ import (
 	"strconv"
 	"testing"
 	"time"
-
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
-	"github.com/cairophp/cairo/internal/wire"
 )
 
 // source is a stream for the tests: recv returns what was put in feed, then
 // io.EOF once feed is closed, and the stream's error once its context ends.
 type source struct {
 	ctx  context.Context
-	feed chan wire.Raw
+	feed chan []byte
 }
 
 func newSource(t *testing.T, messages int) (*source, context.CancelFunc) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	s := &source{ctx, make(chan wire.Raw, messages)}
+	s := &source{ctx, make(chan []byte, messages)}
 	for i := 0; i < messages; i++ {
-		s.feed <- wire.Raw(strconv.Itoa(i))
+		s.feed <- []byte(strconv.Itoa(i))
 	}
 	return s, cancel
 }
 
-func (s *source) recv() (wire.Raw, error) {
+func (s *source) recv() ([]byte, error) {
 	select {
 	case <-s.ctx.Done():
-		return nil, status.FromContextError(s.ctx.Err()).Err()
+		return nil, s.ctx.Err()
 	default:
 	}
 	select {
@@ -45,7 +40,7 @@ func (s *source) recv() (wire.Raw, error) {
 		}
 		return m, nil
 	case <-s.ctx.Done():
-		return nil, status.FromContextError(s.ctx.Err()).Err()
+		return nil, s.ctx.Err()
 	}
 }
 
@@ -59,7 +54,7 @@ func until(t *testing.T, what string, cond func() bool) {
 }
 
 // takeAll takes until the stream's end and returns what came before it.
-func takeAll(t *testing.T, r *ReadAhead) ([]string, error) {
+func takeAll(t *testing.T, r *ReadAhead[[]byte]) ([]string, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -122,9 +117,9 @@ func TestReadAheadIsBounded(t *testing.T) {
 	until(t, "reading went on after the take", func() bool { return len(s.feed) == aheadMessages })
 
 	big, _ := newSource(t, 0)
-	big.feed = make(chan wire.Raw, 4)
+	big.feed = make(chan []byte, 4)
 	for range 4 {
-		big.feed <- make(wire.Raw, aheadBytes/2+1)
+		big.feed <- make([]byte, aheadBytes/2+1)
 	}
 	rb := NewReadAhead(big.ctx, big.recv)
 	until(t, "the size bound is reached", rb.full)
@@ -141,7 +136,7 @@ func TestReadAheadStreamEndsAtTheBound(t *testing.T) {
 	until(t, "the bound is reached", r.full)
 	cancel()
 	got, err := takeAll(t, r)
-	if status.Code(err) != codes.Canceled {
+	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("ended with %v", err)
 	}
 	inOrder(t, got, aheadMessages)
@@ -151,14 +146,14 @@ func TestReadAheadStreamEndsAtTheBound(t *testing.T) {
 // the next caller.
 func TestReadAheadCallerStopsWaiting(t *testing.T) {
 	s, _ := newSource(t, 0)
-	s.feed = make(chan wire.Raw, 1)
+	s.feed = make(chan []byte, 1)
 	r := NewReadAhead(s.ctx, s.recv)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := r.Take(ctx); status.Code(err) != codes.Canceled {
+	if _, err := r.Take(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("a caller that stopped waiting got %v", err)
 	}
-	s.feed <- wire.Raw("0")
+	s.feed <- []byte("0")
 	close(s.feed)
 	got, err := takeAll(t, r)
 	if !errors.Is(err, io.EOF) {

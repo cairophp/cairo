@@ -36,6 +36,19 @@ func TestSubmitUnderTheRequestAndItsScope(t *testing.T) {
 		t.Error("an operation started for a request the thread does not hold")
 	}
 
+	if id := int64(e.submit(0, -8, 0, op{Op: "test.ctx"})); id <= 0 {
+		t.Error("an operation was refused after its request's answer")
+	} else {
+		queued := a.queued()
+		if got := <-started; got != context.Background() {
+			t.Errorf("an operation after its request's answer runs under %v", got)
+		}
+		release <- struct{}{}
+		for end := time.Now().Add(5 * time.Second); a.queued() == queued && time.Now().Before(end); {
+			runtime.Gosched()
+		}
+	}
+
 	soon := float64(time.Now().Add(20*time.Millisecond).UnixNano()) / 1e9
 	for _, tc := range []struct {
 		name  string

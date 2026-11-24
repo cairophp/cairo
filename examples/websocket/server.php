@@ -41,7 +41,8 @@ if (($limit = getenv('CAIRO_TIMEOUT')) !== false) {
     $http->use(Middleware::timeout((float) $limit));
 }
 
-$http->get('/', fn (): Response => Response::html('<p>Open the console: see examples/websocket/server.php.</p>'));
+// '/{$}' is the root alone: a plain '/' would take every GET from the fallback below.
+$http->get('/{$}', fn (): Response => Response::html('<p>Open the console: see examples/websocket/server.php.</p>'));
 
 // Every message comes back as it was, text or binary.
 $http->get('/echo', fn (Request $req): Response => Response::websocket(function (WebSocket $ws): void {
@@ -142,5 +143,11 @@ $http->post('/publish/{topic}', fn (Request $req): Response => Response::json([
 $http->get('/memory', fn (): Response => Response::text((string) memory_get_usage()));
 
 $http->get('/seen', fn (): Response => Response::json(Seen::$log));
+
+// Every other address. A fallback answers with a socket as a route does,
+// so a server may be nothing but WebSockets, whatever the path.
+$http->fallback(fn (Request $req): Response => Response::websocket(
+    static fn (WebSocket $ws) => $ws->send('you are at ' . $req->path()),
+));
 
 return $app;

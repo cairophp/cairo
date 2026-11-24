@@ -196,6 +196,18 @@ func TestWebSocketHandshake(t *testing.T) {
 	}
 }
 
+// A fallback answers with a socket as a route does, on any path.
+func TestWebSocketFromTheFallback(t *testing.T) {
+	addr, _ := runWebSocket(t)
+	for _, path := range []string{"/rooms/42", "/anything/else?x=1"} {
+		conn := openSocket(t, addr, path, nil)
+		want(t, conn, "you are at "+strings.SplitN(path, "?", 2)[0])
+		if _, err := next(conn); websocket.CloseStatus(err) != websocket.StatusNormalClosure {
+			t.Errorf("%s after the handler returned: %v, want a normal close", path, err)
+		}
+	}
+}
+
 // The server closes with a status of its own, a handler that fails closes
 // with the status of a server's error, and both sides see the end.
 func TestWebSocketEnds(t *testing.T) {

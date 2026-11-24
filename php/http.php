@@ -17,6 +17,8 @@ namespace Cairo\Http {
         /** @var list<array{prefix:string,dir:string}> */
         private array $static = [];
         private string $publicDir = '';
+        /** @var list<array{dir:string,prefix:string}> */
+        private array $sendfile = [];
         private string $metrics = '';
         private string $live = '';
         private string $ready = '';
@@ -156,6 +158,25 @@ namespace Cairo\Http {
             return $this;
         }
 
+        /**
+         * Let an answer name a file under $dir, which Go then sends in its
+         * place: Response::file(), or the header X-Sendfile with the file's
+         * path, as code written for Apache sets it. Symfony's and Laravel's
+         * file responses do after BinaryFileResponse::trustXSendfileTypeHeader().
+         * With $prefix, the header X-Accel-Redirect and a URL path under it
+         * name the file too, as code written for nginx has it. Go sends
+         * the file with ranges and If-Modified-Since while the PHP thread
+         * goes on; a path cannot leave $dir, symlinks included.
+         */
+        public function sendfile(string $dir, string $prefix = ''): static
+        {
+            if (!is_dir($dir)) {
+                throw new \InvalidArgumentException("sendfile: {$dir} is not a directory");
+            }
+            $this->sendfile[] = ['dir' => $dir, 'prefix' => $prefix];
+            return $this;
+        }
+
         /** Add Go-side middleware; see Cairo\Middleware. */
         public function use(\Cairo\Middleware $middleware): static
         {
@@ -274,6 +295,7 @@ namespace Cairo\Http {
                 'routes' => $this->routes,
                 'static' => $this->static,
                 'public_dir' => $this->publicDir,
+                'sendfile' => $this->sendfile,
                 'middleware' => array_map(static fn ($m) => $m->spec(), $this->middleware),
                 'tls' => $this->tls,
                 'h2c' => $this->h2c,

@@ -47,6 +47,20 @@ namespace Cairo\Http {
         }
 
         /**
+         * An answer that is the file at $path, which Go sends in place of
+         * a body: with ranges and If-Modified-Since, and without holding
+         * a PHP thread. The file must be under a directory given to
+         * $http->sendfile(). The content type is the file name's, unless
+         * $headers has one.
+         *
+         * @param array<string, string|list<string>> $headers
+         */
+        public static function file(string $path, array $headers = []): self
+        {
+            return new self(200, ['X-Sendfile' => $path] + $headers);
+        }
+
+        /**
          * A Server-Sent Events answer: $source sends events for as long as
          * it runs, and a browser reads them with EventSource.
          *

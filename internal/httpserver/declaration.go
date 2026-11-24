@@ -18,7 +18,10 @@ type Declaration struct {
 	Static       []StaticPath `json:"static"`
 	// PublicDir is $http->publicDir(): files served at their own paths,
 	// with everything else going to the routes ("" when not set).
-	PublicDir  string                   `json:"public_dir"`
+	PublicDir string `json:"public_dir"`
+	// Sendfile is $http->sendfile(): the directories whose files an answer
+	// may name for Go to send (X-Sendfile).
+	Sendfile   []SentDir                `json:"sendfile"`
 	Middleware []middleware.Declaration `json:"middleware"`
 	// TLS is $http->tls() or autoTls(): the server speaks HTTPS, and
 	// HTTP/2 with the clients that ask for it. Nil: plain HTTP.

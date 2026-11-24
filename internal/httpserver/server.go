@@ -77,6 +77,13 @@ func New(decl Declaration, php Dispatcher, log *slog.Logger, tel *telemetry.Tele
 		mux.Handle("GET "+prefix, http.StripPrefix(prefix, http.FileServer(http.Dir(s.Dir))))
 	}
 	var routes http.Handler = mux
+	if len(decl.Sendfile) > 0 {
+		files, err := openSentFiles(decl.Sendfile, log)
+		if err != nil {
+			return nil, err
+		}
+		routes = files.handler(mux)
+	}
 	if decl.PublicDir != "" {
 		var err error
 		if routes, err = publicFiles(decl.PublicDir, mux); err != nil {

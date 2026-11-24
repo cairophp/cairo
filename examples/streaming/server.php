@@ -1,7 +1,7 @@
 <?php
 
 // Answers that are sent while their handler runs: a streamed body, Server-Sent
-// Events and Early Hints. Each stream is a fiber: fifty clients that each
+// Events and Early Hints; and files that Go sends for PHP. Each stream is a fiber: fifty clients that each
 // wait a second between two pieces are served by one PHP thread in a second.
 
 declare(strict_types=1);
@@ -80,6 +80,13 @@ $http->get('/hints', function (Request $req): Response {
     sleep(0.1);
     return Response::html('<link rel="stylesheet" href="/style.css"><p>Hello</p>');
 });
+
+// A file that Go sends, with ranges, while the PHP thread goes on: named
+// with Response::file(), or the way code written for nginx names it.
+$http->sendfile(__DIR__ . '/files', '/protected');
+$http->get('/file', fn (): Response => Response::file(__DIR__ . '/files/report.txt'));
+$http->get('/file/accel', fn (): Response => new Response(200, ['X-Accel-Redirect' => '/protected/report.txt', 'Content-Type' => 'text/x-report']));
+$http->get('/file/outside', fn (): Response => Response::file(__FILE__));
 
 $http->get('/seen', fn (): Response => Response::json(Seen::$log));
 

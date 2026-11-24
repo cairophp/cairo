@@ -31,6 +31,11 @@ int cairo_extension_add(const cairo_extension *ext);
 // CAIRO_MAX_THREADS.
 #define CAIRO_MAX_THREADS 4096
 
+// What Engine.InterruptThread() does, for C code: thread tid runs the
+// interrupts at its next safe point. From any thread; a thread that runs no
+// PHP is left alone.
+void cairo_vm_interrupt(int tid);
+
 // The id of the calling PHP thread, or -1 on a thread that runs no requests
 // or offload jobs (the declare phase). The engine looks up what a thread
 // asks for in the thread's own tables, so C passes this with every such

@@ -52,11 +52,6 @@ int cairo_thread_id(void)
 	return cairo_tid;
 }
 
-void cairo_thread_adopt(int tid)
-{
-	cairo_tid = tid;
-}
-
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_none, 0, 0, 0)
 ZEND_END_ARG_INFO()
 
@@ -305,8 +300,14 @@ static void cairo_interrupt_unregister(void)
 	}
 }
 
+void cairo_thread_adopt(int tid)
+{
+	cairo_tid = tid;
+	cairo_interrupt_register();
+}
+
 // Has thread tid run cairo_on_interrupt at its next safe point. Called from
-// any goroutine.
+// any thread.
 void cairo_vm_interrupt(int tid)
 {
 	if (tid < 0 || tid >= CAIRO_MAX_THREADS) {

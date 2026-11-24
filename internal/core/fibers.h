@@ -15,6 +15,10 @@
 // exception that the fiber throws is the caller's (EG(exception)).
 void cairo_fiber_resume(zend_fiber *fiber, zval *value, zval *ret);
 
+// Whether the code that runs may switch fibers; throws FiberError when it
+// may not, as in a signal handler of pcntl's.
+bool cairo_fiber_may_switch(void);
+
 // Suspends the running fiber, as Fiber::suspend() does, and returns when
 // it is resumed, with *ret what it is resumed with. FAILURE with an
 // exception: there is no fiber to suspend, or it is being destroyed.

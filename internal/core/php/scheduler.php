@@ -50,6 +50,8 @@ namespace Cairo\Internal {
         private array $afterRequest = [];
         /** @var array<int, \Fiber> I/O operation id => waiting fiber */
         private array $io = [];
+        /** How many of those are fibers that a script does not wait for (callAside()). */
+        private int $aside = 0;
         /** @internal The waits that stay on this thread: sleep(), select(), sockets. */
         public readonly Waits $waits;
         /** @internal The offload() jobs that fibers of this thread wait for. */
@@ -193,6 +195,26 @@ namespace Cairo\Internal {
         {
             $ctx = Context::current();
             return $this->waitIO($ctx, \cairo_fiber_call($ctx->requestId, $ctx->scoped ? $ctx->goScope() : 0.0, $op, $payload));
+        }
+
+        /**
+         * @internal call() for a fiber that watches for what may never come,
+         * as the one behind a script's signal handlers does: a script with
+         * one fiber to run still waits with its thread (waitsAlone()), and
+         * this fiber learns of the end of $op once the script waits as
+         * fibers do. Who needs it sooner wakes the thread out of its wait
+         * itself.
+         *
+         * @param array<string, mixed> $payload
+         */
+        public function callAside(string $op, array $payload): mixed
+        {
+            $this->aside++;
+            try {
+                return $this->call($op, $payload);
+            } finally {
+                $this->aside--;
+            }
         }
 
         /**
@@ -467,14 +489,15 @@ namespace Cairo\Internal {
          * @internal Whether the current fiber, which runs under $ctx, waits
          * with the whole thread: it is a fiber of a script, the thread could
          * run nothing else meanwhile (no fiber is ready or waits for this
-         * one to suspend, none waits for Go or is parked on the thread), and
+         * one to suspend, none waits for Go but aside, none is parked on the
+         * thread), and
          * nothing can end $ctx while it waits. So a script that runs one
          * fiber at a time waits as it does under PHP, at PHP's cost, and its
          * waits suspend fibers once it has several.
          */
         public function waitsAlone(Context $ctx): bool
         {
-            return $this->script && !$ctx->scoped && $this->io === [] && \cairo_fiber_alone() && \cairo_parked() === 0
+            return $this->script && !$ctx->scoped && \count($this->io) === $this->aside && \cairo_fiber_alone() && \cairo_parked() === 0
                 && $this->later->isEmpty() && $ctx->endedAs() === null;
         }
 

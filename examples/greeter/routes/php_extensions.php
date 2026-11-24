@@ -21,6 +21,8 @@ return function ($http): void {
         $status = function_exists('opcache_get_status') ? opcache_get_status(false) : false;
         return Response::json([
             'sapi' => PHP_SAPI,
+            // pcntl is for the scripts of `cairo php`: a server has none of its functions.
+            'pcntl' => array_values(array_filter(get_defined_functions()['internal'], static fn (string $f): bool => str_starts_with($f, 'pcntl_'))),
             'extensions' => $loaded,
             'opcache' => [
                 'loaded' => extension_loaded('Zend OPcache'),

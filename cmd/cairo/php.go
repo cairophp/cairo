@@ -30,7 +30,8 @@ const phpUsage = `usage:
 
 The script runs under Cairo's fiber scheduler. CAIRO_SCHEDULER=off in the
 environment runs it as PHP does, for a program that has an event loop of its
-own for fibers.`
+own for fibers. CAIRO_PHP_CLI=/path/to/php hands the command to that PHP
+instead of running it in this binary.`
 
 // What an option that prints information runs: PHP code, which reads what
 // it needs to be told from $argv.
@@ -261,6 +262,9 @@ func isAlnum(c byte) bool {
 
 // php runs PHP's command line and returns the status the process ends with.
 func php(args []string) int {
+	if status, handed := handToOtherPHP(args); handed {
+		return status
+	}
 	run, help, err := parsePHP(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cairo php:", err)

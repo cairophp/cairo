@@ -36,7 +36,7 @@ change the PHP API; patch versions do not.
   which runs a script when it is given PHP's arguments, so that PHP code can
   start PHP again; under the name `php` (a link, which the official image
   has) it is the command line as well. Not there: the interactive shell
-  (`-a`), the built-in web server (`-S`) and `pcntl`.
+  (`-a`) and the built-in web server (`-S`).
 - A script of `cairo php` runs under Cairo's fiber scheduler, as a request
   handler does. `async()`, `await()`, channels, `select()`, contexts with a
   timeout and Cairo's clients work in it, and a wait in PHP's own functions
@@ -46,6 +46,21 @@ change the PHP API; patch versions do not.
   under PHP and costs what it did. `CAIRO_SCHEDULER=off` runs a script
   outside the scheduler, for a program that has an event loop of its own for
   fibers (amphp, Revolt).
+- Signals in the scripts of `cairo php`, with PHP's own `pcntl`: a script's
+  handlers (`pcntl_signal()`, `pcntl_async_signals()`, `pcntl_alarm()`) run
+  when a signal arrives, so a queue worker stops after the job in hand and
+  gives its jobs a time limit, and Laravel's `octane:start` and Symfony's
+  console signals work. Go receives the signal and brings it to the script:
+  a script with one fiber is interrupted as under PHP (`sleep()` returns
+  early), and with several the handler runs inside a fiber, at once, while
+  the others wait. There a handler may not wait itself, as PHP lets no
+  fiber switch inside one: it hands the signal to a fiber
+  (`Channel::trySend()`). `pcntl_fork()` and the functions that wait for a
+  signal are left out, and a server has none of pcntl.
+- `CAIRO_PHP_CLI=/path/to/php` hands `cairo php` commands to that PHP
+  instead of running them in the binary, for a command that needs what an
+  ordinary PHP has and Cairo's does not (`pcntl_fork()`, an extension of
+  your own).
 
 ## [0.5.0] - 2026-11-23
 

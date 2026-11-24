@@ -35,8 +35,7 @@ static void fiber_error(const char *message)
 	zend_throw_error(ce, "%s", message);
 }
 
-// Whether the code that runs may switch fibers; throws when it may not.
-static bool may_switch(void)
+bool cairo_fiber_may_switch(void)
 {
 	if (UNEXPECTED(zend_fiber_switch_blocked())) {
 		fiber_error("Cannot switch fibers in current execution context");
@@ -112,7 +111,7 @@ zend_result cairo_fiber_suspend(zval *ret)
 		fiber_error("Cannot suspend in a force-closed fiber");
 		return FAILURE;
 	}
-	if (!may_switch()) {
+	if (!cairo_fiber_may_switch()) {
 		return FAILURE;
 	}
 #if PHP_VERSION_ID >= 80400
@@ -212,7 +211,7 @@ PHP_FUNCTION(cairo_fiber_reuse)
 		Z_PARAM_ZVAL(job)
 	ZEND_PARSE_PARAMETERS_END();
 	release_orphans();
-	if (!may_switch()) {
+	if (!cairo_fiber_may_switch()) {
 		RETURN_THROWS();
 	}
 	while (nidle > 0) {
@@ -314,7 +313,7 @@ PHP_FUNCTION(cairo_run_ready)
 	ZEND_PARSE_PARAMETERS_START(1, 1)
 		Z_PARAM_LONG(max)
 	ZEND_PARSE_PARAMETERS_END();
-	if (max > 0 && ready_len > 0 && !may_switch()) {
+	if (max > 0 && ready_len > 0 && !cairo_fiber_may_switch()) {
 		RETURN_THROWS();
 	}
 	while (max-- > 0 && ready_len > 0) {

@@ -15,8 +15,10 @@ cd "$WORK/php-src-php-${VERSION}"
 
 # The extensions most PHP apps and frameworks expect (Laravel, Symfony,
 # WordPress), plus opcache, which Cairo loads by default. Left out: ext/pgsql
-# and pdo_pgsql (Cairo has its own Go-backed pdo pgsql driver), pcntl (forking
-# a threaded server), readline. System packages (Debian/Ubuntu):
+# and pdo_pgsql (Cairo has its own Go-backed pdo pgsql driver), readline.
+# pcntl is for the signals of `cairo php` scripts: internal/sapi/signals.c
+# takes it out of a server, and its fork out of both. System packages
+# (Debian/Ubuntu):
 #   build-essential autoconf bison re2c pkg-config libxml2-dev libsqlite3-dev
 #   libcurl4-openssl-dev libssl-dev libonig-dev libicu-dev libsodium-dev
 #   libzip-dev zlib1g-dev libbz2-dev libgmp-dev libpng-dev libjpeg-dev
@@ -48,6 +50,7 @@ cd "$WORK/php-src-php-${VERSION}"
   --enable-calendar \
   --enable-exif \
   --enable-sockets \
+  --enable-pcntl \
   --enable-gd \
   --with-jpeg \
   --with-webp \

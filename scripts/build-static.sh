@@ -112,7 +112,7 @@ DEFAULT_EXTENSIONS="
   --with-curl --with-openssl
   --enable-mbstring --enable-intl --with-sodium
   --with-zip --with-zlib --with-bz2 --with-gmp
-  --enable-bcmath --enable-calendar --enable-exif --enable-sockets
+  --enable-bcmath --enable-calendar --enable-exif --enable-sockets --enable-pcntl
   --enable-gd --with-jpeg --with-webp --with-freetype
   --with-iconv
   --without-readline --without-pgsql --without-pdo-pgsql"

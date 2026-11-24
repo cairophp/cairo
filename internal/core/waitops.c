@@ -7,6 +7,7 @@
 #include <php.h>
 
 #include "extension.h"
+#include "fibers.h"
 #include "loop.h"
 #include "wire.h"
 #include "_cgo_export.h"
@@ -26,6 +27,11 @@ PHP_FUNCTION(cairo_fiber_call)
 		Z_PARAM_STR(name)
 		Z_PARAM_ARRAY_HT_OR_STR(args, payload)
 	ZEND_PARSE_PARAMETERS_END();
+	// Code that may not suspend would leave its operation behind, whose
+	// result then finds another wait of the fiber.
+	if (!cairo_fiber_may_switch()) {
+		RETURN_THROWS();
+	}
 	smart_str encoded = {0};
 	if (args != NULL) {
 		if (cairo_wire_encode(args, &encoded) == FAILURE) {

@@ -12,6 +12,7 @@ func TestPHPBuildHasOpcacheAndExtensions(t *testing.T) {
 	raw := get(t, "/php/extensions")
 	var out struct {
 		SAPI       string          `json:"sapi"`
+		Pcntl      []string        `json:"pcntl"`
 		Extensions map[string]bool `json:"extensions"`
 		Opcache    struct {
 			Loaded, Enabled, Cached bool
@@ -27,6 +28,9 @@ func TestPHPBuildHasOpcacheAndExtensions(t *testing.T) {
 	}
 	if out.SAPI != "cairo" {
 		t.Fatalf("PHP_SAPI = %q, want cairo", out.SAPI)
+	}
+	if len(out.Pcntl) != 0 {
+		t.Errorf("a server has pcntl functions: %v", out.Pcntl)
 	}
 	for name, ok := range out.Extensions {
 		if !ok {

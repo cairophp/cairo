@@ -12,9 +12,15 @@
 // returned, so a thread is either refused or through its startup by then.
 static pthread_mutex_t gate = PTHREAD_MUTEX_INITIALIZER;
 static const char *scheduled;        // why, under gate; NULL: no restart is pending
+#if PHP_VERSION_ID >= 80400
 static void (*hooked)(int reason);   // a hook that was there before this one
+#endif
 static __thread int starting;        // this thread holds gate
 
+// opcache tells of the restart since PHP 8.4. An older PHP gives no sign of
+// it: there the gate lets every thread start, and the cache is wiped under
+// the threads that run, as it was before there was a gate.
+#if PHP_VERSION_ID >= 80400
 static void restart_scheduled(int reason)
 {
 	// opcache's zend_accel_restart_reason: out of memory, hash overflow, user.
@@ -35,11 +41,14 @@ static void restart_scheduled(int reason)
 		hooked(reason);
 	}
 }
+#endif
 
 void cairo_startgate_init(void)
 {
+#if PHP_VERSION_ID >= 80400
 	hooked = zend_accel_schedule_restart_hook;
 	zend_accel_schedule_restart_hook = restart_scheduled;
+#endif
 }
 
 int cairo_startgate_startup(void)

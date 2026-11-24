@@ -48,6 +48,9 @@ type Route struct {
 	// NoTimeout is the route's ->noTimeout(): the timeout middleware
 	// leaves its requests alone.
 	NoTimeout bool `json:"no_timeout,omitempty"`
+	// StreamBody is the route's ->streamBody(): PHP reads the request's
+	// body in pieces instead of getting it whole.
+	StreamBody bool `json:"stream_body,omitempty"`
 }
 
 // RouteCache lets Go answer repeated GET requests to a route from memory.

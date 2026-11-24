@@ -81,6 +81,26 @@ $http->get('/hints', function (Request $req): Response {
     return Response::html('<link rel="stylesheet" href="/style.css"><p>Hello</p>');
 });
 
+// A body that is read while the client sends it: its size and a digest,
+// with nothing of it kept in memory.
+$http->post('/upload', function (Request $req): Response {
+    $hash = hash_init('sha256');
+    $bytes = 0;
+    while (($piece = $req->read()) !== null) {
+        hash_update($hash, $piece);
+        $bytes += strlen($piece);
+    }
+    return Response::json(['bytes' => $bytes, 'sha256' => hash_final($hash), 'whole' => $req->body()]);
+})->streamBody();
+
+// The client speaks while it is answered: every line it sends comes back
+// before it sends the next.
+$http->post('/echo', fn (Request $req): Response => Response::stream(function (Stream $out) use ($req): void {
+    while (($piece = $req->read()) !== null) {
+        $out->write(strtoupper($piece));
+    }
+}))->streamBody()->noTimeout();
+
 // A file that Go sends, with ranges, while the PHP thread goes on: named
 // with Response::file(), or the way code written for nginx names it.
 $http->sendfile(__DIR__ . '/files', '/protected');

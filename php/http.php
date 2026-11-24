@@ -124,6 +124,25 @@ namespace Cairo\Http {
         }
 
         /**
+         * The handler of the route declared just before this call reads
+         * the request's body in pieces, with Request::read(), while the
+         * client sends it: an upload that is larger than memory, or a client
+         * that goes on speaking while it is answered. body() is empty then,
+         * a form is not parsed, and neither the 32 MiB limit nor the
+         * server's read timeout applies: the handler says when it has
+         * read enough.
+         */
+        public function streamBody(): static
+        {
+            $last = array_key_last($this->routes);
+            if ($last === null) {
+                throw new \LogicException('streamBody() applies to the route declared before it: declare a route first');
+            }
+            $this->routes[$last]['stream_body'] = true;
+            return $this;
+        }
+
+        /**
          * Handle every request no other route or static path matches, with
          * any method: a Cairo handler, a PSR-15 RequestHandlerInterface, a
          * Symfony HttpKernelInterface or a Laravel HTTP Kernel (see
@@ -384,6 +403,23 @@ namespace Cairo\Http {
         public function body(): string
         {
             return (string) ($this->event['body'] ?? '');
+        }
+
+        /**
+         * The next piece of the body, of $max bytes at most (1 MiB at most),
+         * on a route with streamBody(); null once the client has sent
+         * it all. Waits, its fiber only, for the client to send.
+         *
+         *     while (($piece = $req->read()) !== null) {
+         *         fwrite($file, $piece);
+         *     }
+         *
+         * @throws \Cairo\Context\Canceled the client has gone
+         * @throws \RuntimeException the body cannot be read: its route has no streamBody()
+         */
+        public function read(int $max = 65536): ?string
+        {
+            return \Cairo\Internal\Go::call('http.body.read', ['max' => $max]);
         }
 
         /**

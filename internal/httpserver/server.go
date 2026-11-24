@@ -169,6 +169,7 @@ type event struct {
 	w      http.ResponseWriter
 	stream atomic.Pointer[stream] // the answer, once PHP has begun to stream it
 	stall  time.Duration          // the server's write timeout, which a stream gives each write
+	upload *bodyStream            // the request's body, when PHP reads it in pieces (bodystream.go)
 
 	route   int
 	name    string // "GET /users/{id}", for logs
@@ -272,7 +273,7 @@ func routeHandler(r Route, php Dispatcher, cache *responseCache, log *slog.Logge
 			// GET stored and never fills the cache.
 			cached = req.Method == http.MethodGet
 		}
-		ev, cleanup, ok := newEvent(w, req, r.ID, names)
+		ev, cleanup, ok := newEvent(w, req, r, names)
 		if !ok {
 			if stale != nil {
 				cache.release(key)
@@ -325,18 +326,16 @@ func isMultipart(h http.Header) bool {
 
 // newEvent reads req into the event PHP receives. It answers the client
 // itself and returns false when the request is malformed.
-func newEvent(w http.ResponseWriter, req *http.Request, route int, names []string) (*event, func(), bool) {
+func newEvent(w http.ResponseWriter, req *http.Request, route Route, names []string) (*event, func(), bool) {
+	if route.StreamBody {
+		ev := &event{upload: openBody(w, req)}
+		ev.fill(w, req, route.ID, pathParams(req, names))
+		return ev, func() {}, true
+	}
 	body, err := readBody(w, req)
 	if err != nil {
 		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		return nil, nil, false
-	}
-	var params map[string]string // nil crosses as an empty array, as a route without parameters has
-	if len(names) > 0 {
-		params = make(map[string]string, len(names))
-		for _, n := range names {
-			params[n] = req.PathValue(n)
-		}
 	}
 	cleanup := func() {}
 	var form *multipartForm
@@ -349,23 +348,31 @@ func newEvent(w http.ResponseWriter, req *http.Request, route int, names []strin
 		cleanup = form.cleanup
 		body = nil // like PHP, php://input is empty for multipart/form-data
 	}
-	return &event{
-		Context: req.Context(),
-		w:       w,
-		route:   route,
-		method:  req.Method,
-		path:    req.URL.Path,
-		query:   req.URL.RawQuery,
-		headers: req.Header,
-		params:  params,
-		body:    body,
-		remote:  req.RemoteAddr,
-		host:    req.Host,
-		proto:   req.Proto,
-		tls:     req.TLS != nil,
-		values:  middleware.Values(req.Context()),
-		form:    form,
-	}, cleanup, true
+	ev := &event{body: body, form: form}
+	ev.fill(w, req, route.ID, pathParams(req, names))
+	return ev, cleanup, true
+}
+
+// pathParams are the values of the route's parameters in req's path.
+func pathParams(req *http.Request, names []string) map[string]string {
+	if len(names) == 0 {
+		return nil // crosses as an empty array, as a route without parameters has
+	}
+	params := make(map[string]string, len(names))
+	for _, n := range names {
+		params[n] = req.PathValue(n)
+	}
+	return params
+}
+
+// fill sets what an event has of its request apart from the body.
+func (ev *event) fill(w http.ResponseWriter, req *http.Request, route int, params map[string]string) {
+	ev.Context, ev.w = req.Context(), w
+	ev.route, ev.params = route, params
+	ev.method, ev.path, ev.query = req.Method, req.URL.Path, req.URL.RawQuery
+	ev.headers, ev.host, ev.proto = req.Header, req.Host, req.Proto
+	ev.remote, ev.tls = req.RemoteAddr, req.TLS != nil
+	ev.values = middleware.Values(req.Context())
 }
 
 // response is PHP's answer to one request. With release, its body is lent

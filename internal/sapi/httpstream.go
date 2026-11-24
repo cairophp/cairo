@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"unsafe"
 
 	"github.com/cairophp/cairo/internal/core"
@@ -41,6 +42,20 @@ func init() {
 			return nil, fmt.Errorf("http.hints: %w", err)
 		}
 		return nil, httpserver.Hint(ctx, req.Status, req.Headers)
+	})
+	// The next piece of a request's body, or null at its end.
+	core.RegisterOp("http.body.read", func(ctx context.Context, payload []byte) (any, error) {
+		var req struct {
+			Max int `json:"max"`
+		}
+		if err := wire.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("http.body.read: %w", err)
+		}
+		piece, err := httpserver.ReadBody(ctx, req.Max)
+		if errors.Is(err, io.EOF) {
+			return nil, nil
+		}
+		return piece, err
 	})
 	// True once the piece is queued, false for a client that is gone.
 	core.RegisterOp("http.stream.write", func(ctx context.Context, payload []byte) (any, error) {

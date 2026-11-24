@@ -17,6 +17,7 @@ declare(strict_types=1);
 $sources = array_slice($argv, 1) ?: array_map(static fn (string $file): string => __DIR__ . "/../$file.php", [
     'internal/core/php/app', 'internal/core/php/context', 'internal/core/php/channel', 'internal/core/php/async',
     'internal/core/php/offload', 'php/hooks', 'php/middleware', 'php/http', 'php/http_response', 'php/http_stream', 'php/websocket', 'php/http_adapter',
+    'php/mercure', 'php/mercure_publish',
     'php/grpc', 'php/grpc_client', 'php/net', 'php/cache', 'php/pool', 'internal/core/php/request_local',
 ]);
 
@@ -60,7 +61,12 @@ final class Stubs
         }
         $open = $this->i;
         $close = $this->match($open);
-        if ($name === '' || $name === 'Cairo\\Internal' || str_starts_with($name, 'Cairo\\Internal\\')) {
+        if ($name === 'Cairo\\Internal' || str_starts_with($name, 'Cairo\\Internal\\')) {
+            $this->i = $close + 1;
+            return;
+        }
+        if ($name === '') {
+            $this->globalFunctions($start, $open, $close);
             $this->i = $close + 1;
             return;
         }
@@ -69,6 +75,41 @@ final class Stubs
         $this->block($close, false);
         $this->out .= "}\n";
         $this->i = $close + 1;
+    }
+
+    /**
+     * The global namespace holds Cairo's own code, and the functions that
+     * are part of the API (mercure_publish()): those it declares outright,
+     * with a docblock. Only they are written.
+     */
+    private function globalFunctions(int $start, int $open, int $close): void
+    {
+        $out = '';
+        for ($k = $open + 1; $k < $close; $k++) {
+            $tok = $this->t[$k];
+            if ($tok->is(['{', '(', '['])) {
+                $k = $this->match($k);
+                continue;
+            }
+            if (!$tok->is(T_DOC_COMMENT)) {
+                continue;
+            }
+            $body = $k + 1;
+            while ($this->t[$body]->is(T_WHITESPACE)) {
+                $body++;
+            }
+            if (!$this->t[$body]->is(T_FUNCTION)) {
+                continue;
+            }
+            while (!$this->t[$body]->is('{')) {
+                $body = $this->t[$body]->is('(') ? $this->match($body) + 1 : $body + 1;
+            }
+            $out .= "\n" . $this->indent($k) . rtrim($this->text($k, $body)) . "\n" . $this->indent($k) . "{\n" . $this->indent($k) . "}\n";
+            $k = $this->match($body);
+        }
+        if ($out !== '') {
+            $this->out .= "\n" . $this->text($start, $open + 1) . $out . "}\n";
+        }
     }
 
     /** Writes the members of a namespace ($inClass false) or class body up to $end. */

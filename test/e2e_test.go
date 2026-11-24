@@ -65,7 +65,9 @@ func run(m *testing.M) (int, error) {
 			return 0, err
 		}
 	} else {
-		build := exec.Command("go", "build", "-o", bin, "../cmd/cairo")
+		// The tags are the Makefile's: the Mercure hub with what it needs
+		// for clients of the protocol before 1.0.
+		build := exec.Command("go", "build", "-tags", "deprecated_topic,deprecated_claim", "-o", bin, "../cmd/cairo")
 		build.Stdout, build.Stderr = os.Stderr, os.Stderr
 		if err := build.Run(); err != nil {
 			return 0, fmt.Errorf("build cairo: %w", err)

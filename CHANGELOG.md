@@ -9,6 +9,17 @@ change the PHP API; patch versions do not.
 
 ### Added
 
+- The Mercure hub. `$http->mercure()` makes a server the hub of the
+  [Mercure](https://mercure.rocks) protocol at `/.well-known/mercure`: Go
+  serves every subscriber, so a subscriber holds no PHP thread, fiber or
+  memory, and `mercure_publish()` publishes from PHP with one call, with the
+  parameters it has in FrankenPHP. Tokens (`issuer()`), anonymous
+  subscribers, private updates, history in a file (`history()`), the
+  subscription API and clients from before Mercure 1.0 (`compatibility(8)`)
+  are there. **The hub is the Mercure.rocks hub, which is AGPL-3.0, not
+  Apache-2.0**: the released binaries and the official image contain it, and
+  the build tag `nomercure` gives a binary without it (`make build
+  TAGS=nomercure`). See `third_party/NOTICES` and `examples/mercure`.
 - Streamed answers. `Response::stream(fn (Stream $out) => ...)` sends the
   head and then every `$out->write()` while the handler runs, and
   `Response::events(fn (Events $events) => ...)` is Server-Sent Events on

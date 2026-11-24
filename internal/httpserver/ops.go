@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/cairophp/cairo/internal/mercurehub"
 	"github.com/cairophp/cairo/internal/telemetry"
 )
 
@@ -38,6 +39,13 @@ func (d *Declaration) validateOps(taken map[string]bool) error {
 func (d *Declaration) isOps(r *http.Request) bool {
 	p := r.URL.Path
 	return p != "" && (p == d.MetricsPath || p == d.LivePath || p == d.ReadyPath)
+}
+
+// isMercure reports whether a request is for the hub. Its subscribers stay
+// for minutes or hours: they are no requests of the app to time, to trace
+// or to cut off (the hub has its own timeouts and metrics).
+func (d *Declaration) isMercure(r *http.Request) bool {
+	return d.Mercure != nil && mercurehub.Serves(r.URL.Path)
 }
 
 // handleOps adds the declared endpoints to the router.

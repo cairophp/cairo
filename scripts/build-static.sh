@@ -15,6 +15,9 @@
 #   STAGE=php           stop after PHP is built and its sources are removed
 #                       (Dockerfile.static caches that as its own layer)
 #   CAIRO_VERSION       what `cairo version` prints (default: dev)
+#   CAIRO_TAGS          Go build tags (default: deprecated_topic,deprecated_claim,
+#                       which the Mercure hub needs for clients of the protocol
+#                       before 1.0; nomercure leaves the hub out)
 set -euo pipefail
 
 PHP_VERSION="${1:-8.5.12}"
@@ -150,7 +153,7 @@ export CGO_CFLAGS="$($PHP_CONFIG --includes) -I$DEPS/include -DCAIRO_STATIC_CURL
 export CGO_LDFLAGS="-Wl,--wrap=curl_easy_perform -Wl,--wrap=curl_multi_wait -Wl,--wrap=curl_easy_cleanup -L$PREFIX/lib -L$DEPS/lib -Wl,--start-group -lphp $($PHP_CONFIG --libs) $(pkg-config --libs libcurl libzip) -Wl,--end-group -lstdc++ -lm"
 
 cd "$ROOT"
-go build -trimpath -tags netgo,osusergo \
+go build -trimpath -tags "netgo,osusergo,${CAIRO_TAGS:-deprecated_topic,deprecated_claim}" \
   -ldflags "-s -w -X main.version=${CAIRO_VERSION:-dev} -linkmode external -extldflags '-static'" \
   -o "$OUT" ./cmd/cairo
 echo "static cairo ${CAIRO_VERSION:-dev} with PHP $PHP_VERSION: $OUT"

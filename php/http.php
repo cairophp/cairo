@@ -17,6 +17,7 @@ namespace Cairo\Http {
         /** @var list<array{prefix:string,dir:string}> */
         private array $static = [];
         private string $publicDir = '';
+        private string $scripts = '';
         /** @var list<array{dir:string,prefix:string}> */
         private array $sendfile = [];
         private string $metrics = '';
@@ -179,6 +180,27 @@ namespace Cairo\Http {
         }
 
         /**
+         * Serve the PHP scripts under $dir as a web server in front of
+         * PHP-FPM does, for apps that are a set of scripts (WordPress):
+         * /a/b.php runs b.php, /x.php/more runs x.php with PATH_INFO /more,
+         * a directory runs its index.php, and a path that names nothing runs
+         * $dir/index.php, the front controller. The other files under $dir
+         * are served by Go, as publicDir() serves them; the source of a
+         * script never is, nor hidden files. Needs
+         * App::concurrency('classic'): each request has a PHP request of its
+         * own. The script sees the superglobals, php://input, echo and
+         * header() as under PHP-FPM.
+         */
+        public function scripts(string $dir): static
+        {
+            $this->publicDir($dir);
+            $this->scripts = $dir;
+            $this->route('*', '/', static fn (Request $req) => \Cairo\Internal\Scripts::run($req));
+            $this->routes[array_key_last($this->routes)]['scripts'] = true;
+            return $this;
+        }
+
+        /**
          * Let an answer name a file under $dir, which Go then sends in its
          * place: Response::file(), or the header X-Sendfile with the file's
          * path, as code written for Apache sets it. Symfony's and Laravel's
@@ -324,6 +346,7 @@ namespace Cairo\Http {
                 'routes' => $this->routes,
                 'static' => $this->static,
                 'public_dir' => $this->publicDir,
+                'scripts' => $this->scripts,
                 'sendfile' => $this->sendfile,
                 'middleware' => array_map(static fn ($m) => $m->spec(), $this->middleware),
                 'tls' => $this->tls,

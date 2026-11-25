@@ -45,9 +45,9 @@ static const php_stream_ops *find_orig_ops(const php_stream_ops *hooked)
 	return NULL;
 }
 
-// Hooks::wait as this thread found it at its first wait: a wait is too
-// frequent to look the method up by its name each time. A PHP thread has
-// its classes for as long as it lives.
+// Hooks::wait as this PHP request found it at its first wait: a wait is too
+// frequent to look the method up by its name each time. The class is the
+// request's, so its end forgets it (cairo_socket_request_end()).
 static __thread zend_function *wait_fn;
 
 // Asks the runtime to wait (Cairo\Internal\Hooks::wait) for a socket that
@@ -645,4 +645,10 @@ static void cairo_hook_sockets(void)
 	}
 }
 
-const cairo_extension cairo_socket_hooks = {.startup = cairo_hook_sockets};
+static void cairo_socket_request_end(void)
+{
+	wait_fn = NULL;
+	crypto_setup_stream = NULL;
+}
+
+const cairo_extension cairo_socket_hooks = {.startup = cairo_hook_sockets, .request_end = cairo_socket_request_end};

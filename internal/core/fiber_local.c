@@ -24,7 +24,8 @@ typedef struct cairo_local_store {
 	struct cairo_local_store *next_dead;
 } cairo_local_store;
 
-// All per thread: each PHP thread registers its slots when it runs server.php.
+// All per thread, in the memory of its PHP request: each PHP request registers
+// its slots when it runs server.php (cairo_local_request_end() forgets them).
 static __thread zval **cairo_slots;  // the static properties
 static __thread uint32_t cairo_slot_count;
 static __thread HashTable cairo_requests;  // request id -> its store, until cairo_local_end()
@@ -194,6 +195,15 @@ PHP_FUNCTION(cairo_local_end)
 		cairo_release(s);
 	}
 	cairo_free_dead();
+}
+
+void cairo_local_request_end(void)
+{
+	cairo_slots = NULL;
+	cairo_slot_count = 0;
+	cairo_requests_init = false;
+	cairo_boot = (cairo_local_store){0};
+	cairo_live = cairo_dead = NULL;
 }
 
 void cairo_fiber_local_startup(void)

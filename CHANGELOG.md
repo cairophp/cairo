@@ -9,6 +9,16 @@ change the PHP API; patch versions do not.
 
 ### Added
 
+- Classic mode, for apps that are a set of PHP scripts (WordPress, Drupal,
+  a folder of `.php` files): `App::concurrency('classic')` gives every
+  request a PHP request of its own, as PHP-FPM does, on the same PHP thread,
+  and `$http->scripts($dir)` maps each request to a script under `$dir` as
+  nginx's `try_files` does (the first `.php` part of the path with the rest
+  as `PATH_INFO`, a directory's `index.php`, else the root `index.php`),
+  with Go serving the other files. Scripts run in the global scope with
+  `auto_prepend_file`, `exit()` and shutdown functions as under PHP-FPM, and
+  get `php://input`. WordPress 6.8 installs and runs on it. See
+  `examples/classic`.
 - `Cairo\App::serve()`: a file that `cairo serve` runs can serve its App
   itself instead of returning it, as a framework's runner does, and may end
   with `exit(0)` afterwards. The package `cairophp/symfony-runtime` uses it
@@ -17,7 +27,6 @@ change the PHP API; patch versions do not.
 - PSR-15 apps built on laminas-diactoros (Mezzio), slim/psr7 or
   php-http/discovery's factories get their PSR-7 requests from those, as
   they did from nyholm/psr7 and guzzlehttp/psr7.
-
 - Reloading the code of a running server. `cairo serve --watch` looks at the
   files of the app (`*.php`, `*.twig`, `*.yaml`, `*.yml`, `.env*` and
   `composer.lock` under the server file's directory, or under each

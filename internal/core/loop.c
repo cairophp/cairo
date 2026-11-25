@@ -124,9 +124,45 @@ cairo_msg *cairo_inbox_drain(int tid)
 	return list;
 }
 
+// Classic mode: the PHP request has its request, and the calls that come
+// after it are the next PHP request's (cairo_hold_calls()).
+static __thread bool holding;
+
+// The thread's next event that is not a call it holds, or NULL. The calls
+// it passes stay in next, in their order.
+static cairo_msg *take_held(cairo_mailbox *box)
+{
+	cairo_msg **end = &box->next;
+	while (*end != NULL) {
+		end = &(*end)->next;
+	}
+	*end = cairo_queue_take(&box->inbox);
+	for (cairo_msg **at = &box->next; *at != NULL; at = &(*at)->next) {
+		if ((*at)->kind != CAIRO_EVENT_CALL) {
+			cairo_msg *m = *at;
+			*at = m->next;
+			__atomic_store_n(&box->took, box->took + 1, __ATOMIC_RELAXED);
+			return m;
+		}
+	}
+	return NULL;
+}
+
+// cairo_hold_calls(): void
+// The calls that come from now on stay in the inbox for the PHP request that
+// follows this one on the thread (classic.h).
+PHP_FUNCTION(cairo_hold_calls)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+	holding = true;
+}
+
 // The thread's next event, or NULL.
 static cairo_msg *take(cairo_mailbox *box)
 {
+	if (holding) {
+		return take_held(box);
+	}
 	cairo_msg *m = box->next;
 	if (m == NULL && (m = cairo_queue_take(&box->inbox)) == NULL) {
 		return NULL;
@@ -218,6 +254,11 @@ static int came_back(cairo_mailbox *box, int tid, int64_t now)
 // Whether the thread has run no fiber since it left its loop: the first one
 // it resumes began with the stretch, and its time is the mailbox's since.
 static __thread bool fresh;
+
+void cairo_loop_request_end(void)
+{
+	fresh = holding = false;
+}
 
 void cairo_loop_resumes(void)
 {

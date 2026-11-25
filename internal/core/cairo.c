@@ -32,6 +32,7 @@
 #include <ext/standard/php_fopen_wrappers.h>
 
 #include "cairo.h"
+#include "classic.h"
 #include "module.h"
 #include "extension.h"
 #include "outbox.h"
@@ -175,6 +176,7 @@ PHP_FUNCTION(cairo_go_call)
 PHP_FUNCTION(cairo_guard);
 PHP_FUNCTION(cairo_next_event);
 PHP_FUNCTION(cairo_stuck);
+PHP_FUNCTION(cairo_hold_calls);
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_retire, 0, 0, 1)
 	ZEND_ARG_INFO(0, reason)
@@ -183,6 +185,10 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_next_event, 0, 0, 1)
 	ZEND_ARG_INFO(0, idle)
 	ZEND_ARG_INFO(0, turn)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_run_script, 0, 0, 1)
+	ZEND_ARG_INFO(0, file)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_guard, 0, 0, 1)
@@ -195,6 +201,9 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_next_event, arginfo_cairo_next_event)
 	PHP_FE(cairo_stuck, arginfo_cairo_none)
 	PHP_FE(cairo_cli_script, arginfo_cairo_none)
+	PHP_FE(cairo_thread_again, arginfo_cairo_none)
+	PHP_FE(cairo_hold_calls, arginfo_cairo_none)
+	PHP_FE(cairo_run_script, arginfo_cairo_run_script)
 	PHP_FE(cairo_respond, arginfo_cairo_respond)
 	PHP_FE(cairo_retire, arginfo_cairo_retire)
 	PHP_FE(cairo_wait_socket, arginfo_cairo_wait_socket)
@@ -754,22 +763,25 @@ void cairo_shutdown(void)
 #endif
 }
 
+// A request thread runs one PHP request for its whole life, or in classic
+// mode one for each request it takes (classic.h).
 int cairo_thread_run(int tid, const char *runtime_file)
 {
 	cairo_tid = tid;
 	(void)ts_resource(0);
-	int started = cairo_startgate_startup();
-	if (started != 0) {
-		ts_free_thread();
-		return started;
-	}
-	cairo_signals_onstack();
-	cairo_interrupt_register();
-	int status = run_file(runtime_file);
-	cairo_interrupt_unregister();
-	php_request_shutdown(NULL);
-	cairo_sockets_thread_end();
-	cairo_extensions_thread_end();   // after the request closed what it held
+	int status;
+	do {
+		status = cairo_startgate_startup();
+		if (status != 0) {
+			break;
+		}
+		cairo_signals_onstack();
+		cairo_interrupt_register();
+		status = run_file(runtime_file);
+		cairo_interrupt_unregister();
+		php_request_shutdown(NULL);
+		cairo_request_ended();   // after the request closed what it held
+	} while (cairo_classic_again());
 	ts_free_thread();
 	return status;
 }

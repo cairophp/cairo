@@ -110,7 +110,15 @@ func (decl *Declaration) handler(php Dispatcher, log *slog.Logger, tel *telemetr
 		if r.Method == "*" {
 			pattern = r.Path // $http->fallback(): any method
 		}
-		mux.Handle(pattern, routeHandler(r, php, cache, log, seconds(decl.WriteTimeout)))
+		var h http.Handler = routeHandler(r, php, cache, log, seconds(decl.WriteTimeout))
+		if r.Scripts {
+			s, err := openScripts(decl.Scripts)
+			if err != nil {
+				return nil, nil, err
+			}
+			h = s.handler(h)
+		}
+		mux.Handle(pattern, h)
 		if r.NoTimeout {
 			noTimeout[pattern] = true
 		}
@@ -222,6 +230,7 @@ type event struct {
 	tls     bool
 	values  map[string]any
 	form    *multipartForm
+	script  *script // the script of a request to $http->scripts() (scripts.go)
 }
 
 // AppendWire encodes the request for PHP; the body goes as raw bytes.
@@ -238,6 +247,9 @@ func (ev *event) AppendWire(b []byte, id int64, deadline float64) []byte {
 	}
 	if ev.form != nil {
 		n += 2
+	}
+	if ev.script != nil {
+		n++
 	}
 	b = wire.AppendMap(b, n)
 	b = wire.AppendString(wire.AppendKey(b, "type"), "http")
@@ -257,6 +269,14 @@ func (ev *event) AppendWire(b []byte, id int64, deadline float64) []byte {
 	b = wire.AppendBool(wire.AppendKey(b, "tls"), ev.tls)
 	if len(ev.values) > 0 {
 		b = wire.AppendValue(wire.AppendKey(b, "values"), ev.values)
+	}
+	if sc := ev.script; sc != nil {
+		b = wire.AppendMap(wire.AppendKey(b, "script"), 5)
+		b = wire.AppendString(wire.AppendKey(b, "file"), sc.file)
+		b = wire.AppendString(wire.AppendKey(b, "name"), sc.name)
+		b = wire.AppendString(wire.AppendKey(b, "path_info"), sc.pathInfo)
+		b = wire.AppendString(wire.AppendKey(b, "root"), sc.dir)
+		b = wire.AppendString(wire.AppendKey(b, "port"), sc.port)
 	}
 	if ev.form != nil {
 		b = wire.AppendList(wire.AppendKey(b, "form"), len(ev.form.fields))
@@ -410,6 +430,7 @@ func (ev *event) fill(w http.ResponseWriter, req *http.Request, route int, param
 	ev.headers, ev.host, ev.proto = req.Header, req.Host, req.Proto
 	ev.remote, ev.tls = req.RemoteAddr, req.TLS != nil
 	ev.values = middleware.Values(req.Context())
+	ev.script, _ = req.Context().Value(scriptKey{}).(*script)
 }
 
 // response is PHP's answer to one request. With release, its body is lent

@@ -65,20 +65,31 @@ namespace Cairo {
          * request state in globals or singletons. Isolated requests also get
          * $_GET, $_POST, $_COOKIE, $_SERVER and $_REQUEST, and may echo their
          * output and call header() instead of returning a Response.
+         * 'classic': isolated, and each request also has a PHP request of its
+         * own, as under PHP-FPM: what a request defines (functions, classes,
+         * constants, globals, included files) is gone for the next one. For
+         * apps that are a set of scripts, such as WordPress (see
+         * Http\Server::scripts()).
          */
         public function concurrency(string $mode): static
         {
-            if ($mode !== 'fibers' && $mode !== 'isolated') {
-                throw new \InvalidArgumentException("concurrency must be 'fibers' or 'isolated'");
+            if ($mode !== 'fibers' && $mode !== 'isolated' && $mode !== 'classic') {
+                throw new \InvalidArgumentException("concurrency must be 'fibers', 'isolated' or 'classic'");
             }
             $this->concurrency = $mode;
             return $this;
         }
 
-        /** @internal */
+        /** @internal Isolated or classic: a thread runs one request at a time. */
         public function isolated(): bool
         {
-            return $this->concurrency === 'isolated';
+            return $this->concurrency !== 'fibers';
+        }
+
+        /** @internal */
+        public function classic(): bool
+        {
+            return $this->concurrency === 'classic';
         }
 
         /**
@@ -369,7 +380,7 @@ namespace Cairo {
         {
             // Go's core reads the settings; what an extension declared goes
             // under its name, for the extension's Go half to read.
-            $spec = ['threads' => $this->threads, 'offload_threads' => $this->offloadThreads, 'max_in_flight' => $this->maxInFlight, 'isolated' => $this->isolated(), 'extensions' => []];
+            $spec = ['threads' => $this->threads, 'offload_threads' => $this->offloadThreads, 'max_in_flight' => $this->maxInFlight, 'isolated' => $this->isolated(), 'classic' => $this->classic(), 'extensions' => []];
             foreach ($this->servers as $extension => $servers) {
                 $spec['extensions'][$extension] = array_map(static fn (Http\Server|Grpc\Server $server): array => $server->spec(), $servers);
             }

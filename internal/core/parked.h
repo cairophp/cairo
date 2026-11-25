@@ -51,4 +51,7 @@ PHP_FUNCTION(cairo_wake);
 PHP_FUNCTION(cairo_parked);
 PHP_FUNCTION(cairo_parked_under);
 
+// After request shutdown: the waits and timers were the request's memory.
+void cairo_parked_request_end(void);
+
 #endif

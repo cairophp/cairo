@@ -34,11 +34,11 @@ int cairo_extensions_startup(void)
 	return SUCCESS;
 }
 
-void cairo_extensions_thread_end(void)
+void cairo_extensions_request_end(void)
 {
 	for (int i = 0; i < extension_count; i++) {
-		if (extensions[i]->thread_end != NULL) {
-			extensions[i]->thread_end();
+		if (extensions[i]->request_end != NULL) {
+			extensions[i]->request_end();
 		}
 	}
 }

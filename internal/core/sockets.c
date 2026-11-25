@@ -84,7 +84,7 @@ void cairo_sockets_wake(int32_t w)
 	}
 }
 
-void cairo_sockets_thread_end(void)
+void cairo_sockets_request_end(void)
 {
 	if (epfd >= 0) {
 		close(epfd);

@@ -13,7 +13,7 @@ struct _zend_function_entry;
 
 typedef struct cairo_extension {
 	void (*startup)(void);      // module startup: once, before any PHP thread exists
-	void (*thread_end)(void);   // on a PHP thread that ends, after its last request
+	void (*request_end)(void);  // on a PHP thread, once one of its PHP requests has ended: its last one, or in classic mode each
 	void (*interrupt)(int tid); // on PHP thread tid, once the engine interrupted it: see below
 	bool (*output)(const char *str, size_t len);   // what a server's PHP wrote and no buffer holds: true when taken
 	void (*flush)(void);        // a server's PHP called flush()
@@ -54,7 +54,7 @@ int cairo_answer(int64_t id, const char *meta, size_t n, const char *body, size_
 
 // For the SAPI module.
 int cairo_extensions_startup(void);   // SUCCESS or FAILURE
-void cairo_extensions_thread_end(void);
+void cairo_extensions_request_end(void);
 void cairo_extensions_interrupt(int tid);
 bool cairo_extensions_output(const char *str, size_t len);   // false: no extension took it
 void cairo_extensions_flush(void);

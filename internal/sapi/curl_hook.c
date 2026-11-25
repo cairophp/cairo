@@ -136,8 +136,8 @@ static void easy_multi_free(struct easy_multi *m)
 	free(m);
 }
 
-// Closes the thread's spare multi handles, when a PHP thread ends.
-static void cairo_curl_thread_end(void)
+// Closes the thread's spare multi handles, when its PHP request ends.
+static void cairo_curl_request_end(void)
 {
 	while (spare_multis != NULL) {
 		struct easy_multi *m = spare_multis;
@@ -147,7 +147,7 @@ static void cairo_curl_thread_end(void)
 	nspare = 0;
 }
 
-const cairo_extension cairo_curl_hook = {.thread_end = cairo_curl_thread_end};
+const cairo_extension cairo_curl_hook = {.request_end = cairo_curl_request_end};
 
 static struct easy_multi **easy_multi_slot(CURL *easy)
 {

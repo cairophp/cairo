@@ -75,6 +75,13 @@ namespace Cairo\Internal {
         private readonly bool $isolated;
         private \SplQueue $pending;
         private bool $busy = false;
+        /**
+         * Classic mode: this PHP request takes one request, and leaves the
+         * thread to a fresh PHP request for the next (classic.h).
+         */
+        private readonly bool $classic;
+        /** Go asked the thread to leave (retire, shutdown): no fresh PHP request follows. */
+        private bool $told = false;
 
         /** Thread recycling (App::maxRequests(), App::maxMemory(); 0 is no limit). */
         private readonly int $maxRequests;
@@ -108,7 +115,9 @@ namespace Cairo\Internal {
             $this->later = new \SplQueue();
             $this->pending = new \SplQueue();
             $this->isolated = $app->isolated();
-            [$this->maxRequests, $this->maxMemory] = $app->recycleLimits();
+            $this->classic = $app->classic();
+            // A classic thread is fresh at each request: nothing to recycle.
+            [$this->maxRequests, $this->maxMemory] = $this->classic ? [0, 0] : $app->recycleLimits();
             self::$instance = $this;
             foreach (self::$makers as $type => $make) {
                 $answer = $make($this);
@@ -287,6 +296,9 @@ namespace Cairo\Internal {
                 // that nothing can wake any more would wait for ever.
                 if ($this->leaving && $this->io === [] && $idle && $this->pending->isEmpty()
                     && ($this->active === 0 || ($this->script && \cairo_stuck()))) {
+                    if ($this->classic && $this->served > 0 && !$this->told) {
+                        \cairo_thread_again();
+                    }
                     return;
                 }
                 // The thread sleeps there only when this is idle and no fiber is
@@ -369,7 +381,7 @@ namespace Cairo\Internal {
                     // Go queues no more requests here: a replacement thread
                     // takes them, or the servers have stopped. The ones held
                     // are finished first, also those whose client has left.
-                    $this->leaving = true;
+                    $this->leaving = $this->told = true;
                     break;
                 default:
                     throw new \LogicException("cairo: no server answers '{$event['type']}' events");
@@ -429,6 +441,12 @@ namespace Cairo\Internal {
             $this->requests[$id] = $context;
             $this->active++;
             $this->busy = $this->isolated;
+            if ($this->classic) {
+                // The calls that come meanwhile wait in the inbox for the
+                // next PHP request, and this one ends with its request.
+                \cairo_hold_calls();
+                $this->leaving = true;
+            }
             $this->startFiber($event, $context);
         }
 

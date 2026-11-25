@@ -143,17 +143,24 @@ namespace Cairo\Internal {
         /** The output buffer that stands for the SAPI's in classic PHP; 0 without one. */
         private int $level = 0;
 
-        private function __construct()
+        /**
+         * What classic PHP's answer holds before it streams, once its code has
+         * closed the buffer that stands for the SAPI's (WordPress closes every
+         * level at its end): a page goes whole, with its length.
+         */
+        private const CLASSIC_HOLD = 1 << 20;
+
+        private function __construct(int $hold = 8192)
         {
             self::$of ??= new \WeakMap();
             self::$of[\Fiber::getCurrent()] = $this;
-            \cairo_http_capture(true);
+            \cairo_http_capture(true, $hold);
         }
 
         /** Classic PHP: the running fiber's echo and header() are its answer. */
         public static function classic(): self
         {
-            $out = new self();
+            $out = new self(self::CLASSIC_HOLD);
             header_remove();
             http_response_code(200);
             ob_start();

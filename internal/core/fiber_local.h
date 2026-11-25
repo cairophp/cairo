@@ -28,4 +28,7 @@ void cairo_local_bind_fiber(zend_fiber *f, zend_long request);
 // Registers the fiber switch observer, at module startup.
 void cairo_fiber_local_startup(void);
 
+// After request shutdown: the slots and stores were the request's memory.
+void cairo_local_request_end(void);
+
 #endif

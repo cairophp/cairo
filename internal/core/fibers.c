@@ -18,8 +18,8 @@
 // zend_fiber_context: a reference to the Cairo\Context object, or NULL.
 static int slot = -1;
 
-// All per thread, in the memory of its PHP request, which ends with the
-// thread. Each list holds a reference to its fibers.
+// All per thread, in the memory of its PHP request (cairo_fibers_request_end()
+// forgets them once it has ended). Each list holds a reference to its fibers.
 static __thread zend_fiber *idle[CAIRO_IDLE_FIBERS];
 static __thread uint32_t nidle;
 static __thread zend_fiber **ready;  // a ring: the next to resume is at head
@@ -354,6 +354,15 @@ void cairo_fibers_shutdown(void)
 			fiber->context.status = ZEND_FIBER_STATUS_DEAD;
 		}
 	}
+}
+
+void cairo_fibers_request_end(void)
+{
+	nidle = 0;
+	ready = NULL;
+	ready_head = ready_len = ready_cap = 0;
+	orphans = NULL;
+	norphans = orphans_cap = 0;
 }
 
 zend_result cairo_fibers_startup(void)

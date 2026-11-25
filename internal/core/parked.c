@@ -29,8 +29,9 @@ typedef struct {
 	zend_long id;
 } timer;
 
-// All per thread, in the memory of its PHP request, which ends with the
-// thread: timers left behind count against its memory limits.
+// All per thread, in the memory of its PHP request (cairo_parked_request_end()
+// forgets them once it has ended): timers left behind count against its
+// memory limits.
 static __thread bool tables;         // the two below are initialized
 static __thread HashTable waits;     // wait id => its parked
 static __thread HashTable requests;  // request id => the request's first parked
@@ -131,6 +132,13 @@ static void unlist(parked *p)
 		timed--;
 	}
 	p->listed = false;
+}
+
+void cairo_parked_request_end(void)
+{
+	tables = false;
+	timers = NULL;
+	ntimers = timers_cap = timed = 0;
 }
 
 void cairo_parked_wake(zend_long id)

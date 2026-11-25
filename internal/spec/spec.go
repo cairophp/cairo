@@ -19,6 +19,9 @@ type Spec struct {
 	// Isolated is App::concurrency('isolated'): each request thread runs one
 	// request at a time.
 	Isolated bool `json:"isolated"`
+	// Classic is App::concurrency('classic'): isolated, and each request has
+	// a PHP request of its own.
+	Classic bool `json:"classic"`
 	// Extensions is what each extension declared, under its name ("http",
 	// "grpc", "timing", "blocking"). An extension reads its own with Section.
 	Extensions map[string]json.RawMessage `json:"extensions"`

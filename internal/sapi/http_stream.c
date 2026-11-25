@@ -23,11 +23,9 @@
 #include "http_stream.h"
 #include "_cgo_export.h"
 
-// What a captured fiber holds before it is sent.
-#define DRAIN_AT 8192
-
 typedef struct {
 	smart_str held;
+	size_t drain_at;   // what it holds before it is sent
 	bool draining;
 } capture;
 
@@ -65,7 +63,7 @@ static bool cairo_http_output(const char *str, size_t len)
 		return false;
 	}
 	smart_str_appendl(&c->held, str, len);
-	if (ZSTR_LEN(c->held.s) >= DRAIN_AT) {
+	if (ZSTR_LEN(c->held.s) >= c->drain_at) {
 		drain(c);
 	}
 	return true;
@@ -89,18 +87,27 @@ static void take(capture *c, zval *return_value)
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_http_capture, 0, 0, 1)
 	ZEND_ARG_INFO(0, on)
+	ZEND_ARG_INFO(0, drain_at)
 ZEND_END_ARG_INFO()
 
-// cairo_http_capture(bool $on): string begins or ends taking the output of
-// the running fiber, and returns what it still held. PHP's own note that
+// cairo_http_capture(bool $on, int $drainAt = 8192): string begins or ends
+// taking the output of the running fiber, which is sent once it holds
+// $drainAt bytes, and returns what it still held. PHP's own note that
 // headers were sent ends with it, in both directions: the thread's PHP
 // request never ends, and the next answer has headers of its own.
 static PHP_FUNCTION(cairo_http_capture)
 {
 	bool on;
-	ZEND_PARSE_PARAMETERS_START(1, 1)
+	zend_long drain_at = 8192;
+	ZEND_PARSE_PARAMETERS_START(1, 2)
 		Z_PARAM_BOOL(on)
+		Z_PARAM_OPTIONAL
+		Z_PARAM_LONG(drain_at)
 	ZEND_PARSE_PARAMETERS_END();
+	if (drain_at < 1) {
+		zend_argument_value_error(2, "must be positive");
+		RETURN_THROWS();
+	}
 	if (EG(active_fiber) == NULL) {
 		zend_throw_error(NULL, "cairo_http_capture(): no fiber is running");
 		RETURN_THROWS();
@@ -124,6 +131,7 @@ static PHP_FUNCTION(cairo_http_capture)
 		c = ecalloc(1, sizeof(capture));
 		zend_hash_index_add_new_ptr(captures, key, c);
 	}
+	c->drain_at = (size_t)drain_at;
 	RETURN_EMPTY_STRING();
 }
 
@@ -173,7 +181,14 @@ static const zend_function_entry cairo_http_stream_functions[] = {
 	PHP_FE_END
 };
 
+// The captures were the memory of the PHP request that ended.
+static void cairo_http_request_end(void)
+{
+	captures = NULL;
+}
+
 const cairo_extension cairo_http_stream = {
+	.request_end = cairo_http_request_end,
 	.output = cairo_http_output,
 	.flush = cairo_http_flush,
 	.functions = cairo_http_stream_functions,

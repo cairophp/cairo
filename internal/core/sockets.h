@@ -35,8 +35,8 @@ int cairo_sockets_wait(int64_t ns);
 // Wakes the thread whose mailbox holds waker from cairo_sockets_wait().
 void cairo_sockets_wake(int32_t waker);
 
-// The calling thread ends: its epoll is closed.
-void cairo_sockets_thread_end(void);
+// The PHP request of the calling thread has ended: its epoll is closed.
+void cairo_sockets_request_end(void);
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_wait_socket, 0, 0, 6)
 	ZEND_ARG_INFO(0, fd)

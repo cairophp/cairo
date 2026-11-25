@@ -88,4 +88,7 @@ void cairo_inbox_queue(int tid, cairo_msg *m);
 // (cairo_msg_free in outbox.h).
 cairo_msg *cairo_inbox_drain(int tid);
 
+// After request shutdown: the next PHP request of the thread holds no calls.
+void cairo_loop_request_end(void);
+
 #endif

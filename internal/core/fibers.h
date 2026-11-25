@@ -36,6 +36,10 @@ zend_result cairo_fibers_startup(void);
 // fibers that a fatal error left suspended.
 void cairo_fibers_shutdown(void);
 
+// After request shutdown: the lists of the thread's fibers were the
+// request's memory, and are empty for the thread's next PHP request.
+void cairo_fibers_request_end(void);
+
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_fiber_context, 0, 0, 0)
 ZEND_END_ARG_INFO()
 

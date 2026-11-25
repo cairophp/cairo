@@ -112,7 +112,7 @@ func (decl *Declaration) handler(php Dispatcher, log *slog.Logger, tel *telemetr
 		}
 		var h http.Handler = routeHandler(r, php, cache, log, seconds(decl.WriteTimeout))
 		if r.Scripts {
-			s, err := openScripts(decl.Scripts)
+			s, err := openScripts(decl.Scripts, decl.ScriptsFront)
 			if err != nil {
 				return nil, nil, err
 			}

@@ -21,8 +21,17 @@ namespace Cairo\Internal {
          */
         public static function run(Request $req): void
         {
-            /** @var array{file: string, name: string, path_info: string, root: string, port: string} $script */
-            $script = $req->event()['script'];
+            self::runScript($req->event()['script'], $req->body());
+        }
+
+        /**
+         * Runs the script Go named for a request, with $body as its
+         * php://input, after the superglobals were filled.
+         *
+         * @param array{file: string, name: string, path_info: string, root: string, port: string} $script
+         */
+        public static function runScript(array $script, string $body): void
+        {
             $_SERVER['SCRIPT_FILENAME'] = $script['file'];
             $_SERVER['SCRIPT_NAME'] = $script['name'];
             $_SERVER['PHP_SELF'] = $script['name'] . $script['path_info'];
@@ -36,7 +45,7 @@ namespace Cairo\Internal {
             } else {
                 unset($_SERVER['PATH_INFO']);
             }
-            \cairo_http_input($req->body());
+            \cairo_http_input($body);
             // Relative includes and file names start where the script is, as
             // under PHP-FPM.
             chdir(dirname($script['file']));

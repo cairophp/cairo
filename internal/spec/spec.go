@@ -22,6 +22,10 @@ type Spec struct {
 	// Classic is App::concurrency('classic'): isolated, and each request has
 	// a PHP request of its own.
 	Classic bool `json:"classic"`
+	// Entry: the request threads call the entry function (core.Options.Entry)
+	// in place of running the server file. The app's declaration was made
+	// by that function, and nothing of the server file runs before a request.
+	Entry bool `json:"entry"`
 	// Extensions is what each extension declared, under its name ("http",
 	// "grpc", "timing", "blocking"). An extension reads its own with Section.
 	Extensions map[string]json.RawMessage `json:"extensions"`

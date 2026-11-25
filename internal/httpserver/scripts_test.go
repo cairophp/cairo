@@ -25,7 +25,7 @@ func TestScriptsFind(t *testing.T) {
 	if err := os.Symlink(filepath.Join(outside, "evil.php"), filepath.Join(dir, "evil.php")); err != nil {
 		t.Fatal(err)
 	}
-	s, err := openScripts(dir)
+	s, err := openScripts(dir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestScriptsWithoutFrontControllerAnswer404(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "page.php"), []byte("<?php"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s, err := openScripts(dir)
+	s, err := openScripts(dir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,5 +84,32 @@ func TestScriptsWithoutFrontControllerAnswer404(t *testing.T) {
 	}
 	if sc, redirect := s.find("/other"); sc != nil || redirect {
 		t.Fatalf("/other: %+v %v, want nothing (404)", sc, redirect)
+	}
+}
+
+func TestScriptsNamedFrontController(t *testing.T) {
+	dir := t.TempDir()
+	for _, f := range []string{"app.php", "index.php", "sub/index.php"} {
+		path := filepath.Join(dir, filepath.FromSlash(f))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("<?php"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := openScripts(dir, "app.php")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{"/pretty/link": "/app.php", "/index.php": "/index.php", "/sub/": "/sub/index.php", "/": "/index.php"} {
+		if sc, _ := s.find(path); sc == nil || sc.name != want {
+			t.Errorf("%s: %+v, want %s", path, sc, want)
+		}
+	}
+	for _, bad := range []string{"../app.php", "sub/index.php", "app.txt", ".hidden.php"} {
+		if _, err := openScripts(dir, bad); err == nil {
+			t.Errorf("front controller %q accepted", bad)
+		}
 	}
 }

@@ -67,7 +67,9 @@ type Engine struct {
 	runtimeFile string
 	log         *slog.Logger
 	phpIni      string
-	cli         bool // PHP's command line runs (RunCLI): no server file, one thread
+	cli         bool           // PHP's command line runs (RunCLI): no server file, one thread
+	entry       string         // Options.Entry
+	entryArgs   map[string]any // Options.EntryArgs
 	// RunCLI: the call that the script is (0: it runs outside the
 	// scheduler), and what ends its context.
 	script    int64
@@ -186,6 +188,13 @@ type Options struct {
 	// the core's part. It runs in the declare phase, so its error fails
 	// server.php there, as an error in the core's part does.
 	Validate func(*spec.Spec) error
+	// Entry is a PHP function (`Class::method`) that the declare phase calls
+	// in place of running ServerFile, with the mode and EntryArgs: it
+	// returns the App to declare, its own or the one ServerFile returns.
+	// When that App's declaration says so (spec.Entry), the request threads
+	// call it too, and it serves their requests. Empty runs ServerFile.
+	Entry     string
+	EntryArgs map[string]any
 }
 
 // Start boots PHP, runs server.php once to collect its declaration (the
@@ -217,6 +226,8 @@ func Start(opts Options) (*Engine, error) {
 		phpIni:      opts.PHPIni,
 		log:         logger,
 		validate:    opts.Validate,
+		entry:       opts.Entry,
+		entryArgs:   opts.EntryArgs,
 		bootDone:    make(chan error, 1),
 		shutdownCh:  make(chan struct{}),
 		stopped:     make(chan struct{}),
@@ -449,10 +460,14 @@ func goCairoInfo(tid C.int) *C.char {
 			mode = "offload"
 		}
 	}
-	b, _ := json.Marshal(map[string]any{
+	info := map[string]any{
 		"mode": mode, "server": e.serverFile, "thread": int(tid), "script": e.script, "php": phpAtStart, "classes": phpOnUse,
 		"reloaded": e.reloads.Load() > 0,
-	})
+	}
+	if e.entry != "" && (mode == "declare" || e.spec.Entry) {
+		info["entry"], info["args"] = e.entry, e.entryArgs
+	}
+	b, _ := json.Marshal(info)
 	if t != nil {
 		t.info = string(b)
 	}

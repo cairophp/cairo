@@ -2,10 +2,12 @@
 // in PHP and served by Go.
 //
 //	cairo serve server.php [--threads N] [--offload-threads N]
+//	cairo serve public/ [--listen :8080]
 //	cairo php artisan migrate
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -13,6 +15,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -29,6 +32,11 @@ import (
 // version is set at build time: -ldflags "-X main.version=v0.1.0".
 var version = "dev"
 
+// plainEntry is what the PHP threads of cairo serve run in place of the
+// server file: it declares what the file declares, or, for a folder or a
+// script that declares nothing, serves the scripts in classic mode.
+const plainEntry = `Cairo\Internal\Plain::entry`
+
 func main() {
 	if args, ok := phpCommand(os.Args); ok {
 		os.Exit(php(args))
@@ -43,6 +51,9 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   cairo serve <server.php> [--threads N] [--offload-threads N] [--grace 30s] [--drain 0s] [--php-ini FILE]
                            [--watch] [--watch-path PATH]...
+  cairo serve <dir | script.php> [--listen :8080] [...]
+                           a folder, or a PHP file that declares no Cairo\App, is served
+                           as PHP-FPM serves it: classic mode, each request runs its script
   cairo php [options] <file.php> [args...]    PHP's command line (cairo php -h)
   cairo gen [--out DIR] [-I DIR]... <file.proto>...
   cairo version`)
@@ -157,6 +168,7 @@ func serve(args []string) error {
 	drain := fs.Duration("drain", 0, "how long to keep serving after a stop signal while the readiness endpoint answers 503")
 	phpIni := fs.String("php-ini", os.Getenv("CAIRO_PHP_INI"), "php.ini file or directory (default: $PHPRC, then PHP's own search; also CAIRO_PHP_INI)")
 	watching := fs.Bool("watch", false, "reload the PHP code when a file changes (development)")
+	listen := fs.String("listen", "", "the address to serve a folder or a plain script on (default :8080; a declaration names its own)")
 	var watched multiFlag
 	fs.Var(&watched, "watch-path", "a directory or file for --watch to look at instead of the server file's directory (repeatable; implies --watch)")
 	// Accept the server file before or after the flags.
@@ -174,11 +186,27 @@ func serve(args []string) error {
 		file = "server.php"
 	}
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	var decls declarations
-	engine, err := core.Start(core.Options{ServerFile: file, Threads: *threads, OffloadThreads: *offloadThreads, PHPIni: *phpIni, Logger: log, Validate: decls.read})
+	path, err := filepath.Abs(file)
 	if err != nil {
 		return err
+	}
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	var decls declarations
+	validate := func(s *spec.Spec) error {
+		if *listen != "" && !s.Entry {
+			return fmt.Errorf("--listen is for a folder or a plain script: %s declares its own servers", file)
+		}
+		return decls.read(s)
+	}
+	engine, err := core.Start(core.Options{
+		ServerFile: file, Threads: *threads, OffloadThreads: *offloadThreads, PHPIni: *phpIni, Logger: log, Validate: validate,
+		Entry: plainEntry, EntryArgs: map[string]any{"path": path, "listen": cmp.Or(*listen, ":8080")},
+	})
+	if err != nil {
+		return err
+	}
+	if engine.Spec().Entry {
+		log.Info("serving scripts with no declaration, as PHP-FPM does", "path", path)
 	}
 
 	tel, err := telemetry.Start(context.Background(), telemetry.Options{

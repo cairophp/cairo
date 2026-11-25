@@ -24,6 +24,9 @@ type Declaration struct {
 	// what no file and no other route does, in classic mode ("" when not
 	// set). Its route has Scripts set.
 	Scripts string `json:"scripts"`
+	// ScriptsFront is the front controller of Scripts, by its name: what
+	// runs for a path that names no script.
+	ScriptsFront string `json:"scripts_front"`
 	// Sendfile is $http->sendfile(): the directories whose files an answer
 	// may name for Go to send (X-Sendfile).
 	Sendfile   []SentDir                `json:"sendfile"`

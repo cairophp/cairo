@@ -37,6 +37,18 @@ namespace Cairo {
         }
 
         /**
+         * Declares this app's servers and serves them on this PHP thread,
+         * returning when the thread is told to stop. For a framework's
+         * runner, called from the file that cairo serve runs, which then
+         * never returns an App (cairophp/symfony-runtime: Symfony's front
+         * controller ends the script with exit(0) once the runner returns).
+         * A server.php that returns its App does not call it.
+         */
+        public function serve(): void
+        {
+        }
+
+        /**
          * Development aid: log, with its stack, any request that keeps its
          * PHP thread busy for more than $seconds without waiting on Cairo (a
          * CPU loop, or a blocking call Cairo does not hook), since every other

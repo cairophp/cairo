@@ -9,15 +9,11 @@ change the PHP API; patch versions do not.
 
 ### Added
 
-- Symfony apps run through their own front controller, with no
-  `server.php`: `cairo serve public/index.php`. Under `cairo serve`,
-  Symfony's Runtime component (`APP_RUNTIME`) picks `Cairo\Symfony\Runtime`,
-  which is in the binary: it serves the kernel with `public/` as the document
-  root, in isolated mode by default, or in fiber mode with one kernel for
-  each request in flight, which it refuses for an app with sessions (PHP has
-  one session per thread). Options `listen`, `concurrency`, `threads` and
-  `max_requests` come from `APP_RUNTIME_OPTIONS` or `extra.runtime` in
-  `composer.json`. See `examples/symfony`.
+- `Cairo\App::serve()`: a file that `cairo serve` runs can serve its App
+  itself instead of returning it, as a framework's runner does, and may end
+  with `exit(0)` afterwards. The package `cairophp/symfony-runtime` uses it
+  to serve a Symfony app through its own front controller, with no
+  `server.php`: `cairo serve public/index.php`. See `examples/serve`.
 - PSR-15 apps built on laminas-diactoros (Mezzio), slim/psr7 or
   php-http/discovery's factories get their PSR-7 requests from those, as
   they did from nyholm/psr7 and guzzlehttp/psr7.

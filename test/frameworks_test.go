@@ -19,7 +19,26 @@ import (
 func startFrameworks(t *testing.T) string {
 	t.Helper()
 	dir := "../examples/frameworks"
-	composerInstall(t, dir)
+	if _, err := os.Stat(dir + "/vendor/autoload.php"); err != nil {
+		if _, err := exec.LookPath("composer"); err != nil {
+			t.Skip("composer is not installed")
+		}
+		for _, args := range [][]string{
+			{"install", "--no-interaction", "--no-progress"},
+			{"install", "--no-interaction", "--no-progress", "--prefer-source"}, // no dist downloads
+		} {
+			cmd := exec.Command("composer", args...)
+			cmd.Dir = dir
+			if out, err := cmd.CombinedOutput(); err == nil {
+				break
+			} else {
+				t.Logf("composer %v: %v\n%s", args, err, out)
+			}
+		}
+		if _, err := os.Stat(dir + "/vendor/autoload.php"); err != nil {
+			t.Skip("composer install failed (see above)")
+		}
+	}
 	addr := freeAddr()
 	cmd := exec.Command(cairoBin, "serve", dir+"/server.php", "--threads", "1", "--offload-threads", "1")
 	cmd.Env = append(os.Environ(), "CAIRO_HTTP="+addr)
@@ -176,35 +195,5 @@ func TestSymfonyKernel(t *testing.T) {
 	_ = json.Unmarshal(b, &terminated)
 	if !reflect.DeepEqual(terminated, []string{"/sf/7", "/sf/8", "/sf/stream"}) {
 		t.Errorf("terminated = %s", b)
-	}
-}
-
-// composerInstall installs the Composer packages of the example in dir,
-// unless they are there. It skips the test when that cannot be done.
-func composerInstall(t *testing.T, dir string) {
-	t.Helper()
-	if _, err := os.Stat(dir + "/vendor/autoload.php"); err == nil {
-		return
-	}
-	if _, err := exec.LookPath("composer"); err != nil {
-		t.Skip("composer is not installed")
-	}
-	for _, args := range [][]string{
-		{"install", "--no-interaction", "--no-progress"},
-		{"install", "--no-interaction", "--no-progress", "--prefer-source"}, // no dist downloads
-	} {
-		cmd := exec.Command("composer", args...)
-		cmd.Dir = dir
-		// Composer runs no plugin as root unless told to, and Symfony's
-		// runtime is one: it writes vendor/autoload_runtime.php.
-		cmd.Env = append(os.Environ(), "COMPOSER_ALLOW_SUPERUSER=1")
-		if out, err := cmd.CombinedOutput(); err == nil {
-			break
-		} else {
-			t.Logf("composer %v: %v\n%s", args, err, out)
-		}
-	}
-	if _, err := os.Stat(dir + "/vendor/autoload.php"); err != nil {
-		t.Skip("composer install failed (see above)")
 	}
 }

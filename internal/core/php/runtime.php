@@ -107,13 +107,12 @@ namespace Cairo\Internal {
     /**
      * Declare $app's servers and serve them on this thread, until the server
      * stops. server.php returns its App and Cairo calls this; a framework's
-     * runner that never returns to server.php (Symfony's runtime ends the
-     * script with exit) calls it itself.
+     * runner that never returns to server.php calls it itself (App::serve()).
      */
     function serve(App $app): void
     {
         if (Runtime::$mode === '') {
-            throw new \LogicException('Cairo\Internal\serve(): the thread serves already, or is not a thread of cairo serve');
+            throw new \LogicException('Cairo\App::serve(): the thread serves already, or is not a thread of cairo serve');
         }
         $mode = Runtime::$mode;
         Runtime::$mode = '';

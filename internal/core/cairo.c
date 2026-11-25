@@ -737,10 +737,16 @@ int cairo_boot(const char *runtime_file, const char *php_ini)
 // and passes signals it does not use on to the handler it replaced, which is
 // Go's. Go's handlers must run on the alternate signal stack and abort
 // otherwise; Go's CPU profiler (SIGPROF) hit that. Handlers keep their
-// function and only gain SA_ONSTACK. Signals are process-wide, so after the
-// first PHP request startup this changes nothing.
+// function and only gain SA_ONSTACK. Signals are process-wide, and
+// zend_signal installs its handlers once (it leaves a handler that is already
+// its own), so after the first PHP request startup there is nothing to change:
+// the other startups, one per request in classic mode, skip the 8 reads.
 void cairo_signals_onstack(void)
 {
+	static atomic_bool done;
+	if (atomic_load_explicit(&done, memory_order_acquire)) {
+		return;
+	}
 	static const int sigs[] = {SIGPROF, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2, SIGALRM};
 	for (size_t i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) {
 		struct sigaction sa;
@@ -751,6 +757,7 @@ void cairo_signals_onstack(void)
 		sa.sa_flags |= SA_ONSTACK;
 		sigaction(sigs[i], &sa, NULL);
 	}
+	atomic_store_explicit(&done, true, memory_order_release);
 }
 
 void cairo_shutdown(void)

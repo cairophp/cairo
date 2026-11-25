@@ -152,8 +152,8 @@ namespace Cairo {
             return \cairo_fiber_context() ?? (self::$background ??= new self(0, null));
         }
 
-        /** @internal $fiber runs under $context from now on */
-        public static function bind(\Fiber $fiber, self $context): void
+        /** @internal $fiber (null: the thread's own stack) runs under $context from now on */
+        public static function bind(?\Fiber $fiber, self $context): void
         {
             \cairo_fiber_bind($fiber, $context, $context->requestId);
         }
@@ -345,7 +345,7 @@ namespace Cairo {
          */
         public function run(callable $fn): mixed
         {
-            $fiber = \Fiber::getCurrent() ?? throw new \LogicException('Context::run() must be called inside a request (a fiber)');
+            $fiber = \Fiber::getCurrent();   // null: the thread's own stack, where a classic request runs
             $prev = self::current();
             self::bind($fiber, $this);
             try {

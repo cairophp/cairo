@@ -34,9 +34,15 @@ namespace Cairo {
     function await(Task $task): mixed
     {
         if (!$task->done) {
-            $fiber = \Fiber::getCurrent() ?? throw new \LogicException('await() must be called inside a request (a fiber)');
-            $task->waiters[] = $fiber;
-            \Fiber::suspend();
+            $fiber = \Fiber::getCurrent();
+            if ($fiber !== null) {
+                $task->waiters[] = $fiber;
+                \Fiber::suspend();
+            } elseif (Scheduler::onStack()) {
+                Scheduler::instance()->drive(static fn (): bool => $task->done);
+            } else {
+                throw new \LogicException('await() must be called inside a request');
+            }
         }
         if ($task->error !== null) {
             throw $task->error;
@@ -69,7 +75,11 @@ namespace Cairo {
     function sleep(float $seconds): void
     {
         if (\Fiber::getCurrent() === null) {
-            usleep((int) ($seconds * 1e6));
+            if (Scheduler::onStack()) {
+                await(async(static fn () => sleep($seconds)));
+            } else {
+                usleep((int) ($seconds * 1e6));
+            }
             return;
         }
         Scheduler::instance()->waits->sleep($seconds);

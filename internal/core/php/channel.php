@@ -306,9 +306,11 @@ namespace Cairo {
         if ($timeout !== null && $timeout <= 0) {
             return [null, null, false];
         }
-        $fiber = \Fiber::getCurrent();
         $ctx = Context::current();
-        if ($fiber === null || $ctx->requestId === 0 || !Internal\Scheduler::running()) {
+        if (\Fiber::getCurrent() === null || $ctx->requestId === 0 || !Internal\Scheduler::running()) {
+            if (Internal\Scheduler::onStack()) {
+                return await(async(static fn (): array => select($cases, $timeout)));
+            }
             throw new \LogicException('waiting on a Cairo\Channel must happen inside a request handler or an async() task');
         }
 

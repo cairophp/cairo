@@ -96,7 +96,7 @@ static void shutdown_functions(void *arg)
 }
 
 // cairo_run_script(string $file): bool
-// Runs the script $file of a classic request in the calling fiber, as PHP
+// Runs the script $file of a classic request where it is called, as PHP
 // runs a request's script: in the global scope, with auto_prepend_file and
 // auto_append_file, and then the functions it registered with
 // register_shutdown_function(), before the request is answered (as PHP-FPM

@@ -43,6 +43,9 @@ namespace Cairo {
             throw new \InvalidArgumentException('offload() takes no arguments with an OffloadTask; give them to the task');
         }
         if (\Fiber::getCurrent() === null || !Scheduler::running() || Scheduler::instance()->script) {
+            if (Scheduler::onStack()) {
+                return \Cairo\await(\Cairo\async(static fn (): mixed => offload($fn, ...$args)));
+            }
             // already off the request threads, or in a script, which has no offload threads
             return $fn instanceof OffloadTask ? $fn->run() : $fn(...$args);
         }

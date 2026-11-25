@@ -358,8 +358,8 @@ namespace Cairo {
         {
         }
 
-        /** @internal $fiber runs under $context from now on */
-        public static function bind(\Fiber $fiber, self $context): void
+        /** @internal $fiber (null: the thread's own stack) runs under $context from now on */
+        public static function bind(?\Fiber $fiber, self $context): void
         {
         }
 

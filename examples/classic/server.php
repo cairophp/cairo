@@ -8,11 +8,16 @@
 declare(strict_types=1);
 
 use Cairo\App;
+use Cairo\Middleware;
 
 $app = (new App())
     ->concurrency('classic')
     ->threads((int) (getenv('CAIRO_THREADS') ?: 4));
 
-$app->http(getenv('CAIRO_HTTP') ?: ':8080')->scripts(__DIR__ . '/site');
+$http = $app->http(getenv('CAIRO_HTTP') ?: ':8080');
+if (($timeout = (float) getenv('CAIRO_TIMEOUT')) > 0) {
+    $http->use(Middleware::timeout($timeout));
+}
+$http->scripts(__DIR__ . '/site');
 
 return $app;

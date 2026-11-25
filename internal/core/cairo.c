@@ -356,13 +356,14 @@ void cairo_interrupt(int tid)
 	cairo_vm_interrupt(tid);
 }
 
-// The running fiber's Cairo state, created when missing.
+// The running fiber's Cairo state, or that of the thread's own stack, where
+// a classic request runs; created when missing.
 static cairo_fiber_state *cairo_current_fiber_state(void)
 {
-	if (cairo_fiber_slot < 0 || EG(active_fiber) == NULL) {
+	if (cairo_fiber_slot < 0 || EG(current_fiber_context) == NULL) {
 		return NULL;
 	}
-	zend_fiber_context *ctx = &EG(active_fiber)->context;
+	zend_fiber_context *ctx = EG(current_fiber_context);
 	cairo_fiber_state *st = ctx->reserved[cairo_fiber_slot];
 	if (st == NULL) {
 		st = calloc(1, sizeof(*st));
@@ -408,8 +409,8 @@ static void cairo_on_interrupt(zend_execute_data *execute_data)
 	if (cairo_tid >= 0 && cairo_tid < CAIRO_MAX_THREADS && EG(active_fiber) != NULL && EG(exception) == NULL) {
 		cairo_extensions_interrupt(cairo_tid);
 	}
-	if (cairo_tid >= 0 && cairo_tid < CAIRO_MAX_THREADS
-		&& EG(active_fiber) != NULL && EG(exception) == NULL
+	// Outside any fiber too: a classic request runs on the thread's own stack.
+	if (cairo_tid >= 0 && cairo_tid < CAIRO_MAX_THREADS && EG(exception) == NULL
 		&& atomic_exchange(&cairo_slots[cairo_tid].poked, false)) {
 		cairo_fiber_state *st = cairo_current_fiber_state();
 		if (st != NULL && cairo_should_stop()) {
@@ -485,6 +486,11 @@ static PHP_MINIT_FUNCTION(cairo)
 
 static PHP_RSHUTDOWN_FUNCTION(cairo)
 {
+	// PHP's main context never ends as a fiber does: its state goes here.
+	if (cairo_fiber_slot >= 0 && EG(main_fiber_context) != NULL) {
+		free(EG(main_fiber_context)->reserved[cairo_fiber_slot]);
+		EG(main_fiber_context)->reserved[cairo_fiber_slot] = NULL;
+	}
 	cairo_fibers_shutdown();
 	return SUCCESS;
 }

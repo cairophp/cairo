@@ -95,6 +95,13 @@ func (t *thread) answer(m *C.cairo_msg) (lent bool) {
 	case m.blen > 0:
 		c.reply.body = C.GoBytes(body, C.int(m.blen))
 	}
+	// Read before the send: once the reply is taken, c belongs to the next
+	// request. Released after it, so that the goroutine of the request that
+	// waits for this thread is the one that runs next.
+	release := c.release
 	c.resp <- &c.reply
+	if release != nil {
+		release()
+	}
 	return lent
 }

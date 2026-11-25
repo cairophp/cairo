@@ -32,6 +32,11 @@ type call struct {
 	ctx   context.Context
 	probe Probe
 	reply reply
+	// release gives back what the call holds of the engine (its thread's
+	// slot in isolated mode): the collector calls it as the answer comes,
+	// so that the next request does not wait for this one's goroutine.
+	// Calling it again does nothing.
+	release func()
 }
 
 // reply is PHP's answer to a call: its metadata (JSON) and, for an HTTP
@@ -157,16 +162,10 @@ func (e *Engine) dispatch(ctx context.Context, ev wire.Event) (reply, error) {
 			return reply{}, ctx.Err()
 		}
 	}
-	t, release, err := e.pickWorker(ctx, release)
-	if err != nil {
-		return reply{}, err
-	}
+	// The event is encoded before the wait for a thread (isolated mode), so
+	// that a thread that frees up gets it at once.
 	id := e.nextID.Add(1)
 	r := requests.Get().(*request)
-	c := &r.call
-	c.id, c.thread, c.ctx, c.probe = id, t, ctx, p
-	t.inflight.Add(1)
-
 	var deadline float64
 	if dl, ok := ctx.Deadline(); ok {
 		deadline = float64(dl.UnixNano()) / 1e9
@@ -176,6 +175,14 @@ func (e *Engine) dispatch(ctx context.Context, ev wire.Event) (reply, error) {
 	if te, ok := ev.(wire.TailEvent); ok {
 		tail = te.Tail()
 	}
+	t, release, err := e.pickWorker(ctx, release)
+	if err != nil {
+		r.free()
+		return reply{}, err
+	}
+	c := &r.call
+	c.id, c.thread, c.ctx, c.probe, c.release = id, t, ctx, p, release
+	t.inflight.Add(1)
 	if err := t.begin(c, r.buf, tail); err != nil {
 		t.inflight.Add(-1)
 		release()

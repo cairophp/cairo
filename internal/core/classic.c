@@ -15,6 +15,7 @@
 #include "sockets.h"
 
 static __thread bool again;
+static __thread bool checked;
 
 // Every __thread variable of the core or an extension that points into the
 // request's memory is reset here: the thread's next PHP request would
@@ -42,6 +43,23 @@ PHP_FUNCTION(cairo_thread_again)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 	again = true;
+}
+
+void cairo_classic_forget(void)
+{
+	checked = false;
+}
+
+PHP_FUNCTION(cairo_thread_checked)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+	RETURN_BOOL(checked);
+}
+
+PHP_FUNCTION(cairo_thread_check_passed)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+	checked = true;
 }
 
 // Runs fn at the bottom of the stack, as PHP runs a request's script and its

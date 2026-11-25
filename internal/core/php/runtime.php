@@ -116,7 +116,16 @@ namespace Cairo\Internal {
         }
         $mode = Runtime::$mode;
         Runtime::$mode = '';
-        \cairo_spec(json_encode($app->spec(), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+        // A classic thread checks its declaration in its first PHP request.
+        // Its later ones skip it when every route is scripts(): they run the
+        // same server.php, and a handler id then names no closure of it that
+        // could have changed since (Go names the script).
+        if (!\cairo_thread_checked() || !$app->scriptsOnly()) {
+            \cairo_spec(json_encode($app->spec(), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+            if ($app->classic() && $app->scriptsOnly()) {
+                \cairo_thread_check_passed();
+            }
+        }
         if ($mode === 'serve') {
             (new Scheduler($app))->run();
         } elseif ($mode === 'offload') {

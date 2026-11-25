@@ -363,6 +363,22 @@ namespace Cairo {
             return count($this->handlers) - 1;
         }
 
+        /**
+         * @internal Only HTTP servers whose routes are all scripts(): what a
+         * request runs is the script Go names, whatever the handler ids are.
+         */
+        public function scriptsOnly(): bool
+        {
+            foreach ($this->servers as $servers) {
+                foreach ($servers as $server) {
+                    if (!$server instanceof Http\Server || !$server->scriptsOnly()) {
+                        return false;
+                    }
+                }
+            }
+            return $this->servers !== [];
+        }
+
         /** @internal the route of handler $id, as logs name it */
         public function routeName(int $id): string
         {

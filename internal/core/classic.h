@@ -26,6 +26,20 @@ bool cairo_classic_again(void);
 // cairo_thread_again(): void
 PHP_FUNCTION(cairo_thread_again);
 
+// A classic thread whose app serves only scripts() checked its declaration
+// in its first PHP request (cairo_thread_check_passed()): its later PHP
+// requests run server.php without sending the declaration to Go. Unlike the
+// rest of classic.c this outlives the PHP request, so a thread that starts
+// forgets it first (cairo_classic_forget()): the system thread may have been
+// another PHP thread's, from before a reload.
+void cairo_classic_forget(void);
+
+// cairo_thread_checked(): bool
+PHP_FUNCTION(cairo_thread_checked);
+
+// cairo_thread_check_passed(): void
+PHP_FUNCTION(cairo_thread_check_passed);
+
 // cairo_run_script(string $file): bool
 PHP_FUNCTION(cairo_run_script);
 

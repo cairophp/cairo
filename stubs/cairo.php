@@ -235,6 +235,14 @@ namespace Cairo {
         {
         }
 
+        /**
+         * @internal Only HTTP servers whose routes are all scripts(): what a
+         * request runs is the script Go names, whatever the handler ids are.
+         */
+        public function scriptsOnly(): bool
+        {
+        }
+
         /** @internal the route of handler $id, as logs name it */
         public function routeName(int $id): string
         {
@@ -928,6 +936,11 @@ namespace Cairo\Http {
          * header() as under PHP-FPM.
          */
         public function scripts(string $dir): static
+        {
+        }
+
+        /** @internal Every route of this server runs the script Go names (scripts()). */
+        public function scriptsOnly(): bool
         {
         }
 

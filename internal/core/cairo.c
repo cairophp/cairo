@@ -202,6 +202,8 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_stuck, arginfo_cairo_none)
 	PHP_FE(cairo_cli_script, arginfo_cairo_none)
 	PHP_FE(cairo_thread_again, arginfo_cairo_none)
+	PHP_FE(cairo_thread_checked, arginfo_cairo_none)
+	PHP_FE(cairo_thread_check_passed, arginfo_cairo_none)
 	PHP_FE(cairo_hold_calls, arginfo_cairo_none)
 	PHP_FE(cairo_run_script, arginfo_cairo_run_script)
 	PHP_FE(cairo_respond, arginfo_cairo_respond)
@@ -776,6 +778,7 @@ int cairo_thread_run(int tid, const char *runtime_file)
 {
 	cairo_tid = tid;
 	(void)ts_resource(0);
+	cairo_classic_forget();
 	int status;
 	do {
 		status = cairo_startgate_startup();

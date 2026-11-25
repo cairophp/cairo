@@ -20,6 +20,10 @@ type Declaration struct {
 	// PublicDir is $http->publicDir(): files served at their own paths,
 	// with everything else going to the routes ("" when not set).
 	PublicDir string `json:"public_dir"`
+	// Scripts is $http->scripts(): the directory whose PHP scripts answer
+	// what no file and no other route does, in classic mode ("" when not
+	// set). Its route has Scripts set.
+	Scripts string `json:"scripts"`
 	// Sendfile is $http->sendfile(): the directories whose files an answer
 	// may name for Go to send (X-Sendfile).
 	Sendfile   []SentDir                `json:"sendfile"`
@@ -55,6 +59,9 @@ type Route struct {
 	// StreamBody is the route's ->streamBody(): PHP reads the request's
 	// body in pieces instead of getting it whole.
 	StreamBody bool `json:"stream_body,omitempty"`
+	// Scripts marks the route of $http->scripts(), which runs the script
+	// that the request's path names (scripts.go).
+	Scripts bool `json:"scripts,omitempty"`
 }
 
 // RouteCache lets Go answer repeated GET requests to a route from memory.
@@ -83,6 +90,9 @@ func Declared(s *spec.Spec, claims *spec.Claims) ([]Declaration, error) {
 	for i := range decls {
 		if err := decls[i].validate(claims); err != nil {
 			return nil, err
+		}
+		if decls[i].Scripts != "" && !s.Classic {
+			return nil, fmt.Errorf("http %s: scripts() needs App::concurrency('classic'): a script defines its functions once per PHP request", decls[i].Listen)
 		}
 	}
 	return decls, nil

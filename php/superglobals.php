@@ -46,6 +46,10 @@ namespace Cairo\Internal {
             $server['REMOTE_ADDR'] = $host;
             $server['REMOTE_PORT'] = $port;
             $server['SERVER_NAME'] = explode(':', (string) ($event['host'] ?? ''))[0];
+            // Go keeps the Host header apart from the others.
+            if (($event['host'] ?? '') !== '') {
+                $server['HTTP_HOST'] = (string) $event['host'];
+            }
             foreach ($headers as $name => $values) {
                 $value = implode(', ', (array) $values);
                 $key = strtoupper(str_replace('-', '_', (string) $name));

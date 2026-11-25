@@ -6,6 +6,7 @@
 #include <zend_fibers.h>
 #include <zend_observer.h>
 
+#include "extension.h"
 #include "fiber_local.h"
 #include "fibers.h"
 #include "loop.h"
@@ -26,6 +27,7 @@ static __thread zend_fiber **ready;  // a ring: the next to resume is at head
 static __thread uint32_t ready_head, ready_len, ready_cap;
 static __thread zend_object **orphans;  // contexts of destroyed fibers, until release_orphans()
 static __thread uint32_t norphans, orphans_cap;
+static __thread int64_t stack_deadline;  // cairo_stack_deadline()
 
 static void fiber_error(const char *message)
 {
@@ -152,48 +154,61 @@ static void release_orphans(void)
 	}
 }
 
-static void set_context(zend_fiber *fiber, zend_object *context)
+static void set_context(zend_fiber_context *ctx, zend_object *context)
 {
-	zend_object *old = fiber->context.reserved[slot];
+	zend_object *old = ctx->reserved[slot];
 	if (context != NULL) {
 		GC_ADDREF(context);
 	}
-	fiber->context.reserved[slot] = context;
+	ctx->reserved[slot] = context;
 	if (old != NULL) {
 		OBJ_RELEASE(old);
 	}
 }
 
 // cairo_fiber_context(): ?object
-// The context that the running fiber is bound to; null when it has none,
-// or when no fiber runs.
+// The context that the running fiber is bound to, or the thread's own code
+// when no fiber runs (a classic request); null when it has none.
 PHP_FUNCTION(cairo_fiber_context)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
-	zend_fiber *fiber = EG(active_fiber);
-	zend_object *context = fiber != NULL ? fiber->context.reserved[slot] : NULL;
+	zend_object *context = EG(current_fiber_context) != NULL ? EG(current_fiber_context)->reserved[slot] : NULL;
 	if (context == NULL) {
 		RETURN_NULL();
 	}
 	RETURN_OBJ_COPY(context);
 }
 
-// cairo_fiber_bind(Fiber $fiber, ?object $context, int $request): void
+// cairo_fiber_bind(?Fiber $fiber, ?object $context, int $request, int $deadline = 0): void
 // $fiber runs under $context from now on, for request $request (0: none),
-// whose request-local statics it sees (fiber_local.h).
+// whose request-local statics it sees (fiber_local.h). A null $fiber is the
+// thread's own code, outside any fiber (a classic request), whose deadline
+// is the hrtime() tick $deadline (0: none; cairo_stack_deadline()); its
+// binding must be undone before the PHP request ends.
 PHP_FUNCTION(cairo_fiber_bind)
 {
 	zval *fiber;
 	zend_object *context;
-	zend_long request;
-	ZEND_PARSE_PARAMETERS_START(3, 3)
-		Z_PARAM_OBJECT_OF_CLASS(fiber, zend_ce_fiber)
+	zend_long request, deadline = 0;
+	ZEND_PARSE_PARAMETERS_START(3, 4)
+		Z_PARAM_OBJECT_OF_CLASS_OR_NULL(fiber, zend_ce_fiber)
 		Z_PARAM_OBJ_OR_NULL(context)
 		Z_PARAM_LONG(request)
+		Z_PARAM_OPTIONAL
+		Z_PARAM_LONG(deadline)
 	ZEND_PARSE_PARAMETERS_END();
 	release_orphans();
-	set_context((zend_fiber *)Z_OBJ_P(fiber), context);
-	cairo_local_bind_fiber((zend_fiber *)Z_OBJ_P(fiber), request);
+	zend_fiber_context *ctx = fiber != NULL ? &((zend_fiber *)Z_OBJ_P(fiber))->context : EG(main_fiber_context);
+	if (fiber == NULL) {
+		stack_deadline = deadline;
+	}
+	set_context(ctx, context);
+	cairo_local_bind_fiber(ctx, request);
+}
+
+int64_t cairo_stack_deadline(void)
+{
+	return EG(active_fiber) == NULL ? stack_deadline : 0;
 }
 
 // cairo_fiber_reuse(object $context, int $request, mixed $job): bool
@@ -218,8 +233,8 @@ PHP_FUNCTION(cairo_fiber_reuse)
 		zend_fiber *fiber = idle[--nidle];  // with the list's reference
 		if (EXPECTED(suspended(fiber))) {
 			zval ret;
-			set_context(fiber, context);
-			cairo_local_bind_fiber(fiber, request);
+			set_context(&fiber->context, context);
+			cairo_local_bind_fiber(&fiber->context, request);
 			cairo_fiber_resume(fiber, job, &ret);
 			zval_ptr_dtor(&ret);
 			OBJ_RELEASE(&fiber->std);
@@ -244,8 +259,8 @@ PHP_FUNCTION(cairo_fiber_idle)
 		RETURN_THROWS();
 	}
 	release_orphans();
-	set_context(fiber, NULL);
-	cairo_local_bind_fiber(fiber, 0);
+	set_context(&fiber->context, NULL);
+	cairo_local_bind_fiber(&fiber->context, 0);
 	if (EG(exception) != NULL || nidle >= CAIRO_IDLE_FIBERS || (fiber->flags & ZEND_FIBER_FLAG_DESTROYED)) {
 		return;
 	}
@@ -363,6 +378,7 @@ void cairo_fibers_request_end(void)
 	ready_head = ready_len = ready_cap = 0;
 	orphans = NULL;
 	norphans = orphans_cap = 0;
+	stack_deadline = 0;
 }
 
 zend_result cairo_fibers_startup(void)

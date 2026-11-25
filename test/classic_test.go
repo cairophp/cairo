@@ -1,9 +1,11 @@
 package test
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -16,12 +18,12 @@ import (
 )
 
 // startClassic serves examples/classic (classic mode, scripts()) on the
-// given number of PHP threads and returns its base URL.
-func startClassic(t *testing.T, threads int) string {
+// given number of PHP threads, with env added, and returns its base URL.
+func startClassic(t *testing.T, threads int, env ...string) string {
 	t.Helper()
 	addr := freeAddr()
 	cmd := exec.Command(cairoBin, "serve", "../examples/classic/server.php", "--offload-threads", "1")
-	cmd.Env = append(os.Environ(), "CAIRO_HTTP="+addr, fmt.Sprintf("CAIRO_THREADS=%d", threads))
+	cmd.Env = append(append(os.Environ(), "CAIRO_HTTP="+addr, fmt.Sprintf("CAIRO_THREADS=%d", threads)), env...)
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -141,5 +143,72 @@ func TestClassicWaitsSuspendOnlyTheFiber(t *testing.T) {
 	wg.Wait()
 	if elapsed := time.Since(start); elapsed > 1600*time.Millisecond {
 		t.Errorf("4 requests of two 0.5 s waits on 2 threads took %v", elapsed)
+	}
+}
+
+// A classic request runs on its thread's own stack, and Cairo's waits work
+// there as they do in a fiber: the fibers the script started run while it
+// waits, and flush() sends its answer on through Go.
+func TestClassicWaitsOnItsOwnStack(t *testing.T) {
+	base := startClassic(t, 1)
+	_, body := classicGet(t, http.DefaultClient, base+"/together.php")
+	var got struct {
+		SentAfter int `json:"sent_after_ms"`
+		Timeout   any
+		Derived   string
+		Offload   string
+		Ms        int
+	}
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("together.php: %q: %v", body, err)
+	}
+	// The task sent after 0.1 s, while the script slept for 0.2 s.
+	if got.SentAfter > 180 || got.Timeout != nil || got.Derived != "deadline" || got.Offload != "ABC" || got.Ms > 450 {
+		t.Errorf("together.php: %+v", got)
+	}
+
+	start := time.Now()
+	resp, err := http.Get(base + "/stream.php")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	r := bufio.NewReader(resp.Body)
+	first, _ := r.ReadString('\n')
+	early := time.Since(start)
+	rest, _ := io.ReadAll(r)
+	if first != "first\n" || string(rest) != "second\n" || early > 400*time.Millisecond {
+		t.Errorf("flush(): %q after %v, then %q", first, early, rest)
+	}
+}
+
+// The deadline stops a classic script where it runs, in a loop that never
+// waits and in PHP's own waits, which hold the thread: the thread serves the
+// next request right away.
+func TestClassicDeadlineStopsTheScript(t *testing.T) {
+	peer, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { peer.Close() })
+	go func() {
+		for {
+			conn, err := peer.Accept()
+			if err != nil {
+				return
+			}
+			t.Cleanup(func() { conn.Close() })
+		}
+	}()
+	base := startClassic(t, 1, "CAIRO_TIMEOUT=0.5", "CAIRO_SILENT_PEER="+peer.Addr().String())
+	for _, path := range []string{"/spin.php", "/held.php", "/held.php?read=1"} {
+		start := time.Now()
+		if resp, _ := classicGet(t, http.DefaultClient, base+path); resp.StatusCode != 504 || time.Since(start) > 2*time.Second {
+			t.Errorf("%s: %d after %v, want 504 at the deadline", path, resp.StatusCode, time.Since(start))
+		}
+		start = time.Now()
+		if _, body := classicGet(t, http.DefaultClient, base+"/state.php"); !strings.Contains(body, `"hits":1`) || time.Since(start) > 300*time.Millisecond {
+			t.Errorf("after %s: %q after %v", path, body, time.Since(start))
+		}
 	}
 }

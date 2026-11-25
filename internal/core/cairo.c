@@ -202,6 +202,8 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_stuck, arginfo_cairo_none)
 	PHP_FE(cairo_cli_script, arginfo_cairo_none)
 	PHP_FE(cairo_thread_again, arginfo_cairo_none)
+	PHP_FE(cairo_thread_checked, arginfo_cairo_none)
+	PHP_FE(cairo_thread_check_passed, arginfo_cairo_none)
 	PHP_FE(cairo_hold_calls, arginfo_cairo_none)
 	PHP_FE(cairo_run_script, arginfo_cairo_run_script)
 	PHP_FE(cairo_respond, arginfo_cairo_respond)
@@ -354,13 +356,14 @@ void cairo_interrupt(int tid)
 	cairo_vm_interrupt(tid);
 }
 
-// The running fiber's Cairo state, created when missing.
+// The running fiber's Cairo state, or that of the thread's own stack, where
+// a classic request runs; created when missing.
 static cairo_fiber_state *cairo_current_fiber_state(void)
 {
-	if (cairo_fiber_slot < 0 || EG(active_fiber) == NULL) {
+	if (cairo_fiber_slot < 0 || EG(current_fiber_context) == NULL) {
 		return NULL;
 	}
-	zend_fiber_context *ctx = &EG(active_fiber)->context;
+	zend_fiber_context *ctx = EG(current_fiber_context);
 	cairo_fiber_state *st = ctx->reserved[cairo_fiber_slot];
 	if (st == NULL) {
 		st = calloc(1, sizeof(*st));
@@ -373,7 +376,7 @@ static cairo_fiber_state *cairo_current_fiber_state(void)
 	return st;
 }
 
-static void cairo_throw_deadline(void)
+void cairo_throw_deadline(void)
 {
 	zend_string *name = zend_string_init("Cairo\\Context\\DeadlineExceeded", sizeof("Cairo\\Context\\DeadlineExceeded") - 1, 0);
 	zend_class_entry *ce = zend_lookup_class(name);
@@ -406,8 +409,8 @@ static void cairo_on_interrupt(zend_execute_data *execute_data)
 	if (cairo_tid >= 0 && cairo_tid < CAIRO_MAX_THREADS && EG(active_fiber) != NULL && EG(exception) == NULL) {
 		cairo_extensions_interrupt(cairo_tid);
 	}
-	if (cairo_tid >= 0 && cairo_tid < CAIRO_MAX_THREADS
-		&& EG(active_fiber) != NULL && EG(exception) == NULL
+	// Outside any fiber too: a classic request runs on the thread's own stack.
+	if (cairo_tid >= 0 && cairo_tid < CAIRO_MAX_THREADS && EG(exception) == NULL
 		&& atomic_exchange(&cairo_slots[cairo_tid].poked, false)) {
 		cairo_fiber_state *st = cairo_current_fiber_state();
 		if (st != NULL && cairo_should_stop()) {
@@ -483,6 +486,11 @@ static PHP_MINIT_FUNCTION(cairo)
 
 static PHP_RSHUTDOWN_FUNCTION(cairo)
 {
+	// PHP's main context never ends as a fiber does: its state goes here.
+	if (cairo_fiber_slot >= 0 && EG(main_fiber_context) != NULL) {
+		free(EG(main_fiber_context)->reserved[cairo_fiber_slot]);
+		EG(main_fiber_context)->reserved[cairo_fiber_slot] = NULL;
+	}
 	cairo_fibers_shutdown();
 	return SUCCESS;
 }
@@ -565,6 +573,13 @@ static char *cairo_read_cookies(void)
 
 static void cairo_register_variables(zval *track_vars_array)
 {
+	// A script never sees the environment in $_SERVER (Superglobals::fill()
+	// leaves it out, as PHP-FPM's clear_env does), and once the declaration
+	// is checked nothing else reads it there: copying all of it at each
+	// classic request was 6% of a request.
+	if (cairo_classic_checked()) {
+		return;
+	}
 	php_import_environment_variables(track_vars_array);
 }
 
@@ -737,10 +752,16 @@ int cairo_boot(const char *runtime_file, const char *php_ini)
 // and passes signals it does not use on to the handler it replaced, which is
 // Go's. Go's handlers must run on the alternate signal stack and abort
 // otherwise; Go's CPU profiler (SIGPROF) hit that. Handlers keep their
-// function and only gain SA_ONSTACK. Signals are process-wide, so after the
-// first PHP request startup this changes nothing.
+// function and only gain SA_ONSTACK. Signals are process-wide, and
+// zend_signal installs its handlers once (it leaves a handler that is already
+// its own), so after the first PHP request startup there is nothing to change:
+// the other startups, one per request in classic mode, skip the 8 reads.
 void cairo_signals_onstack(void)
 {
+	static atomic_bool done;
+	if (atomic_load_explicit(&done, memory_order_acquire)) {
+		return;
+	}
 	static const int sigs[] = {SIGPROF, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2, SIGALRM};
 	for (size_t i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) {
 		struct sigaction sa;
@@ -751,6 +772,7 @@ void cairo_signals_onstack(void)
 		sa.sa_flags |= SA_ONSTACK;
 		sigaction(sigs[i], &sa, NULL);
 	}
+	atomic_store_explicit(&done, true, memory_order_release);
 }
 
 void cairo_shutdown(void)
@@ -769,6 +791,7 @@ int cairo_thread_run(int tid, const char *runtime_file)
 {
 	cairo_tid = tid;
 	(void)ts_resource(0);
+	cairo_classic_forget();
 	int status;
 	do {
 		status = cairo_startgate_startup();

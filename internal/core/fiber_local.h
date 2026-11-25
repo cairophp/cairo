@@ -20,10 +20,11 @@ ZEND_END_ARG_INFO()
 PHP_FUNCTION(cairo_local_register);
 PHP_FUNCTION(cairo_local_end);
 
-// Fiber f runs for request from now on (0: for none), with that request's
-// values in the statics. Called from PHP functions only (fibers.c), before
-// the fiber runs for the request.
-void cairo_local_bind_fiber(zend_fiber *f, zend_long request);
+// The fiber of ctx runs for request from now on (0: for none), with that
+// request's values in the statics; ctx may be PHP's main context, for code
+// that runs on the thread's own stack (a classic request). Called from PHP
+// functions only (fibers.c), before the fiber runs for the request.
+void cairo_local_bind_fiber(zend_fiber_context *ctx, zend_long request);
 
 // Registers the fiber switch observer, at module startup.
 void cairo_fiber_local_startup(void);

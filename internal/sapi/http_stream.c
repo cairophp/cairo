@@ -29,15 +29,17 @@ typedef struct {
 	bool draining;
 } capture;
 
-// The captures of this thread, by fiber: memory of the thread's PHP request.
+// The captures of this thread, by fiber context: memory of the thread's PHP
+// request. PHP's main context is a classic request's, which runs on the
+// thread's own stack.
 static __thread HashTable *captures;
 
 static capture *capture_of_fiber(void)
 {
-	if (captures == NULL || EG(active_fiber) == NULL) {
+	if (captures == NULL) {
 		return NULL;
 	}
-	return zend_hash_index_find_ptr(captures, (zend_ulong)(uintptr_t)EG(active_fiber));
+	return zend_hash_index_find_ptr(captures, (zend_ulong)(uintptr_t)EG(current_fiber_context));
 }
 
 static void drain(capture *c)
@@ -91,8 +93,9 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_http_capture, 0, 0, 1)
 ZEND_END_ARG_INFO()
 
 // cairo_http_capture(bool $on, int $drainAt = 8192): string begins or ends
-// taking the output of the running fiber, which is sent once it holds
-// $drainAt bytes, and returns what it still held. PHP's own note that
+// taking the output of the running fiber (or of the thread's own stack),
+// which is sent once it holds $drainAt bytes, and returns what it still
+// held. PHP's own note that
 // headers were sent ends with it, in both directions: the thread's PHP
 // request never ends, and the next answer has headers of its own.
 static PHP_FUNCTION(cairo_http_capture)
@@ -108,12 +111,8 @@ static PHP_FUNCTION(cairo_http_capture)
 		zend_argument_value_error(2, "must be positive");
 		RETURN_THROWS();
 	}
-	if (EG(active_fiber) == NULL) {
-		zend_throw_error(NULL, "cairo_http_capture(): no fiber is running");
-		RETURN_THROWS();
-	}
 	SG(headers_sent) = 0;
-	zend_ulong key = (zend_ulong)(uintptr_t)EG(active_fiber);
+	zend_ulong key = (zend_ulong)(uintptr_t)EG(current_fiber_context);
 	capture *c = capture_of_fiber();
 	if (!on) {
 		take(c, return_value);

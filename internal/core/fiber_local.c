@@ -154,7 +154,7 @@ PHP_FUNCTION(cairo_local_register)
 	}
 }
 
-void cairo_local_bind_fiber(zend_fiber *f, zend_long request)
+void cairo_local_bind_fiber(zend_fiber_context *ctx, zend_long request)
 {
 	if (cairo_local_slot < 0 || cairo_slot_count == 0) {
 		return;
@@ -169,11 +169,11 @@ void cairo_local_bind_fiber(zend_fiber *f, zend_long request)
 		}
 		s->refs++;  // the fiber's
 	}
-	cairo_local_store *old = f->context.reserved[cairo_local_slot];
-	f->context.reserved[cairo_local_slot] = s;
-	if (f == EG(active_fiber)) {
+	cairo_local_store *old = ctx->reserved[cairo_local_slot];
+	ctx->reserved[cairo_local_slot] = s;
+	if (ctx == EG(current_fiber_context)) {
 		// Rebinding the running fiber: move the slots to the new store now.
-		cairo_local_switch(&f->context, &f->context);
+		cairo_local_switch(ctx, ctx);
 	}
 	cairo_release(old);
 }

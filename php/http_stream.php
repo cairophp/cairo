@@ -135,8 +135,10 @@ namespace Cairo\Internal {
         /** @var array<int, int> request id => how far its answer is, for HttpAnswer */
         public static array $began = [];
 
-        /** @var ?\WeakMap<\Fiber, self> */
+        /** @var ?\WeakMap<object, self> by fiber, or by $stack */
         private static ?\WeakMap $of = null;
+        /** What stands for the thread's own stack, where a classic request runs. */
+        private static ?\stdClass $stack = null;
 
         public ?Http\Stream $stream = null;
 
@@ -150,10 +152,15 @@ namespace Cairo\Internal {
          */
         private const CLASSIC_HOLD = 1 << 20;
 
+        private static function key(): object
+        {
+            return \Fiber::getCurrent() ?? (self::$stack ??= new \stdClass());
+        }
+
         private function __construct(int $hold = 8192)
         {
             self::$of ??= new \WeakMap();
-            self::$of[\Fiber::getCurrent()] = $this;
+            self::$of[self::key()] = $this;
             \cairo_http_capture(true, $hold);
         }
 
@@ -177,7 +184,7 @@ namespace Cairo\Internal {
          */
         public static function send(int $status, array $headers, callable $write): void
         {
-            $out = self::$of[\Fiber::getCurrent()] ?? null;
+            $out = self::$of[self::key()] ?? null;
             if ($out !== null) {
                 // Classic PHP has taken the fiber's output already, and ends it.
                 $out->stream ??= Http\Stream::open($status, $headers);
@@ -197,7 +204,7 @@ namespace Cairo\Internal {
         /** @internal for http_stream.c: flush(), or the output has grown large */
         public static function drain(): void
         {
-            $out = self::$of[\Fiber::getCurrent()] ?? null;
+            $out = self::$of[self::key()] ?? null;
             if ($out === null) {
                 return;
             }
@@ -228,7 +235,7 @@ namespace Cairo\Internal {
                     $rest = (string) ob_get_clean();
                 }
             }
-            unset(self::$of[\Fiber::getCurrent()]);
+            unset(self::$of[self::key()]);
             // What went down earlier (ob_flush(), a buffer the code closed) comes first.
             return \cairo_http_capture(false) . $rest;
         }
@@ -240,7 +247,7 @@ namespace Cairo\Internal {
          */
         public static function finish(): bool
         {
-            $out = self::$of[\Fiber::getCurrent()] ?? null;
+            $out = self::$of[self::key()] ?? null;
             $id = Context::current()->requestId;
             if ($out === null || $out->level === 0 || isset(self::$began[$id])) {
                 if ($out !== null) {
@@ -264,7 +271,7 @@ namespace Cairo\Internal {
          */
         public static function headersSend(int $status): int
         {
-            $out = self::$of[\Fiber::getCurrent()] ?? null;
+            $out = self::$of[self::key()] ?? null;
             if ($status >= 100 && $status < 200) {
                 Go::call('http.hints', ['status' => $status, 'headers' => self::headers()]);
                 if ($out === null) {

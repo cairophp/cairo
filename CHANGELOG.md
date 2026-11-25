@@ -168,6 +168,17 @@ change the PHP API; patch versions do not.
 
 ### Changed
 
+- Classic mode is faster: a request on the classic example's real page (two
+  MySQL queries) went from 2,566 to 5,383 requests a second. A classic
+  request runs on its thread's own stack instead of a fiber; its thread
+  reads the environment once, keeps what Go tells it at start, checks a
+  declaration of `scripts()` routes only once, and PHP no longer copies the
+  environment into `$_SERVER` at each request only for Cairo to take it out
+  again (`$_SERVER` is the same). In a classic script PHP's
+  own waits (PDO, curl, `sleep()`) hold the thread, as under PHP-FPM; a
+  request's deadline still ends a wait on a socket (PDO MySQL, streams) and
+  a sleep, but no longer a curl transfer or a PostgreSQL query.
+  `Cairo\async()` and the rest of the concurrency API work as before.
 - In isolated mode `$_SERVER` keeps what the app put there as its thread
   started, under the request's own keys. Before, it had the request's keys
   only, and Symfony's `APP_ENV` or a variable of `.env` was gone from it

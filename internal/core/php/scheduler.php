@@ -48,8 +48,10 @@ namespace Cairo\Internal {
         private array $routes = [];
         /** @var list<\Closure(int, string): void> what afterRequest() was given, the last one first */
         private array $afterRequest = [];
-        /** @var array<int, \Fiber> I/O operation id => waiting fiber */
+        /** @var array<int, \Fiber|true> I/O operation id => waiting fiber; true: the thread's own stack waits (onStack()) */
         private array $io = [];
+        /** @var array<int, array<string, mixed>> I/O operation id => its event, which the thread's own stack has not taken yet */
+        private array $stackEvents = [];
         /** How many of those are fibers that a script does not wait for (callAside()). */
         private int $aside = 0;
         /** @internal The waits that stay on this thread: sleep(), select(), sockets. */
@@ -194,6 +196,17 @@ namespace Cairo\Internal {
         }
 
         /**
+         * @internal Whether the code that runs is a request's, outside any
+         * fiber: a classic request, which runs on the thread's own stack
+         * (start()). What would suspend a fiber waits in one there, with
+         * await(async()), or with drive().
+         */
+        public static function onStack(): bool
+        {
+            return \Fiber::getCurrent() === null && self::$instance !== null && Context::current()->requestId !== 0;
+        }
+
+        /**
          * Ask Go to run $op for the current fiber, and suspend the fiber
          * until it is done. A Go operation takes its arguments as an array;
          * what the hooks ask for takes the string they built.
@@ -241,12 +254,13 @@ namespace Cairo\Internal {
                 $ctx->throwIfDone();
                 throw new \LogicException('Cairo I/O must run inside a request handler or an async() task');
             }
-            $this->io[$id] = \Fiber::getCurrent() ?? throw new \LogicException('I/O must run inside a fiber');
+            $fiber = \Fiber::getCurrent();
+            $this->io[$id] = $fiber ?? true;
             if (!$ctx->scoped) {
-                $event = \Fiber::suspend();
+                $event = $fiber !== null ? \Fiber::suspend() : $this->stackEvent($id);
             } else {
                 $ctx->goOpBegan($id);   // cancel() ends it
-                $event = \Fiber::suspend();
+                $event = $fiber !== null ? \Fiber::suspend() : $this->stackEvent($id);
                 $ctx->goOpEnded($id);
             }
             if (isset($event['error'])) {
@@ -260,6 +274,20 @@ namespace Cairo\Internal {
                 };
             }
             return $event['result'] ?? null;
+        }
+
+        /**
+         * The event of operation $id, which the thread's own stack waits for:
+         * the loop runs the thread's fibers meanwhile.
+         *
+         * @return array<string, mixed>
+         */
+        private function stackEvent(int $id): array
+        {
+            $this->drive(fn (): bool => isset($this->stackEvents[$id]));
+            $event = $this->stackEvents[$id];
+            unset($this->stackEvents[$id]);
+            return $event;
         }
 
         /** $fiber, which is suspended, runs again at the loop's next turn. */
@@ -281,11 +309,7 @@ namespace Cairo\Internal {
         public function run(): void
         {
             while (true) {
-                $idle = \cairo_run_ready(self::TURN);   // whether the queue ran empty
-                while (!$this->later->isEmpty()) {
-                    ($this->later->dequeue())();
-                    $idle = false;
-                }
+                $idle = $this->runReady();
                 // Isolated mode: start the next request once the thread is free.
                 if (!$this->busy && !$this->pending->isEmpty()) {
                     $this->start($this->pending->dequeue());
@@ -301,26 +325,69 @@ namespace Cairo\Internal {
                     }
                     return;
                 }
-                // The thread sleeps there only when this is idle and no fiber is
-                // ready, and no longer than until the next timer of a parked one.
-                $n = self::TURN;
-                $event = \cairo_next_event($idle);
-                while ($event !== null) {
-                    if (($type = $event['type']) === 'io') {
-                        $fiber = $this->io[$event['io']] ?? null;
-                        unset($this->io[$event['io']]);
-                        $fiber?->resume($event);
-                    } elseif (!isset($this->answers[$type])) {
-                        $this->take($event);
-                    } elseif ($this->busy) {
-                        $this->pending->enqueue($event);   // isolated mode: one request at a time
-                    } else {
-                        $this->start($event);
-                    }
-                    // With fibers to run, the events that are there come first;
-                    // which sockets are ready is asked once a turn.
-                    $event = !$idle && --$n > 0 ? \cairo_next_event(false, false) : null;
+                $this->takeEvents($idle);
+            }
+        }
+
+        /**
+         * @internal The loop, run from the thread's own stack (onStack())
+         * until $done() says that what it waits for is there: it waits as a
+         * fiber does, and the thread runs its fibers meanwhile. A classic
+         * request holds the calls that come (start()), so no other request
+         * begins in there.
+         *
+         * @param \Closure(): bool $done
+         */
+        public function drive(\Closure $done): void
+        {
+            while (true) {
+                $idle = $this->runReady();
+                if ($done()) {
+                    return;
                 }
+                $this->takeEvents($idle);
+            }
+        }
+
+        /** Resumes the fibers that are ready and runs what later() was given: whether nothing was. */
+        private function runReady(): bool
+        {
+            $idle = \cairo_run_ready(self::TURN);   // whether the queue ran empty
+            while (!$this->later->isEmpty()) {
+                ($this->later->dequeue())();
+                $idle = false;
+            }
+            return $idle;
+        }
+
+        /**
+         * Takes the events that Go queued, and waits for one when the
+         * thread is $idle: it sleeps no longer than until the next timer of
+         * a parked fiber.
+         */
+        private function takeEvents(bool $idle): void
+        {
+            $n = self::TURN;
+            $event = \cairo_next_event($idle);
+            while ($event !== null) {
+                if (($type = $event['type']) === 'io') {
+                    $fiber = $this->io[$event['io']] ?? null;
+                    unset($this->io[$event['io']]);
+                    if ($fiber === true) {
+                        $this->stackEvents[$event['io']] = $event;
+                    } else {
+                        $fiber?->resume($event);
+                    }
+                } elseif (!isset($this->answers[$type])) {
+                    $this->take($event);
+                } elseif ($this->busy) {
+                    $this->pending->enqueue($event);   // isolated mode: one request at a time
+                } else {
+                    $this->start($event);
+                }
+                // With fibers to run, the events that are there come first;
+                // which sockets are ready is asked once a turn.
+                $event = !$idle && --$n > 0 ? \cairo_next_event(false, false) : null;
             }
         }
 
@@ -427,7 +494,8 @@ namespace Cairo\Internal {
         }
 
         /**
-         * Start the request of $event in a fiber of its own, with its context.
+         * Start the request of $event in a fiber of its own (a classic one on
+         * the thread's stack), with its context.
          *
          * @param array<string, mixed> $event
          */
@@ -446,6 +514,17 @@ namespace Cairo\Internal {
                 // next PHP request, and this one ends with its request.
                 \cairo_hold_calls();
                 $this->leaving = true;
+                // On the thread's own stack: nothing of a PHP request outlives
+                // it, so a fiber would be a new stack mapped and unmapped for
+                // each request.
+                $deadline = $context->deadlineTick();
+                \cairo_fiber_bind(null, $context, $id, $deadline === PHP_INT_MAX ? 0 : $deadline);
+                try {
+                    $this->serve($event);
+                } finally {
+                    \cairo_fiber_bind(null, null, 0);
+                }
+                return;
             }
             $this->startFiber($event, $context);
         }

@@ -7,6 +7,7 @@
 // the runtime declines (hooks off, offload thread, a fiber Cairo did not
 // start), the original handler runs and blocks as usual.
 
+#include <errno.h>
 #include <php.h>
 #include "hooks.h"
 
@@ -21,11 +22,27 @@ static const char *hook_names[HOOK_COUNT] = {
 };
 static zif_handler hook_originals[HOOK_COUNT];
 
+// A sleep outside any fiber, of a classic request on its thread's own stack:
+// one that would last past the request's deadline ends there, with
+// Context\DeadlineExceeded. Returns as cairo_hooked_sleep() does.
+static int sleep_on_stack(double seconds)
+{
+	int64_t at = cairo_stack_deadline();
+	if (at == 0 || seconds * 1e9 < (double)(at - cairo_mono_ns())) {
+		return 0;
+	}
+	struct timespec until = {.tv_sec = at / 1000000000, .tv_nsec = at % 1000000000};
+	while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &until, NULL) == EINTR) {
+	}
+	cairo_throw_deadline();
+	return 1;
+}
+
 // Returns 1 when the runtime slept for us (or threw), 0 to fall back.
 static int cairo_hooked_sleep(double seconds)
 {
 	if (EG(active_fiber) == NULL) {
-		return 0;
+		return sleep_on_stack(seconds);
 	}
 	zval fname, arg, retval;
 	ZVAL_STRING(&fname, "Cairo\\Internal\\Hooks::sleep");

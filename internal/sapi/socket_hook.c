@@ -9,6 +9,8 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,6 +52,36 @@ static const php_stream_ops *find_orig_ops(const php_stream_ops *hooked)
 // request's, so its end forgets it (cairo_socket_request_end()).
 static __thread zend_function *wait_fn;
 
+// A wait outside any fiber, of a classic request on its thread's own stack:
+// the thread waits, as PHP would, but no longer than the request's deadline.
+// Returns as cairo_wait_fd() does.
+static int wait_on_stack(php_netstream_data_t *sock, int write)
+{
+	int64_t at = cairo_stack_deadline();
+	if (at == 0) {
+		return 0;
+	}
+	int64_t now = cairo_mono_ns();
+	int64_t end = sock->timeout.tv_sec == -1 ? INT64_MAX
+		: now + (int64_t)sock->timeout.tv_sec * 1000000000 + (int64_t)sock->timeout.tv_usec * 1000;
+	struct pollfd pfd = {.fd = sock->socket, .events = write ? POLLOUT : POLLIN};
+	for (;;) {
+		int64_t ms = ((end < at ? end : at) - now + 999999) / 1000000;
+		int n = poll(&pfd, 1, ms < 0 ? 0 : ms > INT_MAX ? INT_MAX : (int)ms);
+		if (n > 0 || (n < 0 && errno != EINTR)) {
+			return 1;   // ready, or an error that PHP's read reports
+		}
+		now = cairo_mono_ns();
+		if (now >= at) {
+			cairo_throw_deadline();
+			return -2;
+		}
+		if (now >= end) {
+			return -1;
+		}
+	}
+}
+
 // Asks the runtime to wait (Cairo\Internal\Hooks::wait) for a socket that
 // was just found not ready. Returns 1 when the socket is ready, 0 when the
 // runtime declined (block as usual), -1 on the socket's own timeout, -2 when
@@ -57,7 +89,7 @@ static __thread zend_function *wait_fn;
 static int cairo_wait_fd(php_netstream_data_t *sock, int write)
 {
 	if (EG(active_fiber) == NULL) {
-		return 0;
+		return wait_on_stack(sock, write);
 	}
 	double timeout = -1;
 	if (sock->timeout.tv_sec != -1) {

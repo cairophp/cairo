@@ -8,6 +8,8 @@ declare(strict_types=1);
 
 namespace Cairo\Internal {
 
+    use Cairo\Context;
+    use Cairo\Context\DeadlineExceeded;
     use Cairo\Http\Request;
 
     /** @internal */
@@ -39,6 +41,12 @@ namespace Cairo\Internal {
             // under PHP-FPM.
             chdir(dirname($script['file']));
             \cairo_run_script($script['file']);
+            // Past the deadline the answer is a 504, as Go's own timeout gives:
+            // an uncaught DeadlineExceeded made the script's status 500, and
+            // which of the two the client got depended on which came first.
+            if (Context::current()->err() instanceof DeadlineExceeded) {
+                throw new DeadlineExceeded();
+            }
         }
     }
 }

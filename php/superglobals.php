@@ -19,12 +19,20 @@ namespace Cairo\Internal {
             // Symfony's runtime and Dotenv put the app's settings in $_SERVER
             // as the thread starts, and read them there. The process's own
             // environment is left out: getenv() has it, and copying it into
-            // every request measured 2.6% of a real request.
-            self::$thread ??= array_filter(
-                $_SERVER,
-                static fn (mixed $value, int|string $key): bool => is_string($key) && !str_starts_with($key, 'HTTP_') && getenv($key) !== $value,
-                ARRAY_FILTER_USE_BOTH,
-            );
+            // every request measured 2.6% of a real request. A classic
+            // request does this each time (its statics die with it), and each
+            // getenv() takes the process's environment lock: while $_SERVER
+            // holds the environment, one getenv() for all keys is cheaper;
+            // without it (a classic thread's later requests), one per key.
+            if (self::$thread === null) {
+                $env = \count($_SERVER) > 32 ? getenv() : null;
+                self::$thread = array_filter(
+                    $_SERVER,
+                    static fn (mixed $value, int|string $key): bool => is_string($key) && !str_starts_with($key, 'HTTP_')
+                        && ($env === null ? getenv($key) : $env[$key] ?? false) !== $value,
+                    ARRAY_FILTER_USE_BOTH,
+                );
+            }
             $g = self::build($event);
             $_GET = $g['get'];
             $_POST = $g['post'];

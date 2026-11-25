@@ -200,6 +200,17 @@ namespace Cairo\Http {
             return $this;
         }
 
+        /** @internal Every route of this server runs the script Go names (scripts()). */
+        public function scriptsOnly(): bool
+        {
+            foreach ($this->routes as $route) {
+                if (empty($route['scripts'])) {
+                    return false;
+                }
+            }
+            return $this->routes !== [];
+        }
+
         /**
          * Let an answer name a file under $dir, which Go then sends in its
          * place: Response::file(), or the header X-Sendfile with the file's

@@ -15,6 +15,7 @@
 #include "sockets.h"
 
 static __thread bool again;
+static __thread bool checked;
 
 // Every __thread variable of the core or an extension that points into the
 // request's memory is reset here: the thread's next PHP request would
@@ -42,6 +43,28 @@ PHP_FUNCTION(cairo_thread_again)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 	again = true;
+}
+
+bool cairo_classic_checked(void)
+{
+	return checked;
+}
+
+void cairo_classic_forget(void)
+{
+	checked = false;
+}
+
+PHP_FUNCTION(cairo_thread_checked)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+	RETURN_BOOL(checked);
+}
+
+PHP_FUNCTION(cairo_thread_check_passed)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+	checked = true;
 }
 
 // Runs fn at the bottom of the stack, as PHP runs a request's script and its
@@ -73,7 +96,7 @@ static void shutdown_functions(void *arg)
 }
 
 // cairo_run_script(string $file): bool
-// Runs the script $file of a classic request in the calling fiber, as PHP
+// Runs the script $file of a classic request where it is called, as PHP
 // runs a request's script: in the global scope, with auto_prepend_file and
 // auto_append_file, and then the functions it registered with
 // register_shutdown_function(), before the request is answered (as PHP-FPM

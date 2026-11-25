@@ -246,9 +246,10 @@ func TestCertificateFilesAreReadAgain(t *testing.T) {
 	if got := serial(); got != 1 {
 		t.Errorf("with a certificate and a key that do not match, serial %d, want the old 1", got)
 	}
-	if !strings.Contains(logs.String(), "does not load") {
-		t.Errorf("no warning about the pair that does not load:\n%s", logs.String())
-	}
+	// The server's log reaches the buffer through a pipe, after the handshake.
+	waitUntil(t, "a warning about the pair that does not load", func() bool {
+		return strings.Contains(logs.String(), "does not load")
+	})
 	if err := os.WriteFile(key, key2, 0o600); err != nil {
 		t.Fatal(err)
 	}

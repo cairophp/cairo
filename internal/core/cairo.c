@@ -376,7 +376,7 @@ static cairo_fiber_state *cairo_current_fiber_state(void)
 	return st;
 }
 
-static void cairo_throw_deadline(void)
+void cairo_throw_deadline(void)
 {
 	zend_string *name = zend_string_init("Cairo\\Context\\DeadlineExceeded", sizeof("Cairo\\Context\\DeadlineExceeded") - 1, 0);
 	zend_class_entry *ce = zend_lookup_class(name);

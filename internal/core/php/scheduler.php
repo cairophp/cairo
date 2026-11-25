@@ -517,7 +517,8 @@ namespace Cairo\Internal {
                 // On the thread's own stack: nothing of a PHP request outlives
                 // it, so a fiber would be a new stack mapped and unmapped for
                 // each request.
-                \cairo_fiber_bind(null, $context, $id);
+                $deadline = $context->deadlineTick();
+                \cairo_fiber_bind(null, $context, $id, $deadline === PHP_INT_MAX ? 0 : $deadline);
                 try {
                     $this->serve($event);
                 } finally {

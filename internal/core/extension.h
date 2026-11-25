@@ -52,6 +52,17 @@ int cairo_thread_id(void);
 // one is longer or there is no memory for the copy.
 int cairo_answer(int64_t id, const char *meta, size_t n, const char *body, size_t bn);
 
+// The request that runs outside any fiber (a classic request, on the thread's
+// own stack) waits with the whole thread in PHP's own functions: the tick of
+// CLOCK_MONOTONIC, in nanoseconds, at which its deadline passes, so that a
+// hook can end such a wait there. 0 when no such request runs, or it has no
+// deadline.
+int64_t cairo_stack_deadline(void);
+
+// Throws Cairo\Context\DeadlineExceeded, as the hard stop at the deadline
+// does.
+void cairo_throw_deadline(void);
+
 // For the SAPI module.
 int cairo_extensions_startup(void);   // SUCCESS or FAILURE
 void cairo_extensions_request_end(void);

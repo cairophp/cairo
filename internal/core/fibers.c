@@ -6,6 +6,7 @@
 #include <zend_fibers.h>
 #include <zend_observer.h>
 
+#include "extension.h"
 #include "fiber_local.h"
 #include "fibers.h"
 #include "loop.h"
@@ -26,6 +27,7 @@ static __thread zend_fiber **ready;  // a ring: the next to resume is at head
 static __thread uint32_t ready_head, ready_len, ready_cap;
 static __thread zend_object **orphans;  // contexts of destroyed fibers, until release_orphans()
 static __thread uint32_t norphans, orphans_cap;
+static __thread int64_t stack_deadline;  // cairo_stack_deadline()
 
 static void fiber_error(const char *message)
 {
@@ -177,25 +179,36 @@ PHP_FUNCTION(cairo_fiber_context)
 	RETURN_OBJ_COPY(context);
 }
 
-// cairo_fiber_bind(?Fiber $fiber, ?object $context, int $request): void
+// cairo_fiber_bind(?Fiber $fiber, ?object $context, int $request, int $deadline = 0): void
 // $fiber runs under $context from now on, for request $request (0: none),
 // whose request-local statics it sees (fiber_local.h). A null $fiber is the
-// thread's own code, outside any fiber (a classic request); its binding must
-// be undone before the PHP request ends.
+// thread's own code, outside any fiber (a classic request), whose deadline
+// is the hrtime() tick $deadline (0: none; cairo_stack_deadline()); its
+// binding must be undone before the PHP request ends.
 PHP_FUNCTION(cairo_fiber_bind)
 {
 	zval *fiber;
 	zend_object *context;
-	zend_long request;
-	ZEND_PARSE_PARAMETERS_START(3, 3)
+	zend_long request, deadline = 0;
+	ZEND_PARSE_PARAMETERS_START(3, 4)
 		Z_PARAM_OBJECT_OF_CLASS_OR_NULL(fiber, zend_ce_fiber)
 		Z_PARAM_OBJ_OR_NULL(context)
 		Z_PARAM_LONG(request)
+		Z_PARAM_OPTIONAL
+		Z_PARAM_LONG(deadline)
 	ZEND_PARSE_PARAMETERS_END();
 	release_orphans();
 	zend_fiber_context *ctx = fiber != NULL ? &((zend_fiber *)Z_OBJ_P(fiber))->context : EG(main_fiber_context);
+	if (fiber == NULL) {
+		stack_deadline = deadline;
+	}
 	set_context(ctx, context);
 	cairo_local_bind_fiber(ctx, request);
+}
+
+int64_t cairo_stack_deadline(void)
+{
+	return EG(active_fiber) == NULL ? stack_deadline : 0;
 }
 
 // cairo_fiber_reuse(object $context, int $request, mixed $job): bool
@@ -365,6 +378,7 @@ void cairo_fibers_request_end(void)
 	ready_head = ready_len = ready_cap = 0;
 	orphans = NULL;
 	norphans = orphans_cap = 0;
+	stack_deadline = 0;
 }
 
 zend_result cairo_fibers_startup(void)

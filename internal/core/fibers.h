@@ -47,6 +47,7 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_fiber_bind, 0, 0, 3)
 	ZEND_ARG_INFO(0, fiber)
 	ZEND_ARG_INFO(0, context)
 	ZEND_ARG_INFO(0, request)
+	ZEND_ARG_INFO(0, deadline)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_fiber_reuse, 0, 0, 3)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -181,15 +182,33 @@ func TestClassicWaitsOnItsOwnStack(t *testing.T) {
 	}
 }
 
-// The deadline stops a classic script that never waits where it runs, and
-// the thread serves the next request.
+// The deadline stops a classic script where it runs, in a loop that never
+// waits and in PHP's own waits, which hold the thread: the thread serves the
+// next request right away.
 func TestClassicDeadlineStopsTheScript(t *testing.T) {
-	base := startClassic(t, 1, "CAIRO_TIMEOUT=0.5")
-	start := time.Now()
-	if resp, _ := classicGet(t, http.DefaultClient, base+"/spin.php"); resp.StatusCode != 504 || time.Since(start) > 2*time.Second {
-		t.Errorf("spin.php: %d after %v, want 504 at the deadline", resp.StatusCode, time.Since(start))
+	peer, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, body := classicGet(t, http.DefaultClient, base+"/state.php"); !strings.Contains(body, `"hits":1`) {
-		t.Errorf("after the deadline: %q", body)
+	t.Cleanup(func() { peer.Close() })
+	go func() {
+		for {
+			conn, err := peer.Accept()
+			if err != nil {
+				return
+			}
+			t.Cleanup(func() { conn.Close() })
+		}
+	}()
+	base := startClassic(t, 1, "CAIRO_TIMEOUT=0.5", "CAIRO_SILENT_PEER="+peer.Addr().String())
+	for _, path := range []string{"/spin.php", "/held.php", "/held.php?read=1"} {
+		start := time.Now()
+		if resp, _ := classicGet(t, http.DefaultClient, base+path); resp.StatusCode != 504 || time.Since(start) > 2*time.Second {
+			t.Errorf("%s: %d after %v, want 504 at the deadline", path, resp.StatusCode, time.Since(start))
+		}
+		start = time.Now()
+		if _, body := classicGet(t, http.DefaultClient, base+"/state.php"); !strings.Contains(body, `"hits":1`) || time.Since(start) > 300*time.Millisecond {
+			t.Errorf("after %s: %q after %v", path, body, time.Since(start))
+		}
 	}
 }

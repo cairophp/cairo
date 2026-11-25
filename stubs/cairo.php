@@ -26,13 +26,23 @@ namespace Cairo {
          * request state in globals or singletons. Isolated requests also get
          * $_GET, $_POST, $_COOKIE, $_SERVER and $_REQUEST, and may echo their
          * output and call header() instead of returning a Response.
+         * 'classic': isolated, and each request also has a PHP request of its
+         * own, as under PHP-FPM: what a request defines (functions, classes,
+         * constants, globals, included files) is gone for the next one. For
+         * apps that are a set of scripts, such as WordPress (see
+         * Http\Server::scripts()).
          */
         public function concurrency(string $mode): static
         {
         }
 
-        /** @internal */
+        /** @internal Isolated or classic: a thread runs one request at a time. */
         public function isolated(): bool
+        {
+        }
+
+        /** @internal */
+        public function classic(): bool
         {
         }
 
@@ -890,6 +900,22 @@ namespace Cairo\Http {
          * $dir, symlinks included.
          */
         public function publicDir(string $dir): static
+        {
+        }
+
+        /**
+         * Serve the PHP scripts under $dir as a web server in front of
+         * PHP-FPM does, for apps that are a set of scripts (WordPress):
+         * /a/b.php runs b.php, /x.php/more runs x.php with PATH_INFO /more,
+         * a directory runs its index.php, and a path that names nothing runs
+         * $dir/index.php, the front controller. The other files under $dir
+         * are served by Go, as publicDir() serves them; the source of a
+         * script never is, nor hidden files. Needs
+         * App::concurrency('classic'): each request has a PHP request of its
+         * own. The script sees the superglobals, php://input, echo and
+         * header() as under PHP-FPM.
+         */
+        public function scripts(string $dir): static
         {
         }
 

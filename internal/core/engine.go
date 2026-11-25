@@ -162,6 +162,10 @@ type thread struct {
 	differs  atomic.Bool   // it built another declaration than the boot thread
 	renewing atomic.Bool   // an offload thread that a reload told to end and start anew
 	quiet    atomic.Bool   // replaced by a reload, which logs once for all its threads
+
+	// What cairo_info() answered the thread, kept for its next PHP request
+	// (a classic thread asks at each one); only the thread's own calls use it.
+	info string
 }
 
 var (
@@ -432,11 +436,16 @@ func goPHPLog(tid C.int, msg *C.char, syslogType C.int) {
 func goCairoInfo(tid C.int) *C.char {
 	e := engine
 	mode := "declare"
+	t := e.own(tid)
 	if e.cli {
 		mode = "cli"
-	} else if tid >= 0 {
+		t = nil
+	} else if t != nil {
+		if t.info != "" {
+			return C.CString(t.info)
+		}
 		mode = "serve"
-		if e.table[int(tid)].Load().pool == poolOffload {
+		if t.pool == poolOffload {
 			mode = "offload"
 		}
 	}
@@ -444,6 +453,9 @@ func goCairoInfo(tid C.int) *C.char {
 		"mode": mode, "server": e.serverFile, "thread": int(tid), "script": e.script, "php": phpAtStart, "classes": phpOnUse,
 		"reloaded": e.reloads.Load() > 0,
 	})
+	if t != nil {
+		t.info = string(b)
+	}
 	return C.CString(string(b))
 }
 

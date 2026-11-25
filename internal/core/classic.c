@@ -16,6 +16,9 @@
 
 static __thread bool again;
 
+// Every __thread variable of the core or an extension that points into the
+// request's memory is reset here: the thread's next PHP request would
+// otherwise use freed memory (see AGENTS.md, C).
 void cairo_request_ended(void)
 {
 	cairo_fibers_request_end();

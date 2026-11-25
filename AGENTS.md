@@ -399,6 +399,17 @@ Cairo is a server: per-request code runs millions of times.
 - ZTS rules: no mutable C globals shared between PHP threads without a lock.
   Per-thread state is `static __thread` (as `cairo_tid` is) or lives in the
   existing per-thread structures.
+- **Per-thread state that points into a PHP request's memory must be
+  forgotten when the request ends.** In classic mode one system thread runs
+  many PHP requests in a row, and PHP frees a request's memory (`emalloc`,
+  its objects, its fibers) when it ends. A `static __thread` pointer, table or
+  count into that memory that is not reset in `cairo_request_ended()` (a
+  `*_request_end()` function of the core, or the `request_end` of an
+  extension's `cairo_extension`) makes the next request on that thread use
+  freed memory: a crash or corrupted data, in classic mode only, which fiber
+  and isolated mode never show. Add the reset in the same change as the
+  variable, and run `test/classic_test.go`, which serves several requests on
+  one thread.
 - Adapted code keeps its origin comment and license in `third_party/NOTICES`.
 
 ### Shell and CI

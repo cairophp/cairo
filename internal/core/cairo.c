@@ -567,6 +567,13 @@ static char *cairo_read_cookies(void)
 
 static void cairo_register_variables(zval *track_vars_array)
 {
+	// A script never sees the environment in $_SERVER (Superglobals::fill()
+	// leaves it out, as PHP-FPM's clear_env does), and once the declaration
+	// is checked nothing else reads it there: copying all of it at each
+	// classic request was 6% of a request.
+	if (cairo_classic_checked()) {
+		return;
+	}
 	php_import_environment_variables(track_vars_array);
 }
 

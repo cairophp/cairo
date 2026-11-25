@@ -45,6 +45,11 @@ PHP_FUNCTION(cairo_thread_again)
 	again = true;
 }
 
+bool cairo_classic_checked(void)
+{
+	return checked;
+}
+
 void cairo_classic_forget(void)
 {
 	checked = false;

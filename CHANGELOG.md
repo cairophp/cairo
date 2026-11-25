@@ -175,6 +175,11 @@ change the PHP API; patch versions do not.
   `.env` loader does, 47 times a request), and let one request see what
   another set. C libraries that read the environment themselves do not see
   a `putenv()`.
+- A classic script's environment functions work as under PHP-FPM: its CGI
+  variables (`REQUEST_METHOD`, `HTTP_HOST` and the other headers,
+  `SCRIPT_FILENAME`, ...) are in `getenv()`, ahead of what `putenv()` set,
+  and in `getenv()` with no name and `$_ENV`. A script that changes
+  `$_SERVER` does not change them, and `getenv($name, true)` skips them.
 - Classic mode is faster: a request on the classic example's real page (two
   MySQL queries) went from 2,566 to 5,383 requests a second. A classic
   request runs on its thread's own stack instead of a fiber; its thread

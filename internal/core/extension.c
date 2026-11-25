@@ -43,6 +43,15 @@ void cairo_extensions_request_end(void)
 	}
 }
 
+void cairo_extensions_request_shutdown(void)
+{
+	for (int i = 0; i < extension_count; i++) {
+		if (extensions[i]->request_shutdown != NULL) {
+			extensions[i]->request_shutdown();
+		}
+	}
+}
+
 // Stops at the first one that leaves an exception: the next would not start
 // with none pending.
 void cairo_extensions_interrupt(int tid)

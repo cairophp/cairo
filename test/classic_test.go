@@ -240,3 +240,31 @@ func TestClassicPutenvIsTheRequests(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// A classic script's CGI variables are its environment, as under PHP-FPM,
+// and the next request on the thread has its own.
+func TestClassicEnvHasTheCGIVariables(t *testing.T) {
+	base := startClassic(t, 1)
+	cases := []struct{ header, want string }{
+		{"one", `{"method":"GET","local":"PUT","header":"one","listed":"one","env":"one","server_only":false,"php_self":false,"https":false}`},
+		{"", `{"method":"GET","local":"PUT","header":false,"listed":false,"env":false,"server_only":false,"php_self":false,"https":false}`},
+	}
+	for _, c := range cases {
+		req, err := http.NewRequest(http.MethodGet, base+"/cgi_env.php", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.header != "" {
+			req.Header.Set("X-Classic", c.header)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if got := strings.TrimSpace(string(body)); got != c.want {
+			t.Errorf("X-Classic %q: %s, want %s", c.header, got, c.want)
+		}
+	}
+}

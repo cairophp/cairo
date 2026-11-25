@@ -492,6 +492,7 @@ static PHP_RSHUTDOWN_FUNCTION(cairo)
 		EG(main_fiber_context)->reserved[cairo_fiber_slot] = NULL;
 	}
 	cairo_fibers_shutdown();
+	cairo_extensions_request_shutdown();
 	return SUCCESS;
 }
 

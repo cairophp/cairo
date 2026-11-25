@@ -681,7 +681,11 @@ static int run_file(const char *file)
 	zend_stream_init_filename(&fh, file);
 	bool ok = php_execute_script(&fh);
 	zend_destroy_file_handle(&fh);
-	if (!ok) {
+	// PHP reports a script that exit() ended as one that failed, and a fatal
+	// error or an uncaught exception sets the status to 255: a failure with
+	// status 0 is exit(0), with which Symfony's front controller ends once
+	// its runner returns.
+	if (!ok && EG(exit_status) != 0) {
 		return -1;
 	}
 	return EG(exit_status);

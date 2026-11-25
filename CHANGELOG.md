@@ -9,6 +9,15 @@ change the PHP API; patch versions do not.
 
 ### Added
 
+- `Cairo\App::serve()`: a file that `cairo serve` runs can serve its App
+  itself instead of returning it, as a framework's runner does, and may end
+  with `exit(0)` afterwards. The package `cairophp/symfony-runtime` uses it
+  to serve a Symfony app through its own front controller, with no
+  `server.php`: `cairo serve public/index.php`. See `examples/serve`.
+- PSR-15 apps built on laminas-diactoros (Mezzio), slim/psr7 or
+  php-http/discovery's factories get their PSR-7 requests from those, as
+  they did from nyholm/psr7 and guzzlehttp/psr7.
+
 - Reloading the code of a running server. `cairo serve --watch` looks at the
   files of the app (`*.php`, `*.twig`, `*.yaml`, `*.yml`, `.env*` and
   `composer.lock` under the server file's directory, or under each
@@ -150,6 +159,14 @@ change the PHP API; patch versions do not.
 
 ### Changed
 
+- In isolated mode `$_SERVER` keeps what the app put there as its thread
+  started, under the request's own keys. Before, it had the request's keys
+  only, and Symfony's `APP_ENV` or a variable of `.env` was gone from it
+  after the first request. The process's environment stays out of it, as
+  before (`getenv()` has it).
+- `cairo serve --watch` with no `--watch-path` looks at the directory above
+  the server file when that one has the `composer.json` and the server
+  file's does not, as for `public/index.php`.
 - Cairo is built with Go 1.27 (it was 1.24), and building it from source
   needs Go 1.27. With it come the defaults of Go 1.25 to 1.27. The one an
   operator may notice: in a container with a CPU limit, Go now counts the

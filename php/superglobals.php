@@ -11,13 +11,25 @@ namespace Cairo\Internal {
     /** Fills PHP's superglobals for isolated-mode requests. */
     final class Superglobals
     {
+        /** @var ?array<string, mixed> what the app put in $_SERVER as its thread started */
+        private static ?array $thread = null;
+
         public static function fill(array $event): void
         {
+            // Symfony's runtime and Dotenv put the app's settings in $_SERVER
+            // as the thread starts, and read them there. The process's own
+            // environment is left out: getenv() has it, and copying it into
+            // every request measured 2.6% of a real request.
+            self::$thread ??= array_filter(
+                $_SERVER,
+                static fn (mixed $value, int|string $key): bool => is_string($key) && !str_starts_with($key, 'HTTP_') && getenv($key) !== $value,
+                ARRAY_FILTER_USE_BOTH,
+            );
             $g = self::build($event);
             $_GET = $g['get'];
             $_POST = $g['post'];
             $_COOKIE = $g['cookies'];
-            $_SERVER = $g['server'];
+            $_SERVER = $g['server'] + self::$thread;
             $_REQUEST = array_merge($g['get'], $g['post']);
             $_FILES = $g['files'];
         }

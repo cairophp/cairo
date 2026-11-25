@@ -37,6 +37,18 @@ namespace Cairo {
         }
 
         /**
+         * Declares this app's servers and serves them on this PHP thread,
+         * returning when the thread is told to stop. For a framework's
+         * runner, called from the file that cairo serve runs, which then
+         * never returns an App (cairophp/symfony-runtime: Symfony's front
+         * controller ends the script with exit(0) once the runner returns).
+         * A server.php that returns its App does not call it.
+         */
+        public function serve(): void
+        {
+        }
+
+        /**
          * Development aid: log, with its stack, any request that keeps its
          * PHP thread busy for more than $seconds without waiting on Cairo (a
          * CPU loop, or a blocking call Cairo does not hook), since every other
@@ -1507,7 +1519,11 @@ namespace Cairo\Http {
         {
         }
 
-        /** The PSR-17 factory of nyholm/psr7 or guzzlehttp/psr7. */
+        /**
+         * The PSR-17 factories of the PSR-7 implementation that is installed:
+         * nyholm/psr7, guzzlehttp/psr7, php-http/discovery's, laminas-diactoros
+         * (Mezzio) or slim/psr7.
+         */
         public static function psr17(): object
         {
         }

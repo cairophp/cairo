@@ -113,14 +113,14 @@ func plural(n int, what string) string {
 }
 
 // watchPaths is what --watch looks at: the paths that were named, or the
-// directory of the server file, and always the server file itself.
+// app's directory, and always the server file itself.
 func watchPaths(serverFile string, named []string) ([]string, error) {
 	file, err := filepath.Abs(serverFile)
 	if err != nil {
 		return nil, err
 	}
 	if len(named) == 0 {
-		return []string{filepath.Dir(file)}, nil
+		return []string{appDir(filepath.Dir(file))}, nil
 	}
 	paths := []string{file}
 	for _, path := range named {
@@ -131,4 +131,17 @@ func watchPaths(serverFile string, named []string) ([]string, error) {
 		paths = append(paths, abs)
 	}
 	return paths, nil
+}
+
+// appDir is dir, or its parent when the parent has a composer.json and dir
+// does not: a framework's front controller (public/index.php) is served
+// from a directory below the app's code.
+func appDir(dir string) string {
+	if _, err := os.Stat(filepath.Join(dir, "composer.json")); err == nil {
+		return dir
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(dir), "composer.json")); err == nil {
+		return filepath.Dir(dir)
+	}
+	return dir
 }

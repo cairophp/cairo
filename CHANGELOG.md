@@ -38,8 +38,7 @@ change the PHP API; patch versions do not.
   new thread is tried alone, so code that does not start (a parse error, an
   exception in `server.php`) replaces nothing and the server runs on. What
   `server.php` declares (servers, routes, settings) is built once per
-  process: when that changes, or a `.env` file does (PHP's `putenv()` is
-  the process's), `--watch` starts the process anew in place, and the signal
+  process: when that changes, or a `.env` file does, `--watch` starts the process anew in place, and the signal
   refuses another declaration and says so. A reload that fills opcache ends
   in such a restart too (with a PHP older than 8.4, which cannot tell of it,
   the threads of a reload compile for themselves and leave opcache alone).
@@ -168,6 +167,14 @@ change the PHP API; patch versions do not.
 
 ### Changed
 
+- `putenv()` changes the PHP request's own environment, which `getenv()`
+  reads first, and never the process's: in classic mode each request's, in
+  isolated and fiber mode the thread's. PHP's `putenv()` wrote the
+  process's environment while other threads read it, which crashed the
+  process within seconds when many classic requests called it (Laravel's
+  `.env` loader does, 47 times a request), and let one request see what
+  another set. C libraries that read the environment themselves do not see
+  a `putenv()`.
 - Classic mode is faster: a request on the classic example's real page (two
   MySQL queries) went from 2,566 to 5,383 requests a second. A classic
   request runs on its thread's own stack instead of a fiber; its thread

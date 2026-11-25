@@ -51,7 +51,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   cairo serve <server.php> [--threads N] [--offload-threads N] [--grace 30s] [--drain 0s] [--php-ini FILE]
                            [--watch] [--watch-path PATH]...
-  cairo serve <dir | script.php> [--listen :8080] [...]
+  cairo serve <dir | script.php> [--listen :8080] [--timeout 30s] [...]
                            a folder, or a PHP file that declares no Cairo\App, is served
                            as PHP-FPM serves it: classic mode, each request runs its script
   cairo php [options] <file.php> [args...]    PHP's command line (cairo php -h)
@@ -169,6 +169,7 @@ func serve(args []string) error {
 	phpIni := fs.String("php-ini", os.Getenv("CAIRO_PHP_INI"), "php.ini file or directory (default: $PHPRC, then PHP's own search; also CAIRO_PHP_INI)")
 	watching := fs.Bool("watch", false, "reload the PHP code when a file changes (development)")
 	listen := fs.String("listen", "", "the address to serve a folder or a plain script on (default :8080; a declaration names its own)")
+	timeout := fs.Duration("timeout", 0, "a request deadline for a folder or a plain script: past it the script stops and the client gets 504 (default: none)")
 	var watched multiFlag
 	fs.Var(&watched, "watch-path", "a directory or file for --watch to look at instead of the server file's directory (repeatable; implies --watch)")
 	// Accept the server file before or after the flags.
@@ -186,6 +187,9 @@ func serve(args []string) error {
 		file = "server.php"
 	}
 
+	if *timeout < 0 {
+		return fmt.Errorf("--timeout %s: must not be negative", *timeout)
+	}
 	path, err := filepath.Abs(file)
 	if err != nil {
 		return err
@@ -193,14 +197,14 @@ func serve(args []string) error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	var decls declarations
 	validate := func(s *spec.Spec) error {
-		if *listen != "" && !s.Entry {
-			return fmt.Errorf("--listen is for a folder or a plain script: %s declares its own servers", file)
+		if (*listen != "" || *timeout != 0) && !s.Entry {
+			return fmt.Errorf("--listen and --timeout are for a folder or a plain script: %s declares its own", file)
 		}
 		return decls.read(s)
 	}
 	engine, err := core.Start(core.Options{
 		ServerFile: file, Threads: *threads, OffloadThreads: *offloadThreads, PHPIni: *phpIni, Logger: log, Validate: validate,
-		Entry: plainEntry, EntryArgs: map[string]any{"path": path, "listen": cmp.Or(*listen, ":8080")},
+		Entry: plainEntry, EntryArgs: map[string]any{"path": path, "listen": cmp.Or(*listen, ":8080"), "timeout": timeout.Seconds()},
 	})
 	if err != nil {
 		return err

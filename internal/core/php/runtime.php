@@ -50,6 +50,9 @@ namespace Cairo\Internal {
         if ($file !== null && isset(Runtime::$files[$file])) {
             return false;   // never inside Cairo's runtime (it answers the request); Go pokes again
         }
+        if (!class_exists(\Cairo\Context::class, false)) {
+            return false;   // a classic thread's next PHP request, before it loaded the context: no request runs yet
+        }
         $context = \Cairo\Context::current();
         return !$context->answered() && $context->err() instanceof \Cairo\Context\DeadlineExceeded;
     }

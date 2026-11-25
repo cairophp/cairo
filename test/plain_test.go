@@ -90,11 +90,11 @@ func declares(t *testing.T, files []string) []string {
 	return strings.Fields(string(out))
 }
 
-// --listen is the address of what has no declaration: a declaration names
+// --listen and --timeout set what has no declaration: a declaration names
 // its own.
 func TestPlainListenIsRefusedForADeclaration(t *testing.T) {
 	out, err := exec.Command(cairoBin, "serve", "../examples/classic/server.php", "--listen", freeAddr()).CombinedOutput()
-	if err == nil || !strings.Contains(string(out), "--listen is for a folder or a plain script") {
+	if err == nil || !strings.Contains(string(out), "--listen and --timeout are for a folder or a plain script") {
 		t.Fatalf("%v: %s", err, out)
 	}
 }

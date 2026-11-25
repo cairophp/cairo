@@ -13,6 +13,7 @@ namespace Cairo\Internal {
 
     use Cairo\App;
     use Cairo\Context;
+    use Cairo\Middleware;
 
     /** @internal cairo serve's entry (core.Options.Entry). */
     final class Plain
@@ -30,8 +31,13 @@ namespace Cairo\Internal {
          */
         public static function entry(array $info): ?App
         {
-            /** @var array{path: string, listen: string} $args */
+            /** @var array{path: string, listen: string, timeout: float} $args */
             $args = $info['args'];
+            if ($info['mode'] !== 'serve') {
+                // The threads that send the declaration build it alike. A
+                // request thread sends none, and reads no file for it.
+                $args['timeout'] = $args['timeout'] ?: self::iniTimeout();
+            }
             if ($info['mode'] === 'declare') {
                 if (is_file($args['path']) && Declares::app($args['path'])) {
                     return (static fn (string $file): mixed => require $file)($args['path']);
@@ -45,13 +51,39 @@ namespace Cairo\Internal {
             return self::app($args);
         }
 
-        /** @param array{path: string, listen: string} $args */
+        /** @param array{path: string, listen: string, timeout: float} $args */
         private static function app(array $args): App
         {
             [$root, $front] = is_dir($args['path']) ? [$args['path'], 'index.php'] : [dirname($args['path']), basename($args['path'])];
             $app = (new App())->concurrency('classic')->servedByEntry();
-            $app->http($args['listen'])->scripts($root, $front);
+            $http = $app->http($args['listen'])->scripts($root, $front);
+            if ($args['timeout'] > 0) {
+                $http->use(Middleware::timeout($args['timeout']));
+            }
             return $app;
+        }
+
+        /**
+         * php.ini's max_execution_time, the deadline a script has under
+         * PHP-FPM: Cairo sets it to 0 for its threads, which are PHP requests
+         * that last, so it is read from the files PHP loaded, in PHP's order.
+         * Wall time here, where PHP-FPM counts CPU time on Linux.
+         */
+        private static function iniTimeout(): float
+        {
+            $files = php_ini_loaded_file() === false ? [] : [php_ini_loaded_file()];
+            $scanned = php_ini_scanned_files();
+            if ($scanned !== false && $scanned !== '') {
+                array_push($files, ...array_map('trim', explode(',', $scanned)));
+            }
+            $seconds = 0;
+            foreach ($files as $file) {
+                $ini = parse_ini_file($file);
+                if ($ini !== false && isset($ini['max_execution_time'])) {
+                    $seconds = (int) $ini['max_execution_time'];
+                }
+            }
+            return (float) max(0, $seconds);
         }
 
         /**

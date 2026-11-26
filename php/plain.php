@@ -45,7 +45,7 @@ namespace Cairo\Internal {
                 // No declaration runs here, so the thread has none to check,
                 // and PHP leaves the environment out of $_SERVER (cairo.c).
                 \cairo_thread_check_passed();
-                \cairo_plain_runtime(__DIR__);
+                \cairo_plain_runtime(__DIR__, (bool) $info['reloaded']);
                 if (\cairo_cserve()) {
                     // From the thread's next PHP request on, its requests
                     // are PHP's own SAPI requests (plain_request.c).

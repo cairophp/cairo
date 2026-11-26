@@ -29,8 +29,10 @@ static __thread zval ev;         // the call's event (internal/wire, decoded)
 static __thread HashTable *script;
 static __thread const char *cookie;
 static __thread size_t posted;   // what read_post gave of the body
-// Where Cairo's PHP files are: the thread outlives its PHP requests.
+// Where Cairo's PHP files are, and whether the server's code was reloaded:
+// the thread outlives its PHP requests.
 static __thread char runtime_dir[MAXPATHLEN];
+static __thread bool reloaded;
 
 static zval *field(HashTable *ht, const char *key)
 {
@@ -279,6 +281,23 @@ static void run_runtime_file(const char *name)
 	efree(op);
 }
 
+// The code changed since the server started (Engine.Reload): as runtime.php
+// has it for a thread of the runtime, opcache compares its files with the
+// disk, or before PHP 8.4 the thread compiles for itself.
+static void see_new_code(void)
+{
+#if PHP_VERSION_ID >= 80400
+	static const char *const ini[][2] = {{"opcache.validate_timestamps", "1"}, {"opcache.revalidate_freq", "0"}};
+#else
+	static const char *const ini[][2] = {{"opcache.enable", "0"}};
+#endif
+	for (size_t i = 0; i < sizeof(ini) / sizeof(ini[0]); i++) {
+		zend_string *name = zend_string_init(ini[i][0], strlen(ini[i][0]), 0);
+		zend_alter_ini_entry_chars(name, ini[i][1], strlen(ini[i][1]), PHP_INI_USER, PHP_INI_STAGE_RUNTIME);
+		zend_string_release(name);
+	}
+}
+
 static void clear_exit(void)
 {
 	if (EG(exception) != NULL && zend_is_unwind_exit(EG(exception))) {
@@ -308,6 +327,9 @@ static void serve(void)
 		VCWD_CHDIR(dir);   // relative includes start where the script is
 	}
 	cairo_cgi_env_from(server_vars);   // getenv() and $_ENV have them, as under PHP-FPM
+	if (reloaded) {
+		see_new_code();
+	}
 	run_runtime_file("plain_request.php");   // Cairo's functions
 	zend_file_handle fh;
 	zend_stream_init_filename(&fh, file);
@@ -358,20 +380,25 @@ static void end(void)
 	SG(request_info).cookie_data = NULL;
 }
 
-// cairo_plain_runtime(string $dir): void
-// Where the scripts that the thread serves in C find Cairo's PHP files.
+// cairo_plain_runtime(string $dir, bool $reloaded = false): void
+// Where the scripts that the thread serves in C find Cairo's PHP files, and
+// whether the server's code was reloaded before the thread started.
 static PHP_FUNCTION(cairo_plain_runtime)
 {
 	char *dir;
 	size_t len;
-	ZEND_PARSE_PARAMETERS_START(1, 1)
+	bool again = false;
+	ZEND_PARSE_PARAMETERS_START(1, 2)
 		Z_PARAM_PATH(dir, len)
+		Z_PARAM_OPTIONAL
+		Z_PARAM_BOOL(again)
 	ZEND_PARSE_PARAMETERS_END();
 	if (len >= sizeof(runtime_dir)) {
 		zend_value_error("cairo_plain_runtime(): the path is too long");
 		RETURN_THROWS();
 	}
 	memcpy(runtime_dir, dir, len + 1);
+	reloaded = again;
 }
 
 // cairo_plain_call(): array{id: int, deadline: ?float, values: array}
@@ -405,6 +432,7 @@ static PHP_FUNCTION(cairo_plain_call)
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_plain_runtime, 0, 0, 1)
 	ZEND_ARG_INFO(0, dir)
+	ZEND_ARG_INFO(0, reloaded)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_plain_call, 0, 0, 0)

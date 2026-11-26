@@ -16,6 +16,8 @@ func init() {
 	// What a script served in C loads of Cairo (plain_request.c).
 	registerPHP("plain_request.php", `Cairo\Internal\PlainRequest`)
 	registerPHP("declares.php", `Cairo\Internal\Declares`)
+	// A declared app whose every route is scripts() serves them in C too.
+	registerPHP("scripts_in_c.php")
 	registerC(&C.cairo_http_input)
 	registerC(&C.cairo_plain_request)
 }

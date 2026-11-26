@@ -205,21 +205,6 @@ namespace Cairo\Http {
             return $this;
         }
 
-        /**
-         * @internal The requests of scripts() are PHP's own SAPI requests
-         * (cairo serve with no declaration, internal/sapi/plain_request.c):
-         * PHP parses their forms, so Go passes every body as it came.
-         */
-        public function scriptsParseForms(): static
-        {
-            foreach ($this->routes as &$route) {
-                if (!empty($route['scripts'])) {
-                    $route['raw_body'] = true;
-                }
-            }
-            return $this;
-        }
-
         /** @internal Every route of this server runs the script Go names (scripts()). */
         public function scriptsOnly(): bool
         {

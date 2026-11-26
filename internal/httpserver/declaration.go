@@ -65,9 +65,9 @@ type Route struct {
 	// Scripts marks the route of $http->scripts(), which runs the script
 	// that the request's path names (scripts.go).
 	Scripts bool `json:"scripts,omitempty"`
-	// RawBody is set for the scripts of cairo serve with no declaration,
-	// whose forms PHP parses itself: Go passes every body as it came.
-	RawBody bool `json:"raw_body,omitempty"`
+	// RawBody: the route's scripts are served in C (spec.ScriptsOnly), and
+	// PHP parses their forms itself: Go passes every body as it came.
+	RawBody bool `json:"-"`
 }
 
 // RouteCache lets Go answer repeated GET requests to a route from memory.
@@ -99,6 +99,9 @@ func Declared(s *spec.Spec, claims *spec.Claims) ([]Declaration, error) {
 		}
 		if decls[i].Scripts != "" && !s.Classic {
 			return nil, fmt.Errorf("http %s: scripts() needs App::concurrency('classic'): a script defines its functions once per PHP request", decls[i].Listen)
+		}
+		for j := range decls[i].Routes {
+			decls[i].Routes[j].RawBody = s.ScriptsOnly && decls[i].Routes[j].Scripts
 		}
 	}
 	return decls, nil

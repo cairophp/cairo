@@ -45,7 +45,7 @@ namespace Cairo\Internal {
                 // No declaration runs here, so the thread has none to check,
                 // and PHP leaves the environment out of $_SERVER (cairo.c).
                 \cairo_thread_check_passed();
-                \cairo_plain_runtime(__DIR__);
+                \cairo_plain_runtime(__DIR__, (bool) $info['reloaded']);
                 if (\cairo_cserve()) {
                     // From the thread's next PHP request on, its requests
                     // are PHP's own SAPI requests (plain_request.c).
@@ -58,15 +58,15 @@ namespace Cairo\Internal {
         }
 
         /**
-         * @internal the App that serves the scripts (PlainRequest::upgrade() too)
+         * The App that serves the scripts.
          *
          * @param array{path: string, listen: string, timeout: float} $args
          */
-        public static function app(array $args): App
+        private static function app(array $args): App
         {
             [$root, $front] = is_dir($args['path']) ? [$args['path'], 'index.php'] : [dirname($args['path']), basename($args['path'])];
             $app = (new App())->concurrency('classic')->servedByEntry();
-            $http = $app->http($args['listen'])->scripts($root, $front)->scriptsParseForms();
+            $http = $app->http($args['listen'])->scripts($root, $front);
             if ($args['timeout'] > 0) {
                 $http->use(Middleware::timeout($args['timeout']));
             }

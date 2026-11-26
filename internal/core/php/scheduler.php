@@ -168,6 +168,16 @@ namespace Cairo\Internal {
             array_unshift($this->afterRequest, $after);
         }
 
+        /**
+         * @internal The thread takes no request here: an extension serves
+         * them from its next PHP request on (cairo_cserve()), and run()
+         * returns at once.
+         */
+        public function leave(): void
+        {
+            $this->leaving = true;
+        }
+
         public static function instance(): self
         {
             return self::$instance ?? throw new \LogicException('the Cairo scheduler is not running');

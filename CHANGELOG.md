@@ -180,6 +180,17 @@ change the PHP API; patch versions do not.
   `fastcgi_finish_request()` and `headers_send()` are C functions. A real
   GET went from 3,987 to 4,965 req/s, level with PHP-FPM (4,980), and hello
   +43%. Cookie names follow PHP's rules there (`a.b` is `$_COOKIE['a_b']`).
+- A declared classic app whose every route is `scripts()` is served as a
+  folder with no declaration is: each request is PHP's own request, with no
+  Cairo PHP around the script, and server.php runs only when a thread
+  starts, never before a request. What server.php sets in PHP (`ini_set()`,
+  constants, functions, files it requires) no longer reaches the scripts:
+  put it in php.ini or in an `auto_prepend_file`, as under PHP-FPM. Its
+  middleware and other Go settings apply as before. A real GET went from
+  3,236 to 4,997 req/s, level with the same folder served with no
+  declaration (5,013), and hello from 8,572 to 21,402. Cookie names follow
+  PHP's rules there too. An app with other routes beside `scripts()` is
+  served as before.
 - A classic script under `scripts()` gets `PHP_AUTH_USER` and `PHP_AUTH_PW`
   (or `PHP_AUTH_DIGEST`) from the `Authorization` header, as PHP's own
   request does.

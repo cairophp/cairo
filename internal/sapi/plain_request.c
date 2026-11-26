@@ -16,6 +16,7 @@
 #include <zend_smart_str.h>
 #include <ext/standard/basic_functions.h>
 
+#include "env_hook.h"
 #include "extension.h"
 #include "http_answer.h"
 #include "plain_request.h"
@@ -366,6 +367,7 @@ static void serve(void)
 		dir[zend_dirname(dir, n)] = '\0';
 		VCWD_CHDIR(dir);   // relative includes start where the script is
 	}
+	cairo_cgi_env_from(server_vars);   // getenv() and $_ENV have them, as under PHP-FPM
 	zend_file_handle fh;
 	zend_stream_init_filename(&fh, file);
 	fh.primary_script = 1;

@@ -1,0 +1,43 @@
+# The native image, ghcr.io/cairophp/cairo:x.y-phpA.B-trixie: Cairo built
+# against the official php image's own thread-safe PHP (its libphp.so), so an
+# app adds the extensions it needs with that image's tools, and Cairo loads
+# them as PHP does:
+#   FROM ghcr.io/cairophp/cairo:0.7-php8.6-trixie
+#   USER root
+#   RUN docker-php-ext-install pdo_mysql intl && pecl install redis && docker-php-ext-enable redis
+#   USER cairo
+# PHP_IMAGE is a thread-safe official image with the embed SAPI: php:A.B-zts-trixie
+# before PHP 8.6, php:A.B-cli-trixie from 8.6 on (8.6's images are thread-safe).
+ARG PHP_IMAGE=php:8.6-cli-trixie
+FROM golang:1.27-trixie AS go
+
+FROM ${PHP_IMAGE} AS build
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential libcurl4-openssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=go /usr/local/go /usr/local/go
+ENV PATH=/usr/local/go/bin:$PATH
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG CAIRO_VERSION=dev
+ARG CAIRO_TAGS=deprecated_topic,deprecated_claim
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    make build PHP_PREFIX=/usr/local VERSION="$CAIRO_VERSION" TAGS="$CAIRO_TAGS"
+
+FROM ${PHP_IMAGE}
+# Not root: an app that is taken over cannot change the image or bind low
+# ports. Installing an extension needs root, so a Dockerfile switches to it
+# for that and back (above).
+RUN useradd -u 1000 -m cairo && mkdir /app && chown cairo:cairo /app
+COPY --from=build /src/bin/cairo /usr/local/bin/cairo
+# The licenses of what the binary contains: Cairo's own (Apache-2.0) and the
+# Mercure hub's (AGPL-3.0), which asks that its text goes with it. PHP's own
+# is the base image's.
+COPY LICENSE NOTICE /usr/share/licenses/cairo/
+COPY third_party /usr/share/licenses/cairo/third_party
+WORKDIR /app
+USER cairo
+EXPOSE 8080
+ENTRYPOINT ["cairo"]
+CMD ["serve", "server.php"]

@@ -10,6 +10,14 @@
 # Usage: scripts/build-static.sh [php-version] [output]
 #   PHP_SRC, CURL_SRC, LIBZIP_SRC, ICU_SRC   unpacked sources to use instead of downloading
 #   PHP_EXTENSIONS      configure flags for the extensions (default below)
+#   EXTRA_EXTENSIONS    configure flags added to those, for PHP's own extensions
+#                       left out by default and for the PECL ones below
+#                       (--enable-apcu --enable-redis)
+#   PECL_EXTENSIONS     PECL packages built in, as name-version (apcu-5.1.28
+#                       redis-6.2.0): each is fetched from pecl.php.net into
+#                       PHP's ext/ and needs its flag in EXTRA_EXTENSIONS. The C
+#                       libraries one needs must be there as static libraries
+#                       (Dockerfile.static: APK_PACKAGES)
 #   WORK                build directory (default: a temporary one). Reusing
 #                       one skips the libraries and PHP already built there.
 #   STAGE=php           stop after PHP is built and its sources are removed
@@ -141,6 +149,18 @@ DEFAULT_EXTENSIONS="
   --enable-gd --with-jpeg --with-webp --with-freetype
   --with-iconv
   --without-readline --without-pgsql --without-pdo-pgsql"
+for pkg in ${PECL_EXTENSIONS:-}; do
+  name="${pkg%-*}"
+  version="${pkg##*-}"
+  case "$name:$version" in
+    *[!a-z0-9_:.A-Za-z]* | :* | *: | "$pkg:$pkg") echo "PECL_EXTENSIONS: $pkg is not name-version" >&2; exit 1 ;;
+  esac
+  if [ ! -d "$PHP_SRC/ext/$name" ]; then
+    curl -fsSL "https://pecl.php.net/get/${pkg}.tgz" | tar -xz -C "$WORK"
+    mv "$WORK/$pkg" "$PHP_SRC/ext/$name"
+    rm -f "$PHP_SRC/configure"   # buildconf finds the new extension's config.m4
+  fi
+done
 (
   cd "$PHP_SRC"
   [ -x configure ] || ./buildconf --force
@@ -151,7 +171,7 @@ DEFAULT_EXTENSIONS="
     --enable-embed=static \
     --disable-shared \
     $NO_CLI --disable-cgi --disable-phpdbg \
-    $OPCACHE ${PHP_EXTENSIONS:-$DEFAULT_EXTENSIONS}
+    $OPCACHE ${PHP_EXTENSIONS:-$DEFAULT_EXTENSIONS} ${EXTRA_EXTENSIONS:-}
   make -j"$JOBS"
   make install
 )

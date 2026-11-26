@@ -64,6 +64,7 @@ the operation has for its own length.
 | `examples/` | Runnable apps. The end-to-end tests serve these, so they are also fixtures |
 | `test/` | End-to-end tests: they start the `cairo` binary on an example and talk to it over HTTP and gRPC |
 | `scripts/` | `build-php.sh` (ZTS PHP into /opt/php-zts), `build-static.sh` (the static binary), `stubs.php`, `publish-stubs.sh`, `core-names.php` (what the core's PHP files name of the extensions, for the boundary test) |
+| `Dockerfile.native`, `scripts/php-image.sh`, `test/native-image/` | The native image: Cairo built against the libphp.so of the official thread-safe `php` image of a PHP version (`php-image.sh` names it: `php:8.4-zts-trixie`, from 8.6 on `php:8.6-cli-trixie`), so an app adds extensions with that image's tools and Cairo loads them. The static binary cannot load any (musl's static programs have no `dlopen`): `Dockerfile.static` builds more in (`EXTRA_EXTENSIONS`, `PECL_EXTENSIONS`, `APK_PACKAGES`). CI builds each native image and a static binary with APCu and shmop, and checks that they load |
 | `.github/php-versions.json`, `scripts/php-patches/` | The PHP versions a release ships, newest last: CI builds and tests a static binary of each, the release publishes one per version and architecture (`cairo-php8.4-linux-amd64`, the newest also as `cairo-linux-amd64`) and an image per version (`x.y-php8.4`, `php8.4`; the newest is also `x.y` and `latest`). A new PHP is one entry there, and the default of `Dockerfile.static` and `build-static.sh`. Before 8.5 opcache can only be a shared extension, which a static binary cannot load: `build-static.sh` builds it in with static-php-cli's patches (`php-patches/static-opcache-8.x.patch`, which define `HAVE_OPCACHE`; `cairo.c` then knows it is built in) and leaves its JIT out |
 
 ## Core engine and extensions
@@ -462,7 +463,9 @@ Cairo is a server: per-request code runs millions of times.
    `.github/workflows/image.yml`, which puts those binaries on Alpine
    (`Dockerfile.image`) and pushes `ghcr.io/cairophp/cairo` tagged
    `x.y.z-phpA.B`, `x.y-phpA.B` and `phpA.B` for each PHP, and `x.y.z`, `x.y`
-   and `latest` for the newest.
+   and `latest` for the newest, and the native image of each PHP
+   (`Dockerfile.native`) tagged the same with `-trixie` behind
+   (`x.y-phpA.B-trixie`; `x.y-trixie` and `trixie` for the newest).
 4. Publish the stubs under the same tag, by hand for now:
    `git clone git@github.com:cairophp/stubs.git /tmp/stubs && scripts/publish-stubs.sh /tmp/stubs vx.y.z`.
 

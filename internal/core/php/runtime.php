@@ -19,73 +19,14 @@ namespace Cairo\Internal {
 
     use Cairo\App;
 
-    /** Cairo's own PHP files: this one and those it loads at start. */
-    final class Runtime
-    {
-        /** @var array<string, true> */
-        public static array $files = [];
-        /** declare, serve or offload until serve() has run; '' after */
-        public static string $mode = '';
-        /** @var ?array<string, mixed> an event the entry took and left to the scheduler */
-        public static ?array $first = null;
-
-        /**
-         * What this directory has loaded by now is the runtime; the server
-         * file and what loads after it, Cairo's files included, counts as
-         * the app.
-         */
-        public static function mark(): void
-        {
-            self::$files = array_fill_keys(array_filter(get_included_files(), static fn (string $file): bool => dirname($file) === __DIR__), true);
-        }
-    }
-
-    /**
-     * Called inside the running fiber when Go interrupts the thread because a
-     * request's deadline passed (see cairo_on_interrupt in cairo.c): whether
-     * the fiber's code, in $file, is to be stopped.
-     */
-    function interrupt(?string $file): bool
-    {
-        if ($file !== null && isset(Runtime::$files[$file])) {
-            return false;   // never inside Cairo's runtime (it answers the request); Go pokes again
-        }
-        if (!class_exists(\Cairo\Context::class, false)) {
-            return false;   // a classic thread's next PHP request, before it loaded the context: no request runs yet
-        }
-        $context = \Cairo\Context::current();
-        return !$context->answered() && $context->err() instanceof \Cairo\Context\DeadlineExceeded;
-    }
-
-    /**
-     * Loads the whole runtime: the core's files, then those the extensions
-     * registered (RegisterPHP in internal/core). An entry that serves its
-     * requests with less (Options.Entry) calls this when it needs the rest.
-     *
-     * @param array<string, mixed> $info what cairo_info() says of the thread
-     */
-    function load(array $info): void
-    {
-        foreach (['app', 'context', 'channel', 'async', 'offload', 'waits', 'scheduler', 'go'] as $file) {
-            require_once __DIR__ . '/' . $file . '.php';
-        }
-        foreach ($info['php'] as $file) {
-            require_once __DIR__ . '/' . $file;
-        }
-        Runtime::mark();
-    }
+    require_once __DIR__ . '/loader.php';
 
     function main(): void
     {
         // Go names the files of the extensions (RegisterPHP in internal/core):
         // those to load at start, and the classes whose first use loads the others.
         $info = json_decode(\cairo_info(), true, 512, JSON_THROW_ON_ERROR);
-        $onUse = $info['classes'] + ['Cairo\\RequestLocal' => 'request_local.php'];
-        spl_autoload_register(static function (string $class) use ($onUse): void {
-            if (isset($onUse[$class])) {
-                require_once __DIR__ . '/' . $onUse[$class];
-            }
-        });
+        $onUse = autoload($info);
         if ($info['mode'] === 'cli') {
             load($info);
             // Cairo's files are removed once the script begins (goCLILoaded),

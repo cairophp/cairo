@@ -20,7 +20,7 @@
 #                       before 1.0; nomercure leaves the hub out)
 set -euo pipefail
 
-PHP_VERSION="${1:-8.5.12}"
+PHP_VERSION="${1:-8.6.0}"
 OUT="${2:-dist/cairo}"
 CURL_VERSION="${CURL_VERSION:-8.11.1}"
 LIBZIP_VERSION="${LIBZIP_VERSION:-1.11.2}"
@@ -106,9 +106,31 @@ if [ -z "${PHP_SRC:-}" ]; then
   PHP_SRC="$WORK/php-src-php-${PHP_VERSION}"
 fi
 
-# The extensions of scripts/build-php.sh. Opcache is left out: before PHP
-# 8.5 it can only be built as a shared extension (opcache.so), which a static
-# binary cannot load; PHP 8.5 and later build it in on their own.
+# Opcache. PHP 8.5 and later build it in on their own. Before 8.5 it can only
+# be built as a shared extension (opcache.so), which a static binary cannot
+# load, so it is patched to be built in, as static-php-cli does (the patches
+# are its own: see third_party/NOTICES). Its JIT is left out there: with ZTS
+# on musl it crashes on x86-64 before 8.5.
+# The CLI is not needed, as the binary is PHP's command line itself, but from
+# 8.6 the embed SAPI uses the CLI's sources and configure refuses
+# --disable-cli with --enable-embed.
+PHP_MINOR="$(echo "$PHP_VERSION" | cut -d. -f1,2)"
+OPCACHE=""
+NO_CLI="--disable-cli"
+case "$PHP_MINOR" in
+  8.3 | 8.4)
+    if [ ! -e "$PHP_SRC/.cairo-static-opcache" ]; then
+      patch -d "$PHP_SRC" -p1 < "$ROOT/scripts/php-patches/static-opcache-$PHP_MINOR.patch"
+      touch "$PHP_SRC/.cairo-static-opcache"
+      rm -f "$PHP_SRC/configure"   # it comes from the patched config.m4
+    fi
+    OPCACHE="--enable-opcache --disable-opcache-jit" ;;
+  8.5) ;;
+  8.[6-9] | 9.*) NO_CLI="" ;;
+  *) echo "PHP $PHP_VERSION: static builds need PHP 8.3 or later" >&2; exit 1 ;;
+esac
+
+# The extensions of scripts/build-php.sh.
 DEFAULT_EXTENSIONS="
   --enable-pdo --enable-mysqlnd --with-pdo-mysql=mysqlnd --with-mysqli=mysqlnd
   --with-pdo-sqlite --with-sqlite3
@@ -128,8 +150,8 @@ DEFAULT_EXTENSIONS="
     --enable-zts \
     --enable-embed=static \
     --disable-shared \
-    --disable-cli --disable-cgi --disable-phpdbg \
-    ${PHP_EXTENSIONS:-$DEFAULT_EXTENSIONS}
+    $NO_CLI --disable-cgi --disable-phpdbg \
+    $OPCACHE ${PHP_EXTENSIONS:-$DEFAULT_EXTENSIONS}
   make -j"$JOBS"
   make install
 )

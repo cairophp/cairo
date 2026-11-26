@@ -433,7 +433,11 @@ func (a *reloadApp) reloadsUntilRestart(change func(v int)) (reloads int, restar
 // server a new process, whose cache is empty, instead of a thread that
 // would wipe the cache under the others (startgate.h). A PHP older than 8.4
 // gives no sign of that restart, so the threads of a reload keep out of
-// opcache there, and no number of releases fills it.
+// opcache there, and no number of releases fills it. PHP 8.4's opcache, once
+// full, does not ask for a restart within these releases: it leaves the new
+// files out of the cache (they waste too little of it for
+// opcache.max_wasted_percentage), and the server serves the new code all
+// the same.
 func TestReloadThatFillsOpcacheRestartsInPlace(t *testing.T) {
 	if os.Getenv("CAIRO_TEST_NO_OPCACHE") != "" {
 		t.Skip("this binary has no opcache")
@@ -465,8 +469,8 @@ func TestReloadThatFillsOpcacheRestartsInPlace(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if tells := opcacheTellsOfRestart(t); restarted != tells {
-		t.Fatalf("restarted in place: %v after %d reloads, want %v", restarted, last, tells)
+	if want := phpVersionID(t) >= 80500; restarted != want {
+		t.Fatalf("restarted in place: %v after %d reloads, want %v", restarted, last, want)
 	}
 	if restarted {
 		app.logged("opcache's memory is full", 1)

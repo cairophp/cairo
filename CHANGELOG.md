@@ -7,6 +7,31 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+### Added
+
+- A release binary and an image for each PHP that Cairo supports: 8.3, 8.4,
+  8.5 and 8.6. The binaries are `cairo-php8.4-linux-amd64` and so on, and
+  the images `ghcr.io/cairophp/cairo:0.6-php8.4` (also `x.y.z-php8.4` and
+  `php8.4`, the newest release with that PHP). The default binary
+  (`cairo-linux-amd64`) and the plain image tags (`x.y.z`, `x.y`, `latest`)
+  have the newest PHP. `CAIRO_PHP=8.4` makes `install.sh` install that one.
+  With PHP 8.3 a server cannot see opcache's restart coming and the threads
+  of a reload do not use opcache, as with any Cairo built on 8.3.
+- The static binaries with PHP 8.3 and 8.4 have opcache built in, with
+  static-php-cli's patches, without its JIT. Before, a static build with a
+  PHP older than 8.5 had no opcache.
+
+### Changed
+
+- The default binary and image have PHP 8.6 (they had 8.5).
+
+### Fixed
+
+- With PHP 8.6.0 and no `error_reporting` in php.ini, every error inside a
+  fiber was silenced (PHP 8.6.0 starts a fiber with php.ini's value, which is
+  then 0), so a request handler's warnings and fatal errors were neither
+  shown nor logged. Cairo now makes `E_ALL` the default, as it is in PHP.
+
 ## [0.6.0] - 2026-11-26
 
 Cairo now does what PHP-FPM, FrankenPHP and RoadRunner do, in one binary.

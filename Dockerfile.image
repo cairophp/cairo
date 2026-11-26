@@ -1,7 +1,8 @@
 # The official image, ghcr.io/cairophp/cairo: a release's static binary on
 # Alpine. .github/workflows/image.yml builds it from the binaries of a
-# published release, which it puts in dist/ first.
-#   FROM ghcr.io/cairophp/cairo:0.5
+# published release, which it puts in dist/ first, once per PHP version.
+#   FROM ghcr.io/cairophp/cairo:0.6          (the newest PHP)
+#   FROM ghcr.io/cairophp/cairo:0.6-php8.4
 #   COPY --chown=cairo:cairo . /app
 FROM alpine:3.21
 # Not root: an app that is taken over cannot change the image or bind low ports.
@@ -9,7 +10,8 @@ FROM alpine:3.21
 # install, artisan) can write next to the app.
 RUN adduser -D -u 1000 cairo && mkdir /app && chown cairo:cairo /app
 ARG TARGETARCH
-COPY --chmod=755 dist/cairo-linux-${TARGETARCH} /usr/local/bin/cairo
+ARG PHP
+COPY --chmod=755 dist/cairo-php${PHP}-linux-${TARGETARCH} /usr/local/bin/cairo
 # Under the name php the binary is PHP's command line (cairo php): for
 # scripts that start with #!/usr/bin/env php and for tools that call php.
 RUN ln -s cairo /usr/local/bin/php

@@ -223,6 +223,10 @@ change the PHP API; patch versions do not.
 
 ### Fixed
 
+- `move_uploaded_file()` and `is_uploaded_file()` work again on the uploads
+  of a classic script: since classic requests run on their thread's own
+  stack, both fell back to PHP's own list of uploads, which is empty, so
+  `move_uploaded_file()` returned false (WordPress' media uploads failed).
 - A thread that `maxRequests()` or `maxMemory()` recycled, while the code on
   disk did not start (a parse error, other routes in `server.php`), had a
   replacement that died again and again, and after five tries the server

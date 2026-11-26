@@ -107,11 +107,8 @@ static ZEND_NAMED_FUNCTION(cairo_hook_nanosleep)
 
 // Forwards a call to Cairo\Internal\Hooks::<name>(...$args). A null result
 // means the runtime declined, and the original function runs instead.
-static int cairo_forward(const char *method, zend_execute_data *execute_data, zval *return_value)
+static int forward(const char *method, zend_execute_data *execute_data, zval *return_value)
 {
-	if (EG(active_fiber) == NULL) {
-		return 0;
-	}
 	char name[96];
 	snprintf(name, sizeof(name), "Cairo\\Internal\\Hooks::%s", method);
 	zval fname, retval;
@@ -132,6 +129,21 @@ static int cairo_forward(const char *method, zend_execute_data *execute_data, zv
 	return 1;
 }
 
+// What waits is the runtime's only inside a fiber.
+static int cairo_forward(const char *method, zend_execute_data *execute_data, zval *return_value)
+{
+	return EG(active_fiber) != NULL && forward(method, execute_data, return_value);
+}
+
+// Cairo's uploads are a request's wherever it runs, on its thread's own stack
+// too (classic mode). Where Cairo parsed none (Cairo\Internal\Form is not
+// loaded), the uploads are PHP's own.
+static int cairo_forward_upload(const char *method, zend_execute_data *execute_data, zval *return_value)
+{
+	return zend_hash_str_exists(EG(class_table), "cairo\\internal\\form", sizeof("cairo\\internal\\form") - 1)
+		&& forward(method, execute_data, return_value);
+}
+
 static ZEND_NAMED_FUNCTION(cairo_hook_gethostbyname)
 {
 	if (!cairo_forward("gethostbyname", execute_data, return_value)) {
@@ -150,14 +162,14 @@ static ZEND_NAMED_FUNCTION(cairo_hook_gethostbynamel)
 // these ask the runtime about Cairo's uploads first.
 static ZEND_NAMED_FUNCTION(cairo_hook_is_uploaded_file)
 {
-	if (!cairo_forward("isUploadedFile", execute_data, return_value)) {
+	if (!cairo_forward_upload("isUploadedFile", execute_data, return_value)) {
 		hook_originals[HOOK_IS_UPLOADED_FILE](INTERNAL_FUNCTION_PARAM_PASSTHRU);
 	}
 }
 
 static ZEND_NAMED_FUNCTION(cairo_hook_move_uploaded_file)
 {
-	if (!cairo_forward("moveUploadedFile", execute_data, return_value)) {
+	if (!cairo_forward_upload("moveUploadedFile", execute_data, return_value)) {
 		hook_originals[HOOK_MOVE_UPLOADED_FILE](INTERNAL_FUNCTION_PARAM_PASSTHRU);
 	}
 }

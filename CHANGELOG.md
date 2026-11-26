@@ -7,6 +7,35 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-26
+
+Cairo now does what PHP-FPM, FrankenPHP and RoadRunner do, in one binary.
+It serves a folder of scripts (WordPress) as PHP-FPM does, with no
+declaration and as fast: `cairo serve public/`. It streams answers and
+serves WebSockets, topics and a Mercure hub, speaks HTTPS and HTTP/2 with
+certificates from Let's Encrypt, and reloads the code of a running server
+with `--watch` or a signal. It has metrics, health probes and OpenTelemetry
+traces, and PHP's command line in the binary (`cairo php`, with the fiber
+scheduler and signals). There is also an official image and a runtime for
+Symfony (`cairophp/symfony-runtime`).
+
+**Upgrading from 0.5.** No API was removed. A few changes can reach
+existing code:
+
+- **A declared classic app whose every route is `scripts()`.** server.php
+  runs only when a thread starts. What it sets in PHP (`ini_set()`,
+  constants, functions) no longer reaches the scripts: put it in php.ini or
+  an `auto_prepend_file`.
+- **Classic scripts.** Cookie names follow PHP's rules (`a.b` is
+  `$_COOKIE['a_b']`), and PHP's own waits hold the thread, as under PHP-FPM.
+- **`putenv()`.** It changes the request's environment, no longer the
+  process's.
+- **The released binaries and the image.** They contain the Mercure hub,
+  which is AGPL-3.0. Build with `TAGS=nomercure` for a binary without it.
+- **Building from source.** It needs Go 1.27.
+
+Update the stubs package to `^0.6`, and the image tag to `0.6`.
+
 ### Added
 
 - `cairo serve` on a folder, or on a PHP file that declares no `Cairo\App`,
@@ -772,7 +801,8 @@ PHP, with many requests per PHP thread as fibers.
 - `Cairo\Sql` returns timestamps in UTC instead of the server's time zone
   (#40).
 
-[Unreleased]: https://github.com/cairophp/cairo/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/cairophp/cairo/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/cairophp/cairo/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/cairophp/cairo/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/cairophp/cairo/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/cairophp/cairo/compare/v0.2.0...v0.3.0

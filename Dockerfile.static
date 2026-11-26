@@ -14,6 +14,16 @@ WORKDIR /src
 # code changes. The default is the newest of .github/php-versions.json.
 ARG PHP_VERSION=8.6.0
 ENV WORK=/work
+# More extensions built in (scripts/build-static.sh): PHP's own that are off
+# by default and PECL packages, with APK_PACKAGES for the static libraries
+# that one needs:
+#   docker build -f Dockerfile.static --output dist \
+#     --build-arg PECL_EXTENSIONS="apcu-5.1.28" \
+#     --build-arg EXTRA_EXTENSIONS="--enable-apcu --enable-shmop" .
+ARG APK_PACKAGES=""
+ARG PECL_EXTENSIONS=""
+ARG EXTRA_EXTENSIONS=""
+RUN if [ -n "$APK_PACKAGES" ]; then apk add --no-cache $APK_PACKAGES; fi
 COPY scripts/build-static.sh scripts/
 COPY scripts/php-patches scripts/php-patches
 RUN STAGE=php scripts/build-static.sh "$PHP_VERSION"

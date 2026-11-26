@@ -76,6 +76,68 @@ jobs:
       - id: list
         run: echo "php=$(jq -c . .github/php-versions.json)" >> "$GITHUB_OUTPUT"
 
+  # The native image (Dockerfile.native) of each PHP, on the official php
+  # image: an app's image adds an extension with docker-php-ext-install, and
+  # Cairo loads it in the command line and in a server.
+  native-image:
+    needs: versions
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ${{ fromJSON(needs.versions.outputs.php) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - id: base
+        run: echo "image=$(scripts/php-image.sh "${{ matrix.php }}")" >> "$GITHUB_OUTPUT"
+      - name: Build the native image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.native
+          build-args: PHP_IMAGE=${{ steps.base.outputs.image }}
+          load: true
+          tags: cairo-native
+          cache-from: type=gha,scope=native-php${{ matrix.php }}
+          cache-to: type=gha,scope=native-php${{ matrix.php }},mode=max
+      - name: Add an extension to it and use it
+        run: |
+          minor="$(echo "${{ matrix.php }}" | cut -d. -f1,2)"
+          test "$(docker run --rm --entrypoint cairo cairo-native php -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION, PHP_ZTS;')" = "${minor}1"
+          docker build -t cairo-native-app test/native-image
+          test "$(docker run --rm cairo-native-app php -r 'echo extension_loaded("shmop") ? "shmop" : "none";')" = shmop
+          docker run -d --name app -p 8080:8080 cairo-native-app
+          for _ in $(seq 1 50); do curl -fsS http://127.0.0.1:8080/ > answer 2>/dev/null && break; sleep 0.2; done
+          docker logs app
+          test "$(cat answer)" = shmop
+
+  # A static binary with more extensions built in (Dockerfile.static's
+  # PECL_EXTENSIONS and EXTRA_EXTENSIONS), for the newest PHP.
+  # On PHP 8.5: no APCu release builds against 8.6 yet (5.1.28 calls the
+  # php_verror() that 8.6 changed).
+  static-extensions:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build it with APCu (PECL) and shmop
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.static
+          build-args: |
+            PHP_VERSION=8.5.13
+            PECL_EXTENSIONS=apcu-5.1.28
+            EXTRA_EXTENSIONS=--enable-apcu --enable-shmop
+          outputs: type=local,dest=dist
+          cache-from: type=gha,scope=static-extensions
+          cache-to: type=gha,scope=static-extensions,mode=max
+      - name: Use them
+        run: |
+          file dist/cairo
+          test "$(dist/cairo php -d apc.enable_cli=1 -r 'apcu_store("k", 42); echo apcu_fetch("k"), " ", function_exists("shmop_open") ? "shmop" : "none";')" = "42 shmop"
+
   # One static binary (Dockerfile.static) per PHP version that a release
   # ships and architecture, then the whole suite against it.
   static:

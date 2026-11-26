@@ -26,6 +26,18 @@ namespace Cairo\Internal {
         public static array $files = [];
         /** declare, serve or offload until serve() has run; '' after */
         public static string $mode = '';
+        /** @var ?array<string, mixed> an event the entry took and left to the scheduler */
+        public static ?array $first = null;
+
+        /**
+         * What this directory has loaded by now is the runtime; the server
+         * file and what loads after it, Cairo's files included, counts as
+         * the app.
+         */
+        public static function mark(): void
+        {
+            self::$files = array_fill_keys(array_filter(get_included_files(), static fn (string $file): bool => dirname($file) === __DIR__), true);
+        }
     }
 
     /**
@@ -38,21 +50,36 @@ namespace Cairo\Internal {
         if ($file !== null && isset(Runtime::$files[$file])) {
             return false;   // never inside Cairo's runtime (it answers the request); Go pokes again
         }
+        if (!class_exists(\Cairo\Context::class, false)) {
+            return false;   // a classic thread's next PHP request, before it loaded the context: no request runs yet
+        }
         $context = \Cairo\Context::current();
         return !$context->answered() && $context->err() instanceof \Cairo\Context\DeadlineExceeded;
+    }
+
+    /**
+     * Loads the whole runtime: the core's files, then those the extensions
+     * registered (RegisterPHP in internal/core). An entry that serves its
+     * requests with less (Options.Entry) calls this when it needs the rest.
+     *
+     * @param array<string, mixed> $info what cairo_info() says of the thread
+     */
+    function load(array $info): void
+    {
+        foreach (['app', 'context', 'channel', 'async', 'offload', 'waits', 'scheduler', 'go'] as $file) {
+            require_once __DIR__ . '/' . $file . '.php';
+        }
+        foreach ($info['php'] as $file) {
+            require_once __DIR__ . '/' . $file;
+        }
+        Runtime::mark();
     }
 
     function main(): void
     {
         // Go names the files of the extensions (RegisterPHP in internal/core):
-        // those to load now, and the classes whose first use loads the others.
+        // those to load at start, and the classes whose first use loads the others.
         $info = json_decode(\cairo_info(), true, 512, JSON_THROW_ON_ERROR);
-        foreach ($info['php'] as $file) {
-            require __DIR__ . '/' . $file;
-        }
-        // What this directory has loaded by now is the runtime; server.php and
-        // what loads after it, Cairo's files included, counts as the app.
-        Runtime::$files = array_fill_keys(array_filter(get_included_files(), static fn (string $file): bool => dirname($file) === __DIR__), true);
         $onUse = $info['classes'] + ['Cairo\\RequestLocal' => 'request_local.php'];
         spl_autoload_register(static function (string $class) use ($onUse): void {
             if (isset($onUse[$class])) {
@@ -60,22 +87,13 @@ namespace Cairo\Internal {
             }
         });
         if ($info['mode'] === 'cli') {
+            load($info);
             // Cairo's files are removed once the script begins (goCLILoaded),
             // so what a first use would load is loaded now.
             foreach (array_unique($onUse) as $file) {
                 require_once __DIR__ . '/' . $file;
             }
-            if ($info['script'] === 0) {
-                \cairo_cli_script();   // not scheduled: the thread's own code, as under PHP
-                return;
-            }
-            // The script is this thread's one request, which is what
-            // 'isolated' says of a thread: it may wait with its only fiber.
-            $scheduler = new Scheduler((new App())->concurrency('isolated'));
-            if (!$scheduler->script($info['script'], static fn () => \cairo_cli_script())) {
-                file_put_contents('php://stderr', "cairo: the script waits and nothing can wake it: every fiber is asleep, or code with an event loop of its own suspended one. CAIRO_SCHEDULER=off runs a script outside Cairo's scheduler\n");
-                exit(255);
-            }
+            cli($info);
             return;
         }
         if ($info['reloaded'] && PHP_VERSION_ID >= 80400) {
@@ -90,11 +108,21 @@ namespace Cairo\Internal {
             // threads that run (startgate.h): this thread compiles for itself.
             ini_set('opcache.enable', '0');
         }
+        $entry = $info['entry'] ?? null;
+        if ($entry !== null && $info['mode'] !== 'declare') {
+            // The entry serves this thread's requests itself and loads what
+            // it needs; an App back is for the scheduler after all.
+            $app = $entry($info);
+            if ($app === null) {
+                return;
+            }
+        }
+        load($info);
         Runtime::$mode = $info['mode'];
         // The served file is the script, as under any server: a framework's
         // front controller finds itself there (Symfony's autoload_runtime.php).
         $_SERVER['SCRIPT_FILENAME'] = $info['server'];
-        $app = (static fn (string $file): mixed => require $file)($info['server']);
+        $app ??= $entry !== null ? $entry($info) : (static fn (string $file): mixed => require $file)($info['server']);
         if (Runtime::$mode === '') {
             return;   // the file served its App itself
         }
@@ -102,6 +130,26 @@ namespace Cairo\Internal {
             throw new \RuntimeException($info['server'] . ' must return a Cairo\App');
         }
         serve($app);
+    }
+
+    /**
+     * `cairo php`: the script of the command line, under the scheduler.
+     *
+     * @param array<string, mixed> $info
+     */
+    function cli(array $info): void
+    {
+        if ($info['script'] === 0) {
+            \cairo_cli_script();   // not scheduled: the thread's own code, as under PHP
+            return;
+        }
+        // The script is this thread's one request, which is what
+        // 'isolated' says of a thread: it may wait with its only fiber.
+        $scheduler = new Scheduler((new App())->concurrency('isolated'));
+        if (!$scheduler->script($info['script'], static fn () => \cairo_cli_script())) {
+            file_put_contents('php://stderr', "cairo: the script waits and nothing can wake it: every fiber is asleep, or code with an event loop of its own suspended one. CAIRO_SCHEDULER=off runs a script outside Cairo's scheduler\n");
+            exit(255);
+        }
     }
 
     /**
@@ -135,13 +183,5 @@ namespace Cairo\Internal {
 }
 
 namespace {
-    require __DIR__ . '/app.php';
-    require __DIR__ . '/context.php';
-    require __DIR__ . '/channel.php';
-    require __DIR__ . '/async.php';
-    require __DIR__ . '/offload.php';
-    require __DIR__ . '/waits.php';
-    require __DIR__ . '/scheduler.php';
-    require __DIR__ . '/go.php';
     \Cairo\Internal\main();
 }

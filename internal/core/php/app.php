@@ -92,6 +92,20 @@ namespace Cairo {
             return $this->concurrency === 'classic';
         }
 
+        private bool $entry = false;
+
+        /**
+         * @internal The request threads call cairo serve's entry function in
+         * place of running the server file, which made this App
+         * (core.Options.Entry): a folder or a plain script served with no
+         * declaration.
+         */
+        public function servedByEntry(): static
+        {
+            $this->entry = true;
+            return $this;
+        }
+
         /**
          * Declares this app's servers and serves them on this PHP thread,
          * returning when the thread is told to stop. For a framework's
@@ -396,7 +410,7 @@ namespace Cairo {
         {
             // Go's core reads the settings; what an extension declared goes
             // under its name, for the extension's Go half to read.
-            $spec = ['threads' => $this->threads, 'offload_threads' => $this->offloadThreads, 'max_in_flight' => $this->maxInFlight, 'isolated' => $this->isolated(), 'classic' => $this->classic(), 'extensions' => []];
+            $spec = ['threads' => $this->threads, 'offload_threads' => $this->offloadThreads, 'max_in_flight' => $this->maxInFlight, 'isolated' => $this->isolated(), 'classic' => $this->classic(), 'entry' => $this->entry, 'extensions' => []];
             foreach ($this->servers as $extension => $servers) {
                 $spec['extensions'][$extension] = array_map(static fn (Http\Server|Grpc\Server $server): array => $server->spec(), $servers);
             }

@@ -368,7 +368,8 @@ namespace Cairo\Internal {
         private function takeEvents(bool $idle): void
         {
             $n = self::TURN;
-            $event = \cairo_next_event($idle);
+            $event = Runtime::$first ?? \cairo_next_event($idle);
+            Runtime::$first = null;
             while ($event !== null) {
                 if (($type = $event['type']) === 'io') {
                     $fiber = $this->io[$event['io']] ?? null;

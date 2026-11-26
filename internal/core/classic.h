@@ -29,7 +29,9 @@ PHP_FUNCTION(cairo_thread_again);
 // A classic thread whose app serves only scripts() checked its declaration
 // in its first PHP request (cairo_thread_check_passed()): its later PHP
 // requests run server.php without sending the declaration to Go, and PHP
-// does not copy the environment into their $_SERVER (cairo.c). Unlike the
+// does not copy the environment into their $_SERVER (cairo.c). A thread
+// that serves scripts with no declaration has none to check, and passes
+// before its first request reads $_SERVER. Unlike the
 // rest of classic.c this outlives the PHP request, so a thread that starts
 // forgets it first (cairo_classic_forget()): the system thread may have been
 // another PHP thread's, from before a reload.

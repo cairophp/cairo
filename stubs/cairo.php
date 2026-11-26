@@ -47,6 +47,16 @@ namespace Cairo {
         }
 
         /**
+         * @internal The request threads call cairo serve's entry function in
+         * place of running the server file, which made this App
+         * (core.Options.Entry): a folder or a plain script served with no
+         * declaration.
+         */
+        public function servedByEntry(): static
+        {
+        }
+
+        /**
          * Declares this app's servers and serves them on this PHP thread,
          * returning when the thread is told to stop. For a framework's
          * runner, called from the file that cairo serve runs, which then
@@ -928,14 +938,14 @@ namespace Cairo\Http {
          * PHP-FPM does, for apps that are a set of scripts (WordPress):
          * /a/b.php runs b.php, /x.php/more runs x.php with PATH_INFO /more,
          * a directory runs its index.php, and a path that names nothing runs
-         * $dir/index.php, the front controller. The other files under $dir
+         * $front, the front controller ($dir/index.php by default). The other files under $dir
          * are served by Go, as publicDir() serves them; the source of a
          * script never is, nor hidden files. Needs
          * App::concurrency('classic'): each request has a PHP request of its
          * own. The script sees the superglobals, php://input, echo and
          * header() as under PHP-FPM.
          */
-        public function scripts(string $dir): static
+        public function scripts(string $dir, string $front = 'index.php'): static
         {
         }
 

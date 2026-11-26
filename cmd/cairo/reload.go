@@ -120,6 +120,9 @@ func watchPaths(serverFile string, named []string) ([]string, error) {
 		return nil, err
 	}
 	if len(named) == 0 {
+		if fi, err := os.Stat(file); err == nil && fi.IsDir() {
+			return []string{appDir(file)}, nil
+		}
 		return []string{appDir(filepath.Dir(file))}, nil
 	}
 	paths := []string{file}

@@ -9,6 +9,13 @@ change the PHP API; patch versions do not.
 
 ### Added
 
+- `cairo serve` on a folder, or on a PHP file that declares no `Cairo\App`,
+  serves it in classic mode as nginx and PHP-FPM do, with no server.php:
+  a folder is the document root, a plain file is the front controller.
+  Cairo tells a declaration with PHP's tokenizer and never runs the file to
+  find out. `--listen`, `--threads` and `--timeout` set what a declaration
+  would (without `--timeout`, php.ini's `max_execution_time` is the
+  deadline), and each request runs only its script.
 - Classic mode, for apps that are a set of PHP scripts (WordPress, Drupal,
   a folder of `.php` files): `App::concurrency('classic')` gives every
   request a PHP request of its own, as PHP-FPM does, on the same PHP thread,

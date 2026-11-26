@@ -18,6 +18,7 @@ namespace Cairo\Http {
         private array $static = [];
         private string $publicDir = '';
         private string $scripts = '';
+        private string $scriptsFront = 'index.php';
         /** @var list<array{dir:string,prefix:string}> */
         private array $sendfile = [];
         private string $metrics = '';
@@ -184,17 +185,21 @@ namespace Cairo\Http {
          * PHP-FPM does, for apps that are a set of scripts (WordPress):
          * /a/b.php runs b.php, /x.php/more runs x.php with PATH_INFO /more,
          * a directory runs its index.php, and a path that names nothing runs
-         * $dir/index.php, the front controller. The other files under $dir
+         * $front, the front controller ($dir/index.php by default). The other files under $dir
          * are served by Go, as publicDir() serves them; the source of a
          * script never is, nor hidden files. Needs
          * App::concurrency('classic'): each request has a PHP request of its
          * own. The script sees the superglobals, php://input, echo and
          * header() as under PHP-FPM.
          */
-        public function scripts(string $dir): static
+        public function scripts(string $dir, string $front = 'index.php'): static
         {
+            if ($front !== basename($front) || strcasecmp(pathinfo($front, PATHINFO_EXTENSION), 'php') !== 0) {
+                throw new \InvalidArgumentException("scripts(): the front controller must be a .php file in \$dir, by its name");
+            }
             $this->publicDir($dir);
             $this->scripts = $dir;
+            $this->scriptsFront = $front;
             $this->route('*', '/', static fn (Request $req) => \Cairo\Internal\Scripts::run($req));
             $this->routes[array_key_last($this->routes)]['scripts'] = true;
             return $this;
@@ -358,6 +363,7 @@ namespace Cairo\Http {
                 'static' => $this->static,
                 'public_dir' => $this->publicDir,
                 'scripts' => $this->scripts,
+                'scripts_front' => $this->scriptsFront,
                 'sendfile' => $this->sendfile,
                 'middleware' => array_map(static fn ($m) => $m->spec(), $this->middleware),
                 'tls' => $this->tls,

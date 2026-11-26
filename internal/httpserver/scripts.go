@@ -17,8 +17,9 @@ import (
 // files of the directory (publicFiles); this only names the script, and
 // PHP runs it in a PHP request of its own (classic mode).
 type scripts struct {
-	root *os.Root
-	dir  string // absolute, the directory PHP opens the scripts in
+	root  *os.Root
+	dir   string // absolute, the directory PHP opens the scripts in
+	front string // the front controller, a .php file of dir by its name
 }
 
 // script is what PHP gets of the script that answers a request.
@@ -32,7 +33,13 @@ type script struct {
 
 type scriptKey struct{}
 
-func openScripts(dir string) (*scripts, error) {
+func openScripts(dir, front string) (*scripts, error) {
+	if front == "" {
+		front = "index.php"
+	}
+	if front != filepath.Base(front) || !strings.EqualFold(filepath.Ext(front), ".php") || strings.HasPrefix(front, ".") {
+		return nil, fmt.Errorf("scripts: the front controller %q is not a .php file of the directory", front)
+	}
 	abs, err := filepath.Abs(dir)
 	if err == nil {
 		abs, err = filepath.EvalSymlinks(abs)
@@ -44,7 +51,7 @@ func openScripts(dir string) (*scripts, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scripts: %w", err)
 	}
-	return &scripts{root: root, dir: abs}, nil
+	return &scripts{root: root, dir: abs, front: front}, nil
 }
 
 // handler passes on, with its script, each request that has one, and
@@ -71,8 +78,8 @@ func (s *scripts) handler(next http.Handler) http.Handler {
 
 // find names the script of a URL path: the first part of the path that is
 // a .php file, with the rest as its PATH_INFO; else the index.php of the
-// directory the path names; else the index.php of the root, the front
-// controller (WordPress' pretty links). A directory named without its
+// directory the path names; else the root's front controller (index.php
+// by default: WordPress' pretty links). A directory named without its
 // slash is redirected to it. Hidden parts (.git, .env) are never a file
 // here, and os.Root keeps every lookup inside the directory, symlinks
 // included.
@@ -81,7 +88,7 @@ func (s *scripts) find(urlPath string) (sc *script, redirect bool) {
 	parts := strings.Split(strings.TrimPrefix(clean, "/"), "/")
 	for i, part := range parts {
 		if strings.HasPrefix(part, ".") {
-			return s.front(), false
+			return s.frontScript(), false
 		}
 		if strings.EqualFold(path.Ext(part), ".php") {
 			name := strings.Join(parts[:i+1], "/")
@@ -97,7 +104,7 @@ func (s *scripts) find(urlPath string) (sc *script, redirect bool) {
 		}
 		return s.at(path.Join(name, "index.php"), ""), false
 	}
-	return s.front(), false
+	return s.frontScript(), false
 }
 
 // dirName is how os.Root names the directory of a cleaned URL path.
@@ -108,11 +115,11 @@ func dirName(name string) string {
 	return name
 }
 
-func (s *scripts) front() *script {
-	if !s.isFile("index.php") {
+func (s *scripts) frontScript() *script {
+	if !s.isFile(s.front) {
 		return nil
 	}
-	return s.at("index.php", "")
+	return s.at(s.front, "")
 }
 
 func (s *scripts) isFile(name string) bool {

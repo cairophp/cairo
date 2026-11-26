@@ -5,7 +5,7 @@ servers in PHP; Go does the serving. Every request runs in its own PHP Fiber,
 and a fiber that waits on I/O parks while its thread runs the others, so one
 PHP thread can hold thousands of requests at once.
 
-> Status: v0.5.0. The PHP API may still change before 1.0:
+> Status: v0.6.0. The PHP API may still change before 1.0:
 > [Stability](https://github.com/cairophp/docs/blob/main/stability.md) says what a release may change, and
 > [CHANGELOG.md](CHANGELOG.md) lists what changed. Design doc:
 > [Cairo: architecture and design proposal](https://claude.ai/artifact/PBihYMjib8P4eh56BboTPa)

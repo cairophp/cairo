@@ -105,6 +105,7 @@ static void cli_log_message(const char *message, int syslog_type)
 
 static void cli_ini_defaults(HashTable *configuration_hash)
 {
+	cairo_shared_ini_defaults(configuration_hash);
 	zval on;
 	ZVAL_NEW_STR(&on, zend_string_init("1", 1, 1));
 	zend_hash_str_update(configuration_hash, "display_errors", sizeof("display_errors") - 1, &on);

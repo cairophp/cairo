@@ -13,6 +13,10 @@ void cairo_signals_onstack(void);
 // thread of the command line, which cairo_thread_run() did not start.
 void cairo_thread_adopt(int tid);
 
+// Puts the defaults that both SAPIs share into configuration_hash, below
+// what a php.ini sets.
+void cairo_shared_ini_defaults(HashTable *configuration_hash);
+
 // cairo_cli_script(): void, in cli.c, for the module's function table.
 PHP_FUNCTION(cairo_cli_script);
 

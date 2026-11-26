@@ -541,9 +541,27 @@ zend_module_entry cairo_module_entry = {
 // each worker thread runs one long PHP request (cairo_thread_run). Requests
 // never reach PHP through the SAPI; Go hands them to the runtime script.
 
+void cairo_shared_ini_defaults(HashTable *configuration_hash)
+{
+#if PHP_VERSION_ID >= 80600
+	// PHP 8.6.0 starts every fiber with php.ini's error_reporting, and with
+	// none set that is 0, which silences every error of the fiber (with no
+	// php.ini, `php -n`, a fiber's error_reporting() is 0). Its default is
+	// E_ALL, so say so.
+	char all[16];
+	int n = snprintf(all, sizeof(all), "%d", E_ALL);
+	zval v;
+	ZVAL_NEW_STR(&v, zend_string_init(all, (size_t)n, 1));
+	zend_hash_str_update(configuration_hash, "error_reporting", sizeof("error_reporting") - 1, &v);
+#else
+	(void)configuration_hash;
+#endif
+}
+
 // Defaults a php.ini may override (lowest precedence).
 static void cairo_ini_defaults(HashTable *configuration_hash)
 {
+	cairo_shared_ini_defaults(configuration_hash);
 	static const char *defaults[][2] = {
 		{"html_errors", "0"},
 		{"implicit_flush", "0"},   // a flush is a call into an extension, when one streams an answer

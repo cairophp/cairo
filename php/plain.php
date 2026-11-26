@@ -58,15 +58,15 @@ namespace Cairo\Internal {
         }
 
         /**
-         * @internal the App that serves the scripts (PlainRequest::upgrade() too)
+         * The App that serves the scripts.
          *
          * @param array{path: string, listen: string, timeout: float} $args
          */
-        public static function app(array $args): App
+        private static function app(array $args): App
         {
             [$root, $front] = is_dir($args['path']) ? [$args['path'], 'index.php'] : [dirname($args['path']), basename($args['path'])];
             $app = (new App())->concurrency('classic')->servedByEntry();
-            $http = $app->http($args['listen'])->scripts($root, $front)->scriptsParseForms();
+            $http = $app->http($args['listen'])->scripts($root, $front);
             if ($args['timeout'] > 0) {
                 $http->use(Middleware::timeout($args['timeout']));
             }

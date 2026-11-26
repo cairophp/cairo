@@ -22,6 +22,10 @@ type Spec struct {
 	// Classic is App::concurrency('classic'): isolated, and each request has
 	// a PHP request of its own.
 	Classic bool `json:"classic"`
+	// ScriptsOnly: classic, and every route of every server is scripts().
+	// A request thread then runs no PHP of the app around a script: an
+	// extension serves each one in C, as PHP-FPM does.
+	ScriptsOnly bool `json:"scripts_only"`
 	// Entry: the request threads call the entry function (core.Options.Entry)
 	// in place of running the server file. The app's declaration was made
 	// by that function, and nothing of the server file runs before a request.

@@ -410,7 +410,7 @@ namespace Cairo {
         {
             // Go's core reads the settings; what an extension declared goes
             // under its name, for the extension's Go half to read.
-            $spec = ['threads' => $this->threads, 'offload_threads' => $this->offloadThreads, 'max_in_flight' => $this->maxInFlight, 'isolated' => $this->isolated(), 'classic' => $this->classic(), 'entry' => $this->entry, 'extensions' => []];
+            $spec = ['threads' => $this->threads, 'offload_threads' => $this->offloadThreads, 'max_in_flight' => $this->maxInFlight, 'isolated' => $this->isolated(), 'classic' => $this->classic(), 'scripts_only' => $this->classic() && $this->scriptsOnly(), 'entry' => $this->entry, 'extensions' => []];
             foreach ($this->servers as $extension => $servers) {
                 $spec['extensions'][$extension] = array_map(static fn (Http\Server|Grpc\Server $server): array => $server->spec(), $servers);
             }

@@ -87,7 +87,7 @@ func TestClassicRequestsStartFresh(t *testing.T) {
 	eachClassic(t, 1, func(t *testing.T, base string) {
 		for i := range 3 {
 			_, body := classicGet(t, http.DefaultClient, base+"/state.php")
-			if body != `{"hits":1,"defined":false,"statics":0}`+"\n" {
+			if body != `{"hits":1,"defined":false,"statics":0,"cairo":false}`+"\n" {
 				t.Fatalf("request %d: %q, want a fresh PHP request", i, body)
 			}
 		}

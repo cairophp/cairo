@@ -12,6 +12,7 @@ declare(strict_types=1);
 
 namespace Cairo\Internal {
 
+    use Cairo\App;
     use Cairo\Context;
 
     require_once __DIR__ . '/async.php';
@@ -48,7 +49,9 @@ namespace Cairo\Internal {
             \cairo_hold_calls();
             $tick = self::$context->deadlineTick();
             \cairo_fiber_bind(null, self::$context, $call['id'], $tick === PHP_INT_MAX ? 0 : $tick);
-            new Scheduler(Plain::app($info['args']));
+            // The scheduler only waits here: no server of its App takes a
+            // request (the declaration's, if any, stays in Go).
+            new Scheduler((new App())->concurrency('classic'));
         }
 
         /** @internal for plain_request.c: the request has its answer */

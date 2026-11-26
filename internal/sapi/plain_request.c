@@ -66,8 +66,8 @@ static void request_info(void)
 	SG(request_info).query_string = (char *)str(e, "query", &n);
 	SG(request_info).request_uri = (char *)str(e, "path", &n);
 	SG(request_info).content_type = header("Content-Type");
-	const char *length = header("Content-Length");
-	SG(request_info).content_length = length != NULL ? ZEND_STRTOL(length, NULL, 10) : 0;
+	str(e, "body", &n);
+	SG(request_info).content_length = (zend_long)n;   // what Go read, as nginx gives PHP-FPM
 	cookie = header("Cookie");
 	php_handle_auth_data(header("Authorization"));
 	SG(sapi_headers).http_response_code = 200;   // PHP's startup leaves the last request's

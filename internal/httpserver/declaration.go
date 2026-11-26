@@ -65,6 +65,9 @@ type Route struct {
 	// Scripts marks the route of $http->scripts(), which runs the script
 	// that the request's path names (scripts.go).
 	Scripts bool `json:"scripts,omitempty"`
+	// RawBody is set for the scripts of cairo serve with no declaration,
+	// whose forms PHP parses itself: Go passes every body as it came.
+	RawBody bool `json:"raw_body,omitempty"`
 }
 
 // RouteCache lets Go answer repeated GET requests to a route from memory.

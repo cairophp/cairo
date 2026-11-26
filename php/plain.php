@@ -61,7 +61,7 @@ namespace Cairo\Internal {
         {
             [$root, $front] = is_dir($args['path']) ? [$args['path'], 'index.php'] : [dirname($args['path']), basename($args['path'])];
             $app = (new App())->concurrency('classic')->servedByEntry();
-            $http = $app->http($args['listen'])->scripts($root, $front);
+            $http = $app->http($args['listen'])->scripts($root, $front)->scriptsParseForms();
             if ($args['timeout'] > 0) {
                 $http->use(Middleware::timeout($args['timeout']));
             }

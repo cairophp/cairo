@@ -19,6 +19,57 @@ namespace Cairo {
         /** @internal @var list<\Fiber> */ public array $waiters = [];
     }
 
+}
+
+namespace Cairo\Internal {
+
+    use Cairo\Context;
+
+/** @internal async(), with the parent context given: start $fn in a new fiber. */
+    function spawnTask(Context $parent, callable $fn): \Cairo\Task
+    {
+        $task = new \Cairo\Task();
+        if (!Scheduler::running()) {
+            // Nothing here could resume a fiber that waits: the task runs
+            // in place, as offload() does off the request threads.
+            try {
+                $task->result = $fn();
+            } catch (\Throwable $e) {
+                $task->error = $e;
+            }
+            $task->done = true;
+            return $task;
+        }
+        $context = $parent->child();
+        Scheduler::instance()->startFiber(static function () use ($fn, $task, $context): void {
+            try {
+                $task->result = \cairo_guard($fn);
+            } catch (\Throwable $e) {
+                $task->error = $e;
+                Scheduler::instance()->taskFailed();
+            } finally {
+                $context->finish();
+            }
+            $task->done = true;
+            foreach ($task->waiters as $waiter) {
+                Scheduler::instance()->ready($waiter);
+            }
+            $task->waiters = [];
+        }, $context);
+        return $task;
+    }
+}
+
+/** The PHP of Cairo's functions, which C declares (internal/core/api.c). */
+namespace Cairo\Internal\Fn {
+
+    use Cairo\Channel;
+    use Cairo\Context;
+    use Cairo\OffloadException;
+    use Cairo\OffloadTask;
+    use Cairo\Task;
+    use Cairo\Internal\Scheduler;
+
     /**
      * Run $fn concurrently in its own fiber, under the current context.
      * It runs until its first suspension, then async() returns. Where no
@@ -27,7 +78,7 @@ namespace Cairo {
      */
     function async(callable $fn): Task
     {
-        return Internal\spawnTask(Context::current(), $fn);
+        return \Cairo\Internal\spawnTask(Context::current(), $fn);
     }
 
     /** Wait for a task; rethrows its exception. */
@@ -83,44 +134,5 @@ namespace Cairo {
             return;
         }
         Scheduler::instance()->waits->sleep($seconds);
-    }
-}
-
-namespace Cairo\Internal {
-
-    use Cairo\Context;
-
-/** @internal async(), with the parent context given: start $fn in a new fiber. */
-    function spawnTask(Context $parent, callable $fn): \Cairo\Task
-    {
-        $task = new \Cairo\Task();
-        if (!Scheduler::running()) {
-            // Nothing here could resume a fiber that waits: the task runs
-            // in place, as offload() does off the request threads.
-            try {
-                $task->result = $fn();
-            } catch (\Throwable $e) {
-                $task->error = $e;
-            }
-            $task->done = true;
-            return $task;
-        }
-        $context = $parent->child();
-        Scheduler::instance()->startFiber(static function () use ($fn, $task, $context): void {
-            try {
-                $task->result = \cairo_guard($fn);
-            } catch (\Throwable $e) {
-                $task->error = $e;
-                Scheduler::instance()->taskFailed();
-            } finally {
-                $context->finish();
-            }
-            $task->done = true;
-            foreach ($task->waiters as $waiter) {
-                Scheduler::instance()->ready($waiter);
-            }
-            $task->waiters = [];
-        }, $context);
-        return $task;
     }
 }

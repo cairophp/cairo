@@ -273,101 +273,6 @@ namespace Cairo {
         }
     }
 
-    /**
-     * Wait on several channel operations and do the first one that can go,
-     * as Go's select. Each case is a Channel (receive) or [Channel, value]
-     * (send); keys name the cases. Returns [key, value, ok]: the received
-     * value (null for a send), and ok false when a receive found the channel
-     * closed (a context's done() channel included). When several cases are
-     * ready, one is picked at random.
-     *
-     * $timeout in seconds: null waits as long as the context allows, 0 never
-     * waits. When it passes, select() returns [null, null, false]. If the
-     * context ends first and no case is ready, Context\DeadlineExceeded or
-     * Context\Canceled is thrown; add `$ctx->done()` as a case to get it as
-     * a case instead.
-     *
-     * @param array<int|string, Channel|array{Channel, mixed}> $cases
-     * @return array{int|string|null, mixed, bool}
-     */
-    function select(array $cases, ?float $timeout = null): array
-    {
-        if ($cases === [] && $timeout === null) {
-            throw new \InvalidArgumentException('select() with no cases and no timeout would wait forever');
-        }
-        foreach ($cases as $key => $case) {
-            if (!$case instanceof Channel && !(is_array($case) && count($case) === 2 && ($case[0] ?? null) instanceof Channel)) {
-                throw new \InvalidArgumentException("select() case '$key' must be a Channel or [Channel, value]");
-            }
-        }
-        if (($ready = Channel::firstReady($cases)) !== null) {
-            return $ready;
-        }
-        if ($timeout !== null && $timeout <= 0) {
-            return [null, null, false];
-        }
-        $ctx = Context::current();
-        if (\Fiber::getCurrent() === null || $ctx->requestId === 0 || !Internal\Scheduler::running()) {
-            if (Internal\Scheduler::onStack()) {
-                return await(async(static fn (): array => select($cases, $timeout)));
-            }
-            throw new \LogicException('waiting on a Cairo\Channel must happen inside a request handler or an async() task');
-        }
-
-        // done() channels of other contexts close at their deadline, which the
-        // wait below does not see: wake up then and look again.
-        $end = $timeout === null ? null : microtime(true) + $timeout;
-        while (true) {
-            $now = microtime(true);
-            $doneAt = null;
-            foreach ($cases as $case) {
-                if ($case instanceof Channel && ($at = $case->context()?->deadlineAt()) !== null && $at > $now) {
-                    $doneAt = $doneAt === null ? $at : min($doneAt, $at);
-                }
-            }
-            $wait = $end === null ? -1.0 : max(0.0, $end - microtime(true));
-            $forDone = false;
-            if ($doneAt !== null && ($wait < 0 || $doneAt - microtime(true) < $wait)) {
-                $wait = max(0.0, $doneAt - microtime(true)) + 0.001;
-                $forDone = true;
-            }
-            $waiter = new Internal\Waiter();
-            foreach ($cases as $key => $case) {
-                if ($case instanceof Channel) {
-                    $case->addReceiver($waiter, $key);
-                } else {
-                    $case[0]->addSender($waiter, $key, $case[1]);
-                }
-            }
-            try {
-                $ended = Internal\Scheduler::instance()->waits->park($ctx, $wait, $waiter);
-            } finally {
-                foreach ($cases as $case) {
-                    ($case instanceof Channel ? $case : $case[0])->remove($waiter);
-                }
-            }
-            if ($waiter->done) {
-                if ($waiter->error !== null) {
-                    throw $waiter->error;
-                }
-                return $waiter->result;
-            }
-            if ($ended !== null) {
-                $ctx->ended($ended);
-                // A done() channel among the cases is now closed.
-                if (($ready = Channel::firstReady($cases)) !== null) {
-                    return $ready;
-                }
-                throw $ended === 'canceled' ? new Context\Canceled() : new Context\DeadlineExceeded();
-            }
-            if (!$forDone) {
-                return [null, null, false];   // timeout
-            }
-            if (($ready = Channel::firstReady($cases)) !== null) {
-                return $ready;
-            }
-        }
-    }
 }
 
 namespace Cairo\Channel {
@@ -413,6 +318,113 @@ namespace Cairo\Internal {
             $this->done = true;
             $this->error = $error;
             Scheduler::instance()->waits->wake($this->op);
+        }
+    }
+}
+
+/** The PHP of Cairo's functions, which C declares (internal/core/api.c). */
+namespace Cairo\Internal\Fn {
+
+    use Cairo\Channel;
+    use Cairo\Context;
+    use Cairo\OffloadException;
+    use Cairo\OffloadTask;
+    use Cairo\Task;
+    use Cairo\Internal\Scheduler;
+
+    /**
+     * Wait on several channel operations and do the first one that can go,
+     * as Go's select. Each case is a Channel (receive) or [Channel, value]
+     * (send); keys name the cases. Returns [key, value, ok]: the received
+     * value (null for a send), and ok false when a receive found the channel
+     * closed (a context's done() channel included). When several cases are
+     * ready, one is picked at random.
+     *
+     * $timeout in seconds: null waits as long as the context allows, 0 never
+     * waits. When it passes, select() returns [null, null, false]. If the
+     * context ends first and no case is ready, Context\DeadlineExceeded or
+     * Context\Canceled is thrown; add `$ctx->done()` as a case to get it as
+     * a case instead.
+     *
+     * @param array<int|string, Channel|array{Channel, mixed}> $cases
+     * @return array{int|string|null, mixed, bool}
+     */
+    function select(array $cases, ?float $timeout = null): array
+    {
+        if ($cases === [] && $timeout === null) {
+            throw new \InvalidArgumentException('select() with no cases and no timeout would wait forever');
+        }
+        foreach ($cases as $key => $case) {
+            if (!$case instanceof Channel && !(is_array($case) && count($case) === 2 && ($case[0] ?? null) instanceof Channel)) {
+                throw new \InvalidArgumentException("select() case '$key' must be a Channel or [Channel, value]");
+            }
+        }
+        if (($ready = Channel::firstReady($cases)) !== null) {
+            return $ready;
+        }
+        if ($timeout !== null && $timeout <= 0) {
+            return [null, null, false];
+        }
+        $ctx = Context::current();
+        if (\Fiber::getCurrent() === null || $ctx->requestId === 0 || !\Cairo\Internal\Scheduler::running()) {
+            if (\Cairo\Internal\Scheduler::onStack()) {
+                return await(async(static fn (): array => select($cases, $timeout)));
+            }
+            throw new \LogicException('waiting on a Cairo\Channel must happen inside a request handler or an async() task');
+        }
+
+        // done() channels of other contexts close at their deadline, which the
+        // wait below does not see: wake up then and look again.
+        $end = $timeout === null ? null : microtime(true) + $timeout;
+        while (true) {
+            $now = microtime(true);
+            $doneAt = null;
+            foreach ($cases as $case) {
+                if ($case instanceof Channel && ($at = $case->context()?->deadlineAt()) !== null && $at > $now) {
+                    $doneAt = $doneAt === null ? $at : min($doneAt, $at);
+                }
+            }
+            $wait = $end === null ? -1.0 : max(0.0, $end - microtime(true));
+            $forDone = false;
+            if ($doneAt !== null && ($wait < 0 || $doneAt - microtime(true) < $wait)) {
+                $wait = max(0.0, $doneAt - microtime(true)) + 0.001;
+                $forDone = true;
+            }
+            $waiter = new \Cairo\Internal\Waiter();
+            foreach ($cases as $key => $case) {
+                if ($case instanceof Channel) {
+                    $case->addReceiver($waiter, $key);
+                } else {
+                    $case[0]->addSender($waiter, $key, $case[1]);
+                }
+            }
+            try {
+                $ended = \Cairo\Internal\Scheduler::instance()->waits->park($ctx, $wait, $waiter);
+            } finally {
+                foreach ($cases as $case) {
+                    ($case instanceof Channel ? $case : $case[0])->remove($waiter);
+                }
+            }
+            if ($waiter->done) {
+                if ($waiter->error !== null) {
+                    throw $waiter->error;
+                }
+                return $waiter->result;
+            }
+            if ($ended !== null) {
+                $ctx->ended($ended);
+                // A done() channel among the cases is now closed.
+                if (($ready = Channel::firstReady($cases)) !== null) {
+                    return $ready;
+                }
+                throw $ended === 'canceled' ? new Context\Canceled() : new Context\DeadlineExceeded();
+            }
+            if (!$forDone) {
+                return [null, null, false];   // timeout
+            }
+            if (($ready = Channel::firstReady($cases)) !== null) {
+                return $ready;
+            }
         }
     }
 }

@@ -27,39 +27,6 @@ namespace Cairo {
     }
 
     /**
-     * Run CPU-heavy work on the offload thread pool, so this request thread
-     * keeps serving other fibers. The calling fiber suspends until it is done.
-     *
-     * Code cannot move between PHP threads, so $fn must be an OffloadTask
-     * object, a function name or [ClassName::class, 'staticMethod'] that
-     * server.php makes available, and the task, $args and the result must be
-     * serializable. Closures are not accepted.
-     *
-     * @param OffloadTask|callable-string|array{0:class-string,1:string} $fn
-     */
-    function offload(OffloadTask|string|array $fn, mixed ...$args): mixed
-    {
-        if ($fn instanceof OffloadTask && $args !== []) {
-            throw new \InvalidArgumentException('offload() takes no arguments with an OffloadTask; give them to the task');
-        }
-        if (\Fiber::getCurrent() === null || !Scheduler::running() || Scheduler::instance()->script) {
-            if (Scheduler::onStack()) {
-                return \Cairo\await(\Cairo\async(static fn (): mixed => offload($fn, ...$args)));
-            }
-            // already off the request threads, or in a script, which has no offload threads
-            return $fn instanceof OffloadTask ? $fn->run() : $fn(...$args);
-        }
-        if (!$fn instanceof OffloadTask && !is_callable($fn)) {
-            throw new \InvalidArgumentException('offload() needs an OffloadTask, a function name or [Class::class, "staticMethod"]');
-        }
-        $out = unserialize(Scheduler::instance()->jobs->run(serialize([$fn, $args])));
-        if (!($out['ok'] ?? false)) {
-            throw new OffloadException(($out['class'] ?? 'Error') . ': ' . ($out['message'] ?? 'offloaded job failed'));
-        }
-        return $out['value'];
-    }
-
-    /**
      * An offloaded job threw, and the message names the original exception
      * class; or the offload thread stopped before the job was done.
      */
@@ -160,5 +127,49 @@ namespace Cairo\Internal {
                 \cairo_offload_done($out);
             }
         }
+    }
+}
+
+/** The PHP of Cairo's functions, which C declares (internal/core/api.c). */
+namespace Cairo\Internal\Fn {
+
+    use Cairo\Channel;
+    use Cairo\Context;
+    use Cairo\OffloadException;
+    use Cairo\OffloadTask;
+    use Cairo\Task;
+    use Cairo\Internal\Scheduler;
+
+    /**
+     * Run CPU-heavy work on the offload thread pool, so this request thread
+     * keeps serving other fibers. The calling fiber suspends until it is done.
+     *
+     * Code cannot move between PHP threads, so $fn must be an OffloadTask
+     * object, a function name or [ClassName::class, 'staticMethod'] that
+     * server.php makes available, and the task, $args and the result must be
+     * serializable. Closures are not accepted.
+     *
+     * @param OffloadTask|callable-string|array{0:class-string,1:string} $fn
+     */
+    function offload(OffloadTask|string|array $fn, mixed ...$args): mixed
+    {
+        if ($fn instanceof OffloadTask && $args !== []) {
+            throw new \InvalidArgumentException('offload() takes no arguments with an OffloadTask; give them to the task');
+        }
+        if (\Fiber::getCurrent() === null || !Scheduler::running() || Scheduler::instance()->script) {
+            if (Scheduler::onStack()) {
+                return \Cairo\await(\Cairo\async(static fn (): mixed => offload($fn, ...$args)));
+            }
+            // already off the request threads, or in a script, which has no offload threads
+            return $fn instanceof OffloadTask ? $fn->run() : $fn(...$args);
+        }
+        if (!$fn instanceof OffloadTask && !is_callable($fn)) {
+            throw new \InvalidArgumentException('offload() needs an OffloadTask, a function name or [Class::class, "staticMethod"]');
+        }
+        $out = unserialize(Scheduler::instance()->jobs->run(serialize([$fn, $args])));
+        if (!($out['ok'] ?? false)) {
+            throw new OffloadException(($out['class'] ?? 'Error') . ': ' . ($out['message'] ?? 'offloaded job failed'));
+        }
+        return $out['value'];
     }
 }

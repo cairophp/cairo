@@ -32,6 +32,7 @@
 #include <time.h>
 #include <ext/standard/php_fopen_wrappers.h>
 
+#include "api.h"
 #include "cairo.h"
 #include "classic.h"
 #include "cserve.h"
@@ -496,7 +497,7 @@ static void cairo_opcache_disguise(void);
 static PHP_MINIT_FUNCTION(cairo)
 {
 	cairo_opcache_disguise();
-	if (cairo_extensions_startup() == FAILURE) {
+	if (cairo_api_startup() == FAILURE || cairo_extensions_startup() == FAILURE) {
 		return FAILURE;
 	}
 	cairo_fiber_local_startup();

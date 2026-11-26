@@ -31,6 +31,10 @@ namespace Cairo\Internal {
             $_SERVER['SERVER_SOFTWARE'] = 'Cairo';
             $_SERVER['GATEWAY_INTERFACE'] = 'CGI/1.1';
             $_SERVER['REQUEST_SCHEME'] = ($_SERVER['HTTPS'] ?? '') === 'on' ? 'https' : 'http';
+            // nginx sends no HTTPS for a plain request, and PHP-FPM has none.
+            if (($_SERVER['HTTPS'] ?? '') === '') {
+                unset($_SERVER['HTTPS']);
+            }
             if ($script['path_info'] !== '') {
                 $_SERVER['PATH_INFO'] = $script['path_info'];
             } else {
@@ -40,6 +44,9 @@ namespace Cairo\Internal {
             // Relative includes and file names start where the script is, as
             // under PHP-FPM.
             chdir(dirname($script['file']));
+            // getenv() and $_ENV have these as under PHP-FPM, whatever the
+            // script then does to $_SERVER.
+            \cairo_cgi_env($_SERVER);
             \cairo_run_script($script['file']);
             // Past the deadline the answer is a 504, as Go's own timeout gives:
             // an uncaught DeadlineExceeded made the script's status 500, and

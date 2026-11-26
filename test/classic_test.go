@@ -212,3 +212,59 @@ func TestClassicDeadlineStopsTheScript(t *testing.T) {
 		}
 	}
 }
+
+// putenv() is the request's own: getenv() sees it in that request only, and
+// many requests that call it at once on many threads (Laravel's .env loader
+// does, 47 times a request) do not crash the process, as PHP's putenv() of
+// the process's environment did.
+func TestClassicPutenvIsTheRequests(t *testing.T) {
+	base := startClassic(t, 8)
+	want := `{"before":false,"after":"7","home":false,"listed":"7"}` + "\n"
+	for range 3 {
+		if _, body := classicGet(t, http.DefaultClient, base+"/env.php?n=7"); body != want {
+			t.Fatalf("env.php: %q, want %q", body, want)
+		}
+	}
+	var wg sync.WaitGroup
+	for w := range 32 {
+		wg.Go(func() {
+			for i := range 50 {
+				n := fmt.Sprint(w*100 + i)
+				resp, body := classicGet(t, http.DefaultClient, base+"/env.php?n="+n)
+				if resp.StatusCode != 200 || !strings.Contains(body, `"before":false,"after":"`+n+`"`) {
+					t.Errorf("request %s: %d %q", n, resp.StatusCode, body)
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+}
+
+// A classic script's CGI variables are its environment, as under PHP-FPM,
+// and the next request on the thread has its own.
+func TestClassicEnvHasTheCGIVariables(t *testing.T) {
+	base := startClassic(t, 1)
+	cases := []struct{ header, want string }{
+		{"one", `{"method":"GET","local":"PUT","header":"one","listed":"one","env":"one","server_only":false,"php_self":false,"https":false}`},
+		{"", `{"method":"GET","local":"PUT","header":false,"listed":false,"env":false,"server_only":false,"php_self":false,"https":false}`},
+	}
+	for _, c := range cases {
+		req, err := http.NewRequest(http.MethodGet, base+"/cgi_env.php", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.header != "" {
+			req.Header.Set("X-Classic", c.header)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if got := strings.TrimSpace(string(body)); got != c.want {
+			t.Errorf("X-Classic %q: %s, want %s", c.header, got, c.want)
+		}
+	}
+}

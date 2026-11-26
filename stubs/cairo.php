@@ -949,6 +949,15 @@ namespace Cairo\Http {
         {
         }
 
+        /**
+         * @internal The requests of scripts() are PHP's own SAPI requests
+         * (cairo serve with no declaration, internal/sapi/plain_request.c):
+         * PHP parses their forms, so Go passes every body as it came.
+         */
+        public function scriptsParseForms(): static
+        {
+        }
+
         /** @internal Every route of this server runs the script Go names (scripts()). */
         public function scriptsOnly(): bool
         {

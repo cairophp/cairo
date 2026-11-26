@@ -23,11 +23,7 @@ static void put_string(smart_str *out, const char *s, size_t len)
 	smart_str_appendl(out, s, len);
 }
 
-// Appends the status (an int) and the headers (a map of lists of strings; a
-// value that is not an array is a list of one) with internal/wire's tags:
-// what internal/httpserver's decodeAnswer reads. Returns FAILURE when a
-// header value cannot be turned into a string (an exception is then pending).
-static int encode_answer(zend_long status, HashTable *headers, smart_str *out)
+int cairo_encode_http_answer(zend_long status, HashTable *headers, smart_str *out)
 {
 	uint64_t u = (uint64_t)(int64_t)status;
 	smart_str_appendc(out, TAG_INT);
@@ -86,7 +82,7 @@ ZEND_END_ARG_INFO()
 
 // cairo_respond_http(int $id, int $status, array $headers, string $body):
 // void answers an HTTP request. The status and headers go to Go as
-// encode_answer() writes them (no JSON on either side), the body as raw bytes.
+// cairo_encode_http_answer() writes them (no JSON on either side), the body as raw bytes.
 static PHP_FUNCTION(cairo_respond_http)
 {
 	zend_long id, status;
@@ -104,7 +100,7 @@ static PHP_FUNCTION(cairo_respond_http)
 		RETURN_THROWS();
 	}
 	smart_str meta = {0};
-	if (encode_answer(status, headers, &meta) == FAILURE || ZSTR_LEN(meta.s) > INT_MAX) {
+	if (cairo_encode_http_answer(status, headers, &meta) == FAILURE || ZSTR_LEN(meta.s) > INT_MAX) {
 		smart_str_free(&meta);
 		if (EG(exception) == NULL) {
 			zend_value_error("cairo_respond_http(): the headers are larger than 2 GB");

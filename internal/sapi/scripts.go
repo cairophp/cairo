@@ -2,6 +2,7 @@ package sapi
 
 /*
 #include "http_input.h"
+#include "plain_request.h"
 */
 import "C"
 
@@ -14,4 +15,5 @@ func init() {
 	registerPHP("plain.php", `Cairo\Internal\Plain`)
 	registerPHP("declares.php", `Cairo\Internal\Declares`)
 	registerC(&C.cairo_http_input)
+	registerC(&C.cairo_plain_request)
 }

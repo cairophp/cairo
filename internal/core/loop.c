@@ -312,6 +312,51 @@ static cairo_msg *next_msg(cairo_mailbox *box, int64_t wait, int handed, int64_t
 	return m;
 }
 
+// The thread has run server.php and come to its loop: Go may give it the
+// requests of the thread it replaces (retire in supervise.go).
+static void at_loop(int tid)
+{
+	static __thread bool ready;
+	if (!ready) {
+		ready = 1;
+		cairo_outbox_ready(tid);
+	}
+}
+
+// The thread took m out of its loop: dispatch and the probes learn of it.
+static void took(cairo_mailbox *box, int tid, cairo_msg *m, int64_t now)
+{
+	__atomic_store_n(&box->since, now, __ATOMIC_RELAXED);
+	if (m->kind == CAIRO_EVENT_CALL || m->kind == CAIRO_EVENT_JOB) {
+		__atomic_store_n(&box->served, box->served + 1, __ATOMIC_RELAXED);
+	}
+	if (__atomic_load_n(&probed, __ATOMIC_SEQ_CST)) {
+		goTook(tid, (long long)m->id);
+	}
+}
+
+cairo_msg *cairo_loop_take_call(int tid)
+{
+	at_loop(tid);
+	cairo_mailbox *box = &boxes[tid];
+	int64_t now = unix_ns();
+	int handed = came_back(box, tid, now);
+	cairo_msg *m;
+	while ((m = next_msg(box, -1, handed, &now)) == NULL) {
+		handed = 0;
+	}
+	if (m->kind != CAIRO_EVENT_CALL) {
+		// Back where take() finds it first, as if it had not been taken.
+		m->next = box->next;
+		box->next = m;
+		__atomic_store_n(&box->took, box->took - 1, __ATOMIC_RELAXED);
+		__atomic_store_n(&box->since, now, __ATOMIC_RELAXED);
+		return NULL;
+	}
+	took(box, tid, m, now);
+	return m;
+}
+
 // cairo_next_event(bool $idle, bool $turn = true): ?array
 // The thread comes back to its loop. Returns the next event Go has for the
 // thread (a request, a finished operation, shutdown), which Go encodes in
@@ -338,13 +383,7 @@ PHP_FUNCTION(cairo_next_event)
 		zend_throw_error(NULL, "cairo_next_event(): this thread has no events");
 		RETURN_THROWS();
 	}
-	// The thread has run server.php: Go may give it the requests of the
-	// thread it replaces (retire in supervise.go).
-	static __thread bool ready;
-	if (!ready) {
-		ready = 1;
-		cairo_outbox_ready(tid);
-	}
+	at_loop(tid);
 	cairo_mailbox *box = &boxes[tid];
 	int64_t now = unix_ns();
 	int handed = came_back(box, tid, now);
@@ -362,17 +401,12 @@ PHP_FUNCTION(cairo_next_event)
 	if (m == NULL && !woke) {
 		cairo_sockets_take(!idle);   // what ended the thread's sleep
 	}
-	__atomic_store_n(&box->since, now, __ATOMIC_RELAXED);
 	fresh = m == NULL;   // PHP runs the fiber of an event before those that are ready
 	if (m == NULL) {
+		__atomic_store_n(&box->since, now, __ATOMIC_RELAXED);
 		RETURN_NULL();
 	}
-	if (m->kind == CAIRO_EVENT_CALL || m->kind == CAIRO_EVENT_JOB) {
-		__atomic_store_n(&box->served, box->served + 1, __ATOMIC_RELAXED);
-	}
-	if (__atomic_load_n(&probed, __ATOMIC_SEQ_CST)) {
-		goTook(tid, (long long)m->id);
-	}
+	took(box, tid, m, now);
 	int ok = m->kind == CAIRO_EVENT_JOB || m->kind == CAIRO_EVENT_DONE
 		? cairo_offload_event(tid, m, return_value)
 		: cairo_wire_decode(m->data, m->len, return_value);

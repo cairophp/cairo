@@ -211,6 +211,11 @@ int64_t cairo_stack_deadline(void)
 	return EG(active_fiber) == NULL ? stack_deadline : 0;
 }
 
+void cairo_stack_set_deadline(int64_t tick)
+{
+	stack_deadline = tick;
+}
+
 // cairo_fiber_reuse(object $context, int $request, mixed $job): bool
 // Hands $job to an idle fiber, bound to $context and request $request as
 // by cairo_fiber_bind(), and returns once that fiber suspends or is idle

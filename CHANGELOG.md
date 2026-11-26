@@ -174,6 +174,15 @@ change the PHP API; patch versions do not.
 
 ### Changed
 
+- A folder or plain script served with no declaration runs each request as
+  PHP's own request, as PHP-FPM does, with none of Cairo's PHP around the
+  script: PHP reads the cookies and parses the forms and uploads itself, and
+  `fastcgi_finish_request()` and `headers_send()` are C functions. A real
+  GET went from 3,987 to 4,965 req/s, level with PHP-FPM (4,980), and hello
+  +43%. Cookie names follow PHP's rules there (`a.b` is `$_COOKIE['a_b']`).
+- A classic script under `scripts()` gets `PHP_AUTH_USER` and `PHP_AUTH_PW`
+  (or `PHP_AUTH_DIGEST`) from the `Authorization` header, as PHP's own
+  request does.
 - `putenv()` changes the PHP request's own environment, which `getenv()`
   reads first, and never the process's: in classic mode each request's, in
   isolated and fiber mode the thread's. PHP's `putenv()` wrote the

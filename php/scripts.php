@@ -49,6 +49,7 @@ namespace Cairo\Internal {
             } else {
                 unset($_SERVER['PATH_INFO']);
             }
+            self::authorization($_SERVER['HTTP_AUTHORIZATION'] ?? '');
             \cairo_http_input($body);
             // Relative includes and file names start where the script is, as
             // under PHP-FPM.
@@ -62,6 +63,24 @@ namespace Cairo\Internal {
             // which of the two the client got depended on which came first.
             if (Context::current()->err() instanceof DeadlineExceeded) {
                 throw new DeadlineExceeded();
+            }
+        }
+
+        /**
+         * The credentials of an Authorization header, as PHP's own SAPIs
+         * give them (php_handle_auth_data()).
+         */
+        private static function authorization(string $header): void
+        {
+            if (strncasecmp($header, 'Basic ', 6) === 0) {
+                $pair = explode(':', (string) base64_decode(substr($header, 6)), 2);
+                if (count($pair) === 2) {
+                    [$_SERVER['PHP_AUTH_USER'], $_SERVER['PHP_AUTH_PW']] = $pair;
+                    return;
+                }
+            }
+            if (strncasecmp($header, 'Digest ', 7) === 0) {
+                $_SERVER['PHP_AUTH_DIGEST'] = substr($header, 7);
             }
         }
     }

@@ -396,7 +396,7 @@ func newEvent(w http.ResponseWriter, req *http.Request, route Route, names []str
 	}
 	cleanup := func() {}
 	var form *multipartForm
-	if isMultipart(req.Header) {
+	if !route.RawBody && isMultipart(req.Header) {
 		form, err = parseMultipart(body, req.Header.Get("Content-Type"), os.TempDir())
 		if err != nil {
 			http.Error(w, "malformed multipart body", http.StatusBadRequest)

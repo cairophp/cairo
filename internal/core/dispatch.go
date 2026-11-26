@@ -305,6 +305,24 @@ func (t *thread) backSoon(ran int64) bool {
 	return ran < int64(awakeWait) && (t.queued()+1)*t.box.stretch.Load() < int64(awakeWait)
 }
 
+// CallContext is the context of call id while PHP thread tid holds it, the
+// one its operations run under: for what an extension does in Go for the
+// call when the thread itself calls in, with no operation (a request served
+// in C, which waits with its thread). Nil once the call is answered, and for
+// a call of another thread.
+func CallContext(tid int, id int64) context.Context {
+	t := engine.own(C.int(tid))
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if c := t.calls[id]; c != nil {
+		return c.ctx
+	}
+	return nil
+}
+
 // EachBusyThread calls fn for every request thread that is running PHP, with
 // since when it runs the fiber it is in: since it left its loop, or since it
 // went on to that fiber from another that was ready with it.

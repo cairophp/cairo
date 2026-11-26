@@ -30,12 +30,27 @@ static __thread HashTable *changes;
 // The classic script's CGI variables: its $_SERVER as it started, shared
 // with it (a write to $_SERVER separates it).
 static __thread HashTable *cgi;
+// Or what makes them on first use, for a script served in C, whose
+// $_SERVER PHP makes only when the script names it.
+static __thread void (*cgi_fill)(zval *array);
+
+static HashTable *cgi_vars(void)
+{
+	if (cgi == NULL && cgi_fill != NULL) {
+		zval array;
+		array_init(&array);
+		cgi_fill(&array);
+		cgi_fill = NULL;
+		cgi = Z_ARRVAL(array);
+	}
+	return cgi;
+}
 
 // The CGI variable name, as PHP-FPM has it. $_SERVER holds what PHP adds
 // besides (PHP_SELF, and REQUEST_TIME and argv, which are no strings).
 static zval *cgi_find(zend_string *name)
 {
-	if (cgi == NULL || zend_string_equals_literal(name, "PHP_SELF")) {
+	if (zend_string_equals_literal(name, "PHP_SELF") || cgi_vars() == NULL) {
 		return NULL;
 	}
 	zval *v = zend_hash_find(cgi, name);
@@ -89,7 +104,7 @@ static void getenv_all(zval *return_value)
 {
 	zend_string *key;
 	zval *v;
-	if (changes == NULL && cgi == NULL) {
+	if (changes == NULL && cgi_vars() == NULL) {
 		return;
 	}
 	SEPARATE_ARRAY(return_value);
@@ -146,7 +161,7 @@ static ZEND_NAMED_FUNCTION(cairo_getenv)
 static void cairo_import_env(zval *array)
 {
 	original_import(array);
-	if (cgi != NULL) {
+	if (cgi_vars() != NULL) {
 		cgi_over(Z_ARRVAL_P(array));
 	}
 }
@@ -213,6 +228,12 @@ static void env_request_shutdown(void)
 		zend_array_release(cgi);
 		cgi = NULL;
 	}
+	cgi_fill = NULL;
+}
+
+void cairo_cgi_env_from(void (*fill)(zval *array))
+{
+	cgi_fill = fill;
 }
 
 const cairo_extension cairo_env_hook = {

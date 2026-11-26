@@ -230,3 +230,21 @@ func Hint(ctx context.Context, status int, header map[string][]string) error {
 	}
 	return nil
 }
+
+// OpenStreamOf and HintOf are OpenStream and Hint for a head that PHP
+// encoded as an answer's (decodeAnswer): from C, with no array in between.
+func OpenStreamOf(ctx context.Context, head []byte) (int64, error) {
+	status, header, err := decodeAnswer(head)
+	if err != nil {
+		return 0, err
+	}
+	return OpenStream(ctx, status, header)
+}
+
+func HintOf(ctx context.Context, head []byte) error {
+	status, header, err := decodeAnswer(head)
+	if err != nil {
+		return err
+	}
+	return Hint(ctx, status, header)
+}

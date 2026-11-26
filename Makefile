@@ -1,4 +1,6 @@
 PHP_PREFIX ?= /opt/php-zts
+# The newest PHP of .github/php-versions.json.
+PHP_VERSION ?= 8.6.0
 PHP_CONFIG ?= $(PHP_PREFIX)/bin/php-config
 VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
@@ -27,7 +29,7 @@ run: build
 # Build PHP (ZTS + embed, opcache and the extensions in scripts/build-php.sh) into $(PHP_PREFIX).
 # Needs a C toolchain, bison, re2c and the -dev packages listed in that script.
 php:
-	scripts/build-php.sh 8.3.27 $(PHP_PREFIX)
+	scripts/build-php.sh $(PHP_VERSION) $(PHP_PREFIX)
 
 # One static binary (musl, PHP and its extensions linked in) in dist/cairo. Needs Docker.
 static:

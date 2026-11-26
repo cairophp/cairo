@@ -24,6 +24,7 @@ change the PHP API; patch versions do not.
 ### Changed
 
 - The default binary and image have PHP 8.6 (they had 8.5).
+- `make php` and the Dockerfile build PHP 8.6.0 (they built 8.3.27).
 
 ### Fixed
 

@@ -445,8 +445,8 @@ Cairo is a server: per-request code runs millions of times.
 - Add a line under `## [Unreleased]` in `CHANGELOG.md`.
 - Say in the PR how you tested: which binary (native or static), which
   databases, and which tests skipped.
-- CI (`.github/workflows/ci.yml`) runs the suite on a native ZTS build and
-  against the static binary on amd64 and arm64 for each PHP of
+- CI (`.github/workflows/ci.yml`) runs the suite on a native ZTS build
+  (amd64) and against the static binary on amd64 and arm64, for each PHP of
   `.github/php-versions.json`, with MariaDB and PostgreSQL.
 
 ## Releasing

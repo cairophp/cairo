@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libxml2-dev libsqlite3-dev libcurl4-openssl-dev libssl-dev libonig-dev libicu-dev libsodium-dev libzip-dev zlib1g-dev libbz2-dev libgmp-dev libpng-dev libjpeg-dev libwebp-dev libfreetype-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY scripts/build-php.sh /tmp/build-php.sh
-RUN /tmp/build-php.sh 8.3.27 /opt/php-zts
+RUN /tmp/build-php.sh 8.6.0 /opt/php-zts
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

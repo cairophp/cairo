@@ -5,7 +5,15 @@ on:
   pull_request:
 
 jobs:
+  # The suite on a native ZTS build (scripts/build-php.sh, opcache shared)
+  # of each PHP that a release ships.
   test:
+    name: native (${{ matrix.php }})
+    needs: versions
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ${{ fromJSON(needs.versions.outputs.php) }}
     runs-on: ubuntu-24.04
     services:
       mysql:
@@ -42,13 +50,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /opt/php-zts
-          key: php-zts-8.3.27-${{ hashFiles('scripts/build-php.sh') }}
+          key: php-zts-${{ matrix.php }}-${{ hashFiles('scripts/build-php.sh') }}
       - name: Build PHP (ZTS, embed)
         if: steps.php-cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get install -y build-essential autoconf bison re2c pkg-config
           sudo mkdir -p /opt/php-zts && sudo chown "$USER" /opt/php-zts
-          scripts/build-php.sh 8.3.27 /opt/php-zts
+          scripts/build-php.sh "${{ matrix.php }}" /opt/php-zts
       - name: Test
         env:
           CAIRO_TEST_MYSQL: "mysql:host=127.0.0.1;port=3306"

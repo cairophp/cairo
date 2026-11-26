@@ -114,6 +114,8 @@ jobs:
 
   # A static binary with more extensions built in (Dockerfile.static's
   # PECL_EXTENSIONS and EXTRA_EXTENSIONS), for the newest PHP.
+  # On PHP 8.5: no APCu release builds against 8.6 yet (5.1.28 calls the
+  # php_verror() that 8.6 changed).
   static-extensions:
     runs-on: ubuntu-24.04
     steps:
@@ -125,6 +127,7 @@ jobs:
           context: .
           file: Dockerfile.static
           build-args: |
+            PHP_VERSION=8.5.13
             PECL_EXTENSIONS=apcu-5.1.28
             EXTRA_EXTENSIONS=--enable-apcu --enable-shmop
           outputs: type=local,dest=dist

@@ -88,6 +88,12 @@ void cairo_inbox_queue(int tid, cairo_msg *m);
 // (cairo_msg_free in outbox.h).
 cairo_msg *cairo_inbox_drain(int tid);
 
+// The calling thread's next event, waited for as long as it takes, when it
+// is a call: taken as cairo_next_event() takes one, for a request that an
+// extension serves in C (cserve.h). NULL when it is another event, which
+// stays first in the inbox for the runtime's loop to take.
+cairo_msg *cairo_loop_take_call(int tid);
+
 // After request shutdown: the next PHP request of the thread holds no calls.
 void cairo_loop_request_end(void);
 

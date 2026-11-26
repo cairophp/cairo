@@ -5,12 +5,36 @@
 #include <stddef.h>
 #include <stdint.h>
 
+struct _zend_function_entry;
+struct _zval_struct;
+
+// An extension that serves a thread's requests in C, without Cairo's
+// runtime PHP, as PHP's own SAPIs do (PHP-FPM's): the thread takes its next
+// call before PHP starts a request for it, PHP fills the superglobals from
+// what these callbacks give it, and they take the output and the headers
+// (cserve.h). Every member is set, and is called on the PHP thread, for
+// the PHP request of the call.
+typedef struct cairo_cserver {
+	// Before PHP starts the request, as PHP-FPM fills SG(request_info),
+	// which PHP's startup reads: call id, its event in internal/wire's
+	// format (len bytes, which stay until end). The thread's memory manager
+	// is between two PHP requests: what this allocates with emalloc() is
+	// freed as the request ends, with the request's own.
+	void (*begin)(int64_t id, const char *event, size_t len);
+	void (*serve)(void);   // runs the request and answers its call
+	void (*end)(void);     // the PHP request has ended: forget what pointed into it
+	char *(*read_cookies)(void);
+	void (*register_variables)(struct _zval_struct *track_vars);   // $_SERVER
+	size_t (*read_post)(char *buf, size_t len);
+	size_t (*write)(const char *str, size_t len);   // what the script wrote and no buffer holds
+	void (*flush)(void);
+	int (*send_headers)(void *headers);   // a sapi_headers_struct (an untagged struct); a SAPI_HEADER_* result
+} cairo_cserver;
+
 // The C side of an extension: what the SAPI module (cairo.c) does on its
 // behalf, so that the module names no extension. An extension defines one
 // and its Go file adds it from init() with RegisterC. Every member may be
 // NULL.
-struct _zend_function_entry;
-
 typedef struct cairo_extension {
 	void (*startup)(void);      // module startup: once, before any PHP thread exists
 	void (*request_end)(void);  // on a PHP thread, once one of its PHP requests has ended: its last one, or in classic mode each
@@ -19,6 +43,7 @@ typedef struct cairo_extension {
 	bool (*output)(const char *str, size_t len);   // what a server's PHP wrote and no buffer holds: true when taken
 	void (*flush)(void);        // a server's PHP called flush()
 	const struct _zend_function_entry *functions;   // PHP functions it adds
+	const cairo_cserver *cserver;   // at most one extension has one
 } cairo_extension;
 
 // Adds an extension; returns -1 when the table is full. Extensions start in
@@ -60,6 +85,12 @@ int cairo_answer(int64_t id, const char *meta, size_t n, const char *body, size_
 // deadline.
 int64_t cairo_stack_deadline(void);
 
+// Gives the request that runs outside any fiber its deadline, a tick of
+// CLOCK_MONOTONIC in nanoseconds (0: none), for a request served in C: the
+// hooks end its waits there, and the hard stop stops it there. Reset as
+// the PHP request ends.
+void cairo_stack_set_deadline(int64_t tick);
+
 // Throws Cairo\Context\DeadlineExceeded, as the hard stop at the deadline
 // does.
 void cairo_throw_deadline(void);
@@ -71,5 +102,6 @@ void cairo_extensions_request_shutdown(void);
 void cairo_extensions_interrupt(int tid);
 bool cairo_extensions_output(const char *str, size_t len);   // false: no extension took it
 void cairo_extensions_flush(void);
+const cairo_cserver *cairo_extensions_cserver(void);
 
 #endif

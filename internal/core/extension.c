@@ -81,3 +81,13 @@ void cairo_extensions_flush(void)
 		}
 	}
 }
+
+const cairo_cserver *cairo_extensions_cserver(void)
+{
+	for (int i = 0; i < extension_count; i++) {
+		if (extensions[i]->cserver != NULL) {
+			return extensions[i]->cserver;
+		}
+	}
+	return NULL;
+}

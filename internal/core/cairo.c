@@ -29,10 +29,12 @@
 #include <unistd.h>
 #include <php_variables.h>
 #include <signal.h>
+#include <time.h>
 #include <ext/standard/php_fopen_wrappers.h>
 
 #include "cairo.h"
 #include "classic.h"
+#include "cserve.h"
 #include "module.h"
 #include "extension.h"
 #include "outbox.h"
@@ -202,6 +204,7 @@ static const zend_function_entry cairo_functions[] = {
 	PHP_FE(cairo_stuck, arginfo_cairo_none)
 	PHP_FE(cairo_cli_script, arginfo_cairo_none)
 	PHP_FE(cairo_thread_again, arginfo_cairo_none)
+	PHP_FE(cairo_cserve, arginfo_cairo_none)
 	PHP_FE(cairo_thread_checked, arginfo_cairo_none)
 	PHP_FE(cairo_thread_check_passed, arginfo_cairo_none)
 	PHP_FE(cairo_hold_calls, arginfo_cairo_none)
@@ -385,8 +388,16 @@ void cairo_throw_deadline(void)
 }
 
 // Whether the running fiber should stop: Cairo\Internal\interrupt($file).
+// Without the runtime (a request served in C), the request on the thread's
+// own stack stops once its deadline has passed.
 static bool cairo_should_stop(void)
 {
+	if (zend_hash_str_find_ptr(EG(function_table), "cairo\\internal\\interrupt", sizeof("cairo\\internal\\interrupt") - 1) == NULL) {
+		int64_t at = cairo_stack_deadline();
+		struct timespec now;
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		return at != 0 && (int64_t)now.tv_sec * 1000000000 + now.tv_nsec >= at;
+	}
 	zend_string *file = zend_get_executed_filename_ex();
 	zval fn, ret, arg;
 	ZVAL_STRING(&fn, "Cairo\\Internal\\interrupt");
@@ -458,6 +469,23 @@ PHP_FUNCTION(cairo_guard)
 			st->stopped = false;
 			st->unwound = false;
 		}
+	}
+}
+
+// Serves the thread's call in C, guarded as cairo_guard() guards a handler:
+// at the deadline the request is stopped, then unwound (cserve.h).
+static void cairo_serve_in_c(const cairo_cserver *server)
+{
+	cairo_fiber_state *st = cairo_current_fiber_state();
+	if (st != NULL) {
+		st->guards++;
+	}
+	zend_try {
+		server->serve();
+	} zend_end_try();
+	if (st != NULL) {
+		st->guards--;
+		st->stopped = st->unwound = false;
 	}
 }
 
@@ -539,6 +567,10 @@ static const char cairo_forced_ini[] =
 
 static size_t cairo_ub_write(const char *str, size_t len)
 {
+	const cairo_cserver *cs = cairo_cserving();
+	if (cs != NULL) {
+		return cs->write(str, len);
+	}
 	// Output outside an output buffer is an extension's, when one answers a
 	// request with it, and goes to stdout otherwise, as with the CLI.
 	if (cairo_extensions_output(str, len)) {
@@ -560,7 +592,24 @@ static size_t cairo_ub_write(const char *str, size_t len)
 
 static void cairo_flush(void *server_context)
 {
+	const cairo_cserver *cs = cairo_cserving();
+	if (cs != NULL) {
+		cs->flush();
+		return;
+	}
 	cairo_extensions_flush();
+}
+
+static int cairo_send_headers(sapi_headers_struct *headers)
+{
+	const cairo_cserver *cs = cairo_cserving();
+	return cs != NULL ? cs->send_headers(headers) : SAPI_HEADER_DO_SEND;
+}
+
+static size_t cairo_read_post(char *buf, size_t len)
+{
+	const cairo_cserver *cs = cairo_cserving();
+	return cs != NULL ? cs->read_post(buf, len) : 0;
 }
 
 static void cairo_send_header(sapi_header_struct *sapi_header, void *server_context)
@@ -569,11 +618,17 @@ static void cairo_send_header(sapi_header_struct *sapi_header, void *server_cont
 
 static char *cairo_read_cookies(void)
 {
-	return NULL;
+	const cairo_cserver *cs = cairo_cserving();
+	return cs != NULL ? cs->read_cookies() : NULL;
 }
 
 static void cairo_register_variables(zval *track_vars_array)
 {
+	const cairo_cserver *cs = cairo_cserving();
+	if (cs != NULL) {
+		cs->register_variables(track_vars_array);
+		return;
+	}
 	// A script never sees the environment in $_SERVER (Superglobals::fill()
 	// leaves it out, as PHP-FPM's clear_env does), and once the declaration
 	// is checked nothing else reads it there: copying all of it at each
@@ -677,10 +732,10 @@ static sapi_module_struct cairo_sapi_module = {
 	php_error,                    /* error handler */
 
 	NULL,                         /* header handler */
-	NULL,                         /* send headers handler */
+	cairo_send_headers,           /* send headers handler */
 	cairo_send_header,            /* send header handler */
 
-	NULL,                         /* read POST data */
+	cairo_read_post,              /* read POST data */
 	cairo_read_cookies,           /* read Cookies */
 
 	cairo_register_variables,     /* register server variables */
@@ -787,25 +842,39 @@ void cairo_shutdown(void)
 }
 
 // A request thread runs one PHP request for its whole life, or in classic
-// mode one for each request it takes (classic.h).
+// mode one for each request it takes (classic.h), which an extension may
+// serve in C (cserve.h).
 int cairo_thread_run(int tid, const char *runtime_file)
 {
 	cairo_tid = tid;
 	(void)ts_resource(0);
 	cairo_classic_forget();
+	cairo_cserve_forget();
 	int status;
-	do {
+	for (;;) {
+		bool in_c = cairo_cserve_take(tid);
 		status = cairo_startgate_startup();
 		if (status != 0) {
+			cairo_cserve_done();
 			break;
 		}
 		cairo_signals_onstack();
 		cairo_interrupt_register();
-		status = run_file(runtime_file);
+		if (in_c) {
+			cairo_serve_in_c(cairo_cserving());
+		} else {
+			status = run_file(runtime_file);
+		}
 		cairo_interrupt_unregister();
 		php_request_shutdown(NULL);
+		cairo_cserve_done();
 		cairo_request_ended();   // after the request closed what it held
-	} while (cairo_classic_again());
+		// A request served in C may have loaded the runtime, which asks for
+		// the next PHP request as every classic one does.
+		if (!cairo_classic_again() && !in_c) {
+			break;
+		}
+	}
 	ts_free_thread();
 	return status;
 }

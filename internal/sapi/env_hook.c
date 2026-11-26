@@ -164,11 +164,16 @@ PHP_FUNCTION(cairo_cgi_env)
 	}
 	GC_TRY_ADDREF(server);
 	cgi = server;
-	// $_ENV that this request already made has them too.
-	zval *env = &PG(http_globals)[TRACK_VARS_ENV];
-	if (Z_TYPE_P(env) == IS_ARRAY) {
-		SEPARATE_ARRAY(env);
-		cgi_over(Z_ARRVAL_P(env));
+	// $_ENV that this request already made has them too: the script reads
+	// the one in the global symbol table, which shares its array with
+	// PG(http_globals) until a write separates them.
+	zval *env = zend_hash_str_find(&EG(symbol_table), "_ENV", sizeof("_ENV") - 1);
+	if (env != NULL) {
+		ZVAL_DEREF(env);
+		if (Z_TYPE_P(env) == IS_ARRAY) {
+			SEPARATE_ARRAY(env);
+			cgi_over(Z_ARRVAL_P(env));
+		}
 	}
 }
 

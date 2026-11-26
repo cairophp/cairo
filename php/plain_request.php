@@ -1,11 +1,10 @@
 <?php
 /**
- * What a script served in C (internal/sapi/plain_request.c) has of Cairo
- * before it runs, loaded in each of its PHP requests: the functions of the
- * concurrency API (async(), await(), all(), sleep(), select(), offload()).
- * Their classes load on first use, and with them the whole runtime, with a
- * context for the request and a scheduler for what waits: the script uses
- * Cairo, and from then on runs as a classic request of the runtime does.
+ * How a script served in C (internal/sapi/plain_request.c) gets Cairo's
+ * runtime: the first Cairo class it uses, or the first of Cairo's functions
+ * it calls (C functions of the module, internal/core/api.c), loads this file
+ * and the runtime, with a context for the request and a scheduler for what
+ * waits; from then on it runs as a classic request of the runtime does.
  */
 
 declare(strict_types=1);
@@ -13,11 +12,6 @@ declare(strict_types=1);
 namespace Cairo\Internal {
 
     use Cairo\Context;
-
-    require_once __DIR__ . '/async.php';
-    require_once __DIR__ . '/channel.php';
-    require_once __DIR__ . '/offload.php';
-    spl_autoload_register(PlainRequest::upgrade(...));
 
     /** @internal */
     final class PlainRequest

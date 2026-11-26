@@ -29,6 +29,7 @@ static __thread zval ev;         // the call's event (internal/wire, decoded)
 static __thread HashTable *script;
 static __thread const char *cookie;
 static __thread size_t posted;   // what read_post gave of the body
+static __thread bool runtime_loaded;
 // Where Cairo's PHP files are: the thread outlives its PHP requests.
 static __thread char runtime_dir[MAXPATHLEN];
 
@@ -308,7 +309,6 @@ static void serve(void)
 		VCWD_CHDIR(dir);   // relative includes start where the script is
 	}
 	cairo_cgi_env_from(server_vars);   // getenv() and $_ENV have them, as under PHP-FPM
-	run_runtime_file("plain_request.php");   // Cairo's functions
 	zend_file_handle fh;
 	zend_stream_init_filename(&fh, file);
 	fh.primary_script = 1;
@@ -348,6 +348,7 @@ static void end(void)
 	script = NULL;
 	cookie = NULL;
 	posted = 0;
+	runtime_loaded = false;
 	ZVAL_UNDEF(&ev);
 	cairo_plain_answer_end();
 	SG(request_info).request_method = NULL;
@@ -372,6 +373,41 @@ static PHP_FUNCTION(cairo_plain_runtime)
 		RETURN_THROWS();
 	}
 	memcpy(runtime_dir, dir, len + 1);
+}
+
+// The first Cairo\ class the script uses, and so the first of Cairo's
+// functions it calls (internal/core/api.c), loads the runtime
+// (php/plain_request.php). PHP's autoloading passes here first, so a
+// script that uses neither pays nothing.
+static zend_class_entry *(*next_autoload)(zend_string *name, zend_string *lc_name);
+
+static zend_class_entry *autoload(zend_string *name, zend_string *lc_name)
+{
+	if (serving && !runtime_loaded && ZSTR_LEN(lc_name) > 6 && memcmp(ZSTR_VAL(lc_name), "cairo\\", 6) == 0) {
+		runtime_loaded = true;
+		run_runtime_file("plain_request.php");
+		zval fn, arg, rv;
+		ZVAL_STRING(&fn, "Cairo\\Internal\\PlainRequest::upgrade");
+		ZVAL_STR_COPY(&arg, name);
+		ZVAL_UNDEF(&rv);
+		call_user_function(NULL, NULL, &fn, &rv, 1, &arg);
+		zval_ptr_dtor(&rv);
+		zval_ptr_dtor(&arg);
+		zval_ptr_dtor(&fn);
+		zend_class_entry *ce = zend_hash_find_ptr(EG(class_table), lc_name);
+		if (ce != NULL || EG(exception) != NULL) {
+			return ce;
+		}
+	}
+	return next_autoload != NULL ? next_autoload(name, lc_name) : NULL;
+}
+
+// At module startup, after SPL has set PHP's autoloading.
+static void startup(void)
+{
+	cairo_plain_answer_startup();
+	next_autoload = zend_autoload;
+	zend_autoload = autoload;
 }
 
 // cairo_plain_call(): array{id: int, deadline: ?float, values: array}
@@ -429,7 +465,7 @@ static const cairo_cserver server = {
 };
 
 const cairo_extension cairo_plain_request = {
-	.startup = cairo_plain_answer_startup,
+	.startup = startup,
 	.request_shutdown = request_shutdown,
 	.functions = functions,
 	.cserver = &server,

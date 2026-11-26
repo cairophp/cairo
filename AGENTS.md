@@ -64,6 +64,7 @@ the operation has for its own length.
 | `examples/` | Runnable apps. The end-to-end tests serve these, so they are also fixtures |
 | `test/` | End-to-end tests: they start the `cairo` binary on an example and talk to it over HTTP and gRPC |
 | `scripts/` | `build-php.sh` (ZTS PHP into /opt/php-zts), `build-static.sh` (the static binary), `stubs.php`, `publish-stubs.sh`, `core-names.php` (what the core's PHP files name of the extensions, for the boundary test) |
+| `.github/php-versions.json`, `scripts/php-patches/` | The PHP versions a release ships, newest last: CI builds and tests a static binary of each, the release publishes one per version and architecture (`cairo-php8.4-linux-amd64`, the newest also as `cairo-linux-amd64`) and an image per version (`x.y-php8.4`, `php8.4`; the newest is also `x.y` and `latest`). A new PHP is one entry there, and the default of `Dockerfile.static` and `build-static.sh`. Before 8.5 opcache can only be a shared extension, which a static binary cannot load: `build-static.sh` builds it in with static-php-cli's patches (`php-patches/static-opcache-8.x.patch`, which define `HAVE_OPCACHE`; `cairo.c` then knows it is built in) and leaves its JIT out |
 
 ## Core engine and extensions
 
@@ -165,7 +166,7 @@ What the test environment variables do:
 |----------|--------|
 | `CAIRO_TEST_BIN` | Test this binary instead of building one (needs no local PHP) |
 | `CAIRO_TEST_STATIC=1` | Also run `TestStaticBinary` (checks it is static) |
-| `CAIRO_TEST_NO_OPCACHE=1` | Do not require opcache (for a static binary built with PHP older than 8.5) |
+| `CAIRO_TEST_NO_OPCACHE=1` | Do not require opcache (for a binary built without it) |
 | `CAIRO_TEST_MYSQL`, `_USER`, `_PASSWORD` | PDO DSN for the MySQL tests; skipped when unset |
 | `CAIRO_TEST_PGSQL`, `_USER`, `_PASSWORD` | PDO DSN for the PostgreSQL tests; skipped when unset |
 | `PHP_BIN` | A PHP CLI for the tests that need one (stubs, codegen) |
@@ -444,8 +445,9 @@ Cairo is a server: per-request code runs millions of times.
 - Add a line under `## [Unreleased]` in `CHANGELOG.md`.
 - Say in the PR how you tested: which binary (native or static), which
   databases, and which tests skipped.
-- CI (`.github/workflows/ci.yml`) runs the suite on a native ZTS build and
-  against the static binary on amd64 and arm64, with MariaDB and PostgreSQL.
+- CI (`.github/workflows/ci.yml`) runs the suite on a native ZTS build
+  (amd64) and against the static binary on amd64 and arm64, for each PHP of
+  `.github/php-versions.json`, with MariaDB and PostgreSQL.
 
 ## Releasing
 
@@ -453,12 +455,14 @@ Cairo is a server: per-request code runs millions of times.
    `## [x.y.z] - YYYY-MM-DD` section and update the links at the bottom.
 2. Merge that to `main`, then tag it: `git tag vx.y.z && git push origin vx.y.z`.
 3. `.github/workflows/release.yml` builds the static binaries for amd64 and
-   arm64 with `cairo version` set to the tag, checks them, and publishes a
-   GitHub release with `SHA256SUMS` and the changelog section as notes. Tags
-   with a hyphen (`v0.2.0-rc.1`) become prereleases. It then calls
+   arm64 and each PHP of `.github/php-versions.json`, with `cairo version`
+   set to the tag, checks them, and publishes a GitHub release with
+   `SHA256SUMS` and the changelog section as notes. Tags with a hyphen
+   (`v0.2.0-rc.1`) become prereleases. It then calls
    `.github/workflows/image.yml`, which puts those binaries on Alpine
-   (`Dockerfile.image`) and pushes `ghcr.io/cairophp/cairo` tagged `x.y.z`,
-   `x.y` and `latest`.
+   (`Dockerfile.image`) and pushes `ghcr.io/cairophp/cairo` tagged
+   `x.y.z-phpA.B`, `x.y-phpA.B` and `phpA.B` for each PHP, and `x.y.z`, `x.y`
+   and `latest` for the newest.
 4. Publish the stubs under the same tag, by hand for now:
    `git clone git@github.com:cairophp/stubs.git /tmp/stubs && scripts/publish-stubs.sh /tmp/stubs vx.y.z`.
 

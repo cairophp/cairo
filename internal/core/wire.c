@@ -202,7 +202,7 @@ static int encode_table(smart_str *out, HashTable *ht, bool list, int depth)
 		if (key != NULL) {
 			ok = put_bytes(out, ZSTR_VAL(key), ZSTR_LEN(key));
 		} else if (!list) {
-			char num[ZEND_LTOA_BUF_LEN];
+			char num[MAX_LENGTH_OF_LONG + 1];
 			ok = put_bytes(out, num, (size_t)snprintf(num, sizeof(num), ZEND_LONG_FMT, (zend_long)index));
 		}
 		if (ok == FAILURE || encode_value(out, v, depth + 1) == FAILURE) {

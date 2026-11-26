@@ -541,9 +541,27 @@ zend_module_entry cairo_module_entry = {
 // each worker thread runs one long PHP request (cairo_thread_run). Requests
 // never reach PHP through the SAPI; Go hands them to the runtime script.
 
+void cairo_shared_ini_defaults(HashTable *configuration_hash)
+{
+#if PHP_VERSION_ID >= 80600
+	// PHP 8.6.0 starts every fiber with php.ini's error_reporting, and with
+	// none set that is 0, which silences every error of the fiber (with no
+	// php.ini, `php -n`, a fiber's error_reporting() is 0). Its default is
+	// E_ALL, so say so.
+	char all[16];
+	int n = snprintf(all, sizeof(all), "%d", E_ALL);
+	zval v;
+	ZVAL_NEW_STR(&v, zend_string_init(all, (size_t)n, 1));
+	zend_hash_str_update(configuration_hash, "error_reporting", sizeof("error_reporting") - 1, &v);
+#else
+	(void)configuration_hash;
+#endif
+}
+
 // Defaults a php.ini may override (lowest precedence).
 static void cairo_ini_defaults(HashTable *configuration_hash)
 {
+	cairo_shared_ini_defaults(configuration_hash);
 	static const char *defaults[][2] = {
 		{"html_errors", "0"},
 		{"implicit_flush", "0"},   // a flush is a call into an extension, when one streams an answer
@@ -650,11 +668,16 @@ static void cairo_log_message(const char *message, int syslog_type)
 // ---- Opcache ------------------------------------------------------------------
 //
 // Cairo loads opcache (built as opcache.so next to PHP before PHP 8.5, built
-// in from 8.5) unless CAIRO_OPCACHE=0 or php.ini already loads it. Opcache only starts under the SAPIs it knows,
+// in from 8.5, or before 8.5 by the patch of scripts/build-static.sh, which
+// defines HAVE_OPCACHE) unless CAIRO_OPCACHE=0 or php.ini already loads it. Opcache only starts under the SAPIs it knows,
 // and checks the name once, while Zend extensions start; so the SAPI goes by
 // "cli-server" for that moment (from the cairo module's MINIT, which runs just
 // before) and gets its own name back afterwards. PHP_SAPI and php_sapi_name()
 // keep reporting "cairo".
+
+#if PHP_VERSION_ID >= 80500 || defined(HAVE_OPCACHE)
+#define CAIRO_OPCACHE_BUILT_IN 1
+#endif
 
 static const char *cairo_sapi_name;
 static char *cairo_ini_entries;
@@ -665,7 +688,7 @@ static bool cairo_opcache_wanted(void)
 	if (env != NULL && (strcmp(env, "0") == 0 || strcasecmp(env, "off") == 0 || strcasecmp(env, "false") == 0)) {
 		return false;
 	}
-#if PHP_VERSION_ID >= 80500
+#ifdef CAIRO_OPCACHE_BUILT_IN
 	return true;
 #else
 	return access(PHP_EXTENSION_DIR "/opcache.so", R_OK) == 0;
@@ -697,7 +720,7 @@ static int cairo_sapi_startup(sapi_module_struct *sapi)
 		// like php.ini lines, so zend_extension= loads it; a php.ini that loads
 		// it too only gets a warning.
 		const char *base = sapi->ini_entries != NULL ? sapi->ini_entries : "";
-#if PHP_VERSION_ID >= 80500
+#ifdef CAIRO_OPCACHE_BUILT_IN
 		const char *add = "";   // built in: only the SAPI name below is needed
 #else
 		const char *add = "zend_extension=" PHP_EXTENSION_DIR "/opcache.so\n";

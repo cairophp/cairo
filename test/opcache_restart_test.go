@@ -65,6 +65,12 @@ func startOpcache(t *testing.T) (dir string, logs *syncBuffer, get func(path str
 // start gate needs (zend_accel_schedule_restart_hook, PHP 8.4).
 func opcacheTellsOfRestart(t *testing.T) bool {
 	t.Helper()
+	return phpVersionID(t) >= 80400
+}
+
+// phpVersionID is the binary's PHP_VERSION_ID.
+func phpVersionID(t *testing.T) int {
+	t.Helper()
 	out, err := exec.Command(cairoBin, "php", "-r", "echo PHP_VERSION_ID;").Output()
 	if err != nil {
 		t.Fatalf("cairo php: %v", err)
@@ -73,7 +79,7 @@ func opcacheTellsOfRestart(t *testing.T) bool {
 	if err != nil {
 		t.Fatalf("PHP_VERSION_ID: %q", out)
 	}
-	return id >= 80400
+	return id
 }
 
 // bigFile writes version v of big.php into dir: half a megabyte of

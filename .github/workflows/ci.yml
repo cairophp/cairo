@@ -5,7 +5,15 @@ on:
   pull_request:
 
 jobs:
+  # The suite on a native ZTS build (scripts/build-php.sh, opcache shared)
+  # of each PHP that a release ships.
   test:
+    name: native (${{ matrix.php }})
+    needs: versions
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ${{ fromJSON(needs.versions.outputs.php) }}
     runs-on: ubuntu-24.04
     services:
       mysql:
@@ -42,13 +50,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /opt/php-zts
-          key: php-zts-8.3.27-${{ hashFiles('scripts/build-php.sh') }}
+          key: php-zts-${{ matrix.php }}-${{ hashFiles('scripts/build-php.sh') }}
       - name: Build PHP (ZTS, embed)
         if: steps.php-cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get install -y build-essential autoconf bison re2c pkg-config
           sudo mkdir -p /opt/php-zts && sudo chown "$USER" /opt/php-zts
-          scripts/build-php.sh 8.3.27 /opt/php-zts
+          scripts/build-php.sh "${{ matrix.php }}" /opt/php-zts
       - name: Test
         env:
           CAIRO_TEST_MYSQL: "mysql:host=127.0.0.1;port=3306"
@@ -59,12 +67,24 @@ jobs:
           CAIRO_TEST_PGSQL_PASSWORD: cairo
         run: make test
 
-  # One static binary (Dockerfile.static) per architecture, then the whole
-  # suite against it.
+  versions:
+    runs-on: ubuntu-24.04
+    outputs:
+      php: ${{ steps.list.outputs.php }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: list
+        run: echo "php=$(jq -c . .github/php-versions.json)" >> "$GITHUB_OUTPUT"
+
+  # One static binary (Dockerfile.static) per PHP version that a release
+  # ships and architecture, then the whole suite against it.
   static:
+    needs: versions
     strategy:
       fail-fast: false
       matrix:
+        php: ${{ fromJSON(needs.versions.outputs.php) }}
+        arch: [amd64, arm64]
         include:
           - arch: amd64
             runner: ubuntu-24.04
@@ -101,13 +121,15 @@ jobs:
         with:
           context: .
           file: Dockerfile.static
+          build-args: PHP_VERSION=${{ matrix.php }}
           outputs: type=local,dest=dist
-          cache-from: type=gha,scope=static-${{ matrix.arch }}
-          cache-to: type=gha,scope=static-${{ matrix.arch }},mode=max
+          cache-from: type=gha,scope=static-${{ matrix.arch }}-php${{ matrix.php }}
+          cache-to: type=gha,scope=static-${{ matrix.arch }}-php${{ matrix.php }},mode=max
       - name: Inspect it
         run: |
           file dist/cairo
           ls -lh dist/cairo
+          test "$(dist/cairo php -r 'echo PHP_VERSION;')" = "${{ matrix.php }}"
       - name: Test against it
         env:
           CAIRO_TEST_BIN: ${{ github.workspace }}/dist/cairo
@@ -125,6 +147,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
-          name: cairo-linux-${{ matrix.arch }}-static
+          name: cairo-php${{ matrix.php }}-linux-${{ matrix.arch }}-static
           path: dist/cairo
           retention-days: 7

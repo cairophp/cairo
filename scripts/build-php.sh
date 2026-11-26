@@ -3,7 +3,7 @@
 # links against. Usage: scripts/build-php.sh [version] [prefix]
 set -euo pipefail
 
-VERSION="${1:-8.3.27}"
+VERSION="${1:-8.6.0}"
 PREFIX="${2:-/opt/php-zts}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT

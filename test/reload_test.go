@@ -427,26 +427,41 @@ func (a *reloadApp) reloadsUntilRestart(change func(v int)) (reloads int, restar
 }
 
 // The new code goes into opcache beside the old, which threads still run.
-// A deploy to a new directory, with a link pointed at it, leaves the whole
-// old release there, and after a few of them opcache asks for its restart
-// while the first new thread reads the code. The reload then gives the
-// server a new process, whose cache is empty, instead of a thread that
-// would wipe the cache under the others (startgate.h). A PHP older than 8.4
-// gives no sign of that restart, so the threads of a reload keep out of
-// opcache there, and no number of releases fills it.
+// A blue-green deploy writes each release over the one before the last, in
+// the other of two directories, and points a link at it: the old copy of
+// each file it overwrites is waste in the cache, and once the cache is full
+// opcache asks for its restart while the first new thread reads the code.
+// The reload then gives the server a new process, whose cache is empty,
+// instead of a thread that would wipe the cache under the others
+// (startgate.h). A PHP older than 8.4 gives no sign of that restart, so the
+// threads of a reload keep out of opcache there, and no number of releases
+// fills it.
+//
+// A full cache with too little waste for opcache.max_wasted_percentage is
+// not restarted: opcache leaves the new files out. Each release to a new
+// directory never wastes enough, but PHP 8.5.0 to 8.5.12 and 8.6.0 restart
+// anyway: their threads after the first refuse opcache.memory_consumption
+// (php-src GH-22216) and count all waste as too much.
 func TestReloadThatFillsOpcacheRestartsInPlace(t *testing.T) {
 	if os.Getenv("CAIRO_TEST_NO_OPCACHE") != "" {
 		t.Skip("this binary has no opcache")
 	}
 	root := t.TempDir()
+	slot := func(v int) string { return "slot" + strconv.Itoa(v%2) }
 	release := func(v int) string {
 		name := "r" + strconv.Itoa(v)
-		copyReload(t, filepath.Join(root, name))
+		copyReload(t, filepath.Join(root, slot(v)))
 		code := "<?php\n\nfunction greeting(): string\n{\n    return '" + name + "';\n}\n" + filler(name)
-		if err := os.WriteFile(filepath.Join(root, name, "greeting.php"), []byte(code), 0o644); err != nil {
+		file := filepath.Join(root, slot(v), "greeting.php")
+		if err := os.WriteFile(file, []byte(code), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		return name
+		// opcache tells versions of a file apart by the second.
+		at := time.Unix(1_700_000_000+int64(v), 0)
+		if err := os.Chtimes(file, at, at); err != nil {
+			t.Fatal(err)
+		}
+		return slot(v)
 	}
 	current := filepath.Join(root, "current")
 	if err := os.Symlink(release(0), current); err != nil {
@@ -454,7 +469,7 @@ func TestReloadThatFillsOpcacheRestartsInPlace(t *testing.T) {
 	}
 	ini, _ := filepath.Abs("testdata/opcache/php.ini")
 	app := serveReload(t, current, nil, "--threads", "2", "--php-ini", ini)
-	app.answers("/where", "r0")
+	app.answers("/where", slot(0))
 
 	last, restarted := app.reloadsUntilRestart(func(v int) {
 		next := filepath.Join(root, "next")
@@ -465,12 +480,12 @@ func TestReloadThatFillsOpcacheRestartsInPlace(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if tells := opcacheTellsOfRestart(t); restarted != tells {
-		t.Fatalf("restarted in place: %v after %d reloads, want %v", restarted, last, tells)
+	if want := opcacheTellsOfRestart(t); restarted != want {
+		t.Fatalf("restarted in place: %v after %d reloads, want %v", restarted, last, want)
 	}
 	if restarted {
 		app.logged("opcache's memory is full", 1)
 	}
-	app.answers("/where", "r"+strconv.Itoa(last))
+	app.answers("/where", slot(last))
 	app.answers("/", "r"+strconv.Itoa(last))
 }

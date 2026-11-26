@@ -3,7 +3,8 @@
 // the call in C (cserve.h in internal/core), PHP's startup fills $_GET,
 // $_POST, $_COOKIE and $_FILES from SG(request_info) and these callbacks,
 // $_SERVER is registered here, and what the script writes and the headers
-// it sets become the answer. No PHP of Cairo's runs around the script.
+// it sets become the answer (plain_answer.c). No PHP of Cairo's runs around
+// the script.
 
 #include <time.h>
 
@@ -18,7 +19,7 @@
 
 #include "env_hook.h"
 #include "extension.h"
-#include "http_answer.h"
+#include "plain_answer.h"
 #include "plain_request.h"
 #include "wire.h"
 
@@ -28,8 +29,6 @@ static __thread zval ev;         // the call's event (internal/wire, decoded)
 static __thread HashTable *script;
 static __thread const char *cookie;
 static __thread size_t posted;   // what read_post gave of the body
-static __thread smart_str out;   // the body
-static __thread smart_str head;  // the status and headers, as decodeAnswer reads them
 
 static zval *field(HashTable *ht, const char *key)
 {
@@ -94,6 +93,7 @@ static void begin(int64_t id, const char *event, size_t len)
 {
 	serving = true;
 	call = id;
+	cairo_plain_answer_begin(id);
 	if (cairo_wire_decode(event, len, &ev) == FAILURE || Z_TYPE(ev) != IS_ARRAY) {
 		ZVAL_UNDEF(&ev);
 		return;
@@ -255,90 +255,6 @@ static size_t read_post(char *buf, size_t len)
 	return take;
 }
 
-static size_t write_out(const char *s, size_t len)
-{
-	smart_str_appendl(&out, s, len);
-	return len;
-}
-
-static void flush_out(void)
-{
-}
-
-// The headers PHP holds for the answer, grouped by name.
-static void group_headers(sapi_headers_struct *h, HashTable *groups)
-{
-	zend_llist_position pos;
-	for (sapi_header_struct *hd = zend_llist_get_first_ex(&h->headers, &pos); hd != NULL;
-		hd = zend_llist_get_next_ex(&h->headers, &pos)) {
-		const char *colon = memchr(hd->header, ':', hd->header_len);
-		if (colon == NULL) {
-			continue;
-		}
-		size_t nl = (size_t)(colon - hd->header);
-		const char *v = colon + 1;
-		while (*v == ' ' || *v == '\t') {
-			v++;
-		}
-		zval *list = zend_hash_str_find(groups, hd->header, nl);
-		if (list == NULL) {
-			zval l;
-			array_init(&l);
-			list = zend_hash_str_update(groups, hd->header, nl, &l);
-		}
-		add_next_index_stringl(list, v, hd->header_len - (size_t)(v - hd->header));
-	}
-}
-
-static int send_headers(void *headers)
-{
-	sapi_headers_struct *h = headers;
-	HashTable groups;
-	zend_hash_init(&groups, 8, NULL, ZVAL_PTR_DTOR, 0);
-	group_headers(h, &groups);
-	smart_str_free(&head);
-	int rc = cairo_encode_http_answer(h->http_response_code ? h->http_response_code : 200, &groups, &head);
-	zend_hash_destroy(&groups);
-	return rc == SUCCESS ? SAPI_HEADER_SENT_SUCCESSFULLY : SAPI_HEADER_SEND_FAILED;
-}
-
-// Answers with status and a short text of Cairo's own, in place of what
-// the script wrote. A fatal error is PHP's own: a 500 with what was written.
-static void answer_text(int status, const char *text)
-{
-	zval list, headers;
-	array_init(&headers);
-	array_init(&list);
-	add_next_index_string(&list, "text/plain; charset=utf-8");
-	zend_hash_str_update(Z_ARRVAL(headers), "Content-Type", sizeof("Content-Type") - 1, &list);
-	smart_str meta = {0};
-	cairo_encode_http_answer(status, Z_ARRVAL(headers), &meta);
-	zval_ptr_dtor(&headers);
-	cairo_answer(call, ZSTR_VAL(meta.s), ZSTR_LEN(meta.s), text, strlen(text));
-	smart_str_free(&meta);
-}
-
-static bool past_deadline(void)
-{
-	int64_t at = cairo_stack_deadline();
-	struct timespec now;
-	clock_gettime(CLOCK_MONOTONIC, &now);
-	return at != 0 && (int64_t)now.tv_sec * 1000000000 + now.tv_nsec >= at;
-}
-
-static void answer(void)
-{
-	if (past_deadline()) {
-		answer_text(504, "Gateway Timeout\n");   // as Go's own timeout answers
-		return;
-	}
-	sapi_send_headers();   // when the script wrote nothing
-	if (head.s == NULL || out.s != NULL && ZSTR_LEN(out.s) > INT_MAX
-		|| cairo_answer(call, ZSTR_VAL(head.s), ZSTR_LEN(head.s), out.s ? ZSTR_VAL(out.s) : "", out.s ? ZSTR_LEN(out.s) : 0) != 0) {
-		answer_text(500, "Internal Server Error\n");
-	}
-}
-
 static void clear_exit(void)
 {
 	if (EG(exception) != NULL && zend_is_unwind_exit(EG(exception))) {
@@ -351,7 +267,7 @@ static void clear_exit(void)
 static void serve(void)
 {
 	if (Z_TYPE(ev) != IS_ARRAY) {
-		answer_text(500, "Internal Server Error\n");
+		cairo_plain_answer_text(500, "Internal Server Error\n");
 		return;
 	}
 	size_t n;
@@ -380,7 +296,7 @@ static void serve(void)
 	zend_call_destructors();
 	clear_exit();
 	php_output_end_all();
-	answer();
+	cairo_plain_answer();
 }
 
 // As the request shuts down, while its memory is still there: what PHP
@@ -391,8 +307,7 @@ static void request_shutdown(void)
 		return;
 	}
 	SG(post_read) = 1;
-	smart_str_free(&out);
-	smart_str_free(&head);
+	cairo_plain_answer_free();
 	if (Z_TYPE(ev) != IS_UNDEF) {
 		zval_ptr_dtor(&ev);
 		ZVAL_UNDEF(&ev);
@@ -408,8 +323,7 @@ static void end(void)
 	cookie = NULL;
 	posted = 0;
 	ZVAL_UNDEF(&ev);
-	out = (smart_str){0};
-	head = (smart_str){0};
+	cairo_plain_answer_end();
 	SG(request_info).request_method = NULL;
 	SG(request_info).query_string = NULL;
 	SG(request_info).request_uri = NULL;
@@ -425,12 +339,13 @@ static const cairo_cserver server = {
 	.read_cookies = read_cookies,
 	.register_variables = server_vars,
 	.read_post = read_post,
-	.write = write_out,
-	.flush = flush_out,
-	.send_headers = send_headers,
+	.write = cairo_plain_write,
+	.flush = cairo_plain_flush,
+	.send_headers = cairo_plain_send_headers,
 };
 
 const cairo_extension cairo_plain_request = {
+	.startup = cairo_plain_answer_startup,
 	.request_shutdown = request_shutdown,
 	.cserver = &server,
 };

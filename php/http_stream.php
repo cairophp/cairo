@@ -315,29 +315,3 @@ namespace Cairo\Internal {
         }
     }
 }
-
-namespace {
-
-    // What classic PHP code calls, where a server runs it.
-    if (PHP_SAPI === 'cairo') {
-        /**
-         * Sends the headers set with header() now: with 103 as Early Hints,
-         * which a browser uses to preload while the page is made, or else
-         * as the head of the answer.
-         */
-        function headers_send(int $status = 200): int
-        {
-            return \Cairo\Internal\HttpOutput::headersSend($status);
-        }
-
-        /**
-         * Sends the answer written so far to the client as the whole
-         * answer; the code after it still runs. Only where echo is the
-         * answer (isolated mode), and false otherwise.
-         */
-        function fastcgi_finish_request(): bool
-        {
-            return \Cairo\Internal\HttpOutput::finish();
-        }
-    }
-}

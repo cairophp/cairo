@@ -170,6 +170,7 @@ func (e *Engine) threadExited(t *thread, status int) {
 		delay = min(100*time.Millisecond<<t.crashes, 5*time.Second)
 	}
 	t.bootMark = t.box.served.Load()
+	t.info = "" // the thread asks anew: a reload may have come since
 	t.mu.Lock()
 	t.ended = false
 	t.mu.Unlock()

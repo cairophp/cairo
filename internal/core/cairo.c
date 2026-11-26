@@ -45,6 +45,7 @@
 #include "fiber_local.h"
 #include "fibers.h"
 #include "parked.h"
+#include "opcache_times.h"
 #include "startgate.h"
 #include "_cgo_export.h"
 
@@ -788,6 +789,7 @@ int cairo_boot(const char *runtime_file, const char *php_ini)
 	if (cairo_sapi_module.startup(&cairo_sapi_module) == FAILURE) {
 		return -1;
 	}
+	cairo_opcache_thread();   // the declare phase compiles the app's files first
 	SG(options) |= SAPI_OPTION_NO_CHDIR;
 	SG(request_info).argc = 1;
 	SG(request_info).argv = argv;
@@ -848,6 +850,7 @@ int cairo_thread_run(int tid, const char *runtime_file)
 {
 	cairo_tid = tid;
 	(void)ts_resource(0);
+	cairo_opcache_thread();
 	cairo_classic_forget();
 	cairo_cserve_forget();
 	int status;

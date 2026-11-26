@@ -243,6 +243,19 @@ change the PHP API; patch versions do not.
 
 ### Fixed
 
+- A reload (`--watch`, SIGUSR1) serves the new code when php.ini has
+  `opcache.validate_timestamps=0`, as production setups often do. opcache
+  keeps no time for a file it compiles with that setting, so the new threads
+  that a reload starts could not tell an old file from a new one and ran
+  the old code, in every concurrency mode. Now, where php.ini turns the
+  check off, each PHP thread turns it on with an `opcache.revalidate_freq`
+  of ten years: opcache records the time of each file and compares it only
+  on the threads of a reload, so without one it still never looks at the
+  disk, and no request pays for it.
+- The offload threads that a reload starts anew knew nothing of the reload
+  (they kept what Cairo had told them at start), so with a PHP older than
+  8.4, or a php.ini whose opcache looks at the disk only now and then,
+  `offload()` could run the old code after a reload.
 - `move_uploaded_file()` and `is_uploaded_file()` work again on the uploads
   of a classic script: since classic requests run on their thread's own
   stack, both fell back to PHP's own list of uploads, which is empty, so

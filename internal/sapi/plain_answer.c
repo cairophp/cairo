@@ -36,6 +36,19 @@ static void forward(const char *callable, uint32_t argc, zval *args, zval *retur
 	zval_ptr_dtor(&fn);
 }
 
+void cairo_plain_runtime_call(const char *method)
+{
+	// The scheduler is there once the script has loaded the runtime.
+	if (zend_hash_str_exists(EG(class_table), "cairo\\internal\\scheduler", sizeof("cairo\\internal\\scheduler") - 1)) {
+		char name[64];
+		snprintf(name, sizeof(name), "Cairo\\Internal\\PlainRequest::%s", method);
+		zval rv;
+		ZVAL_UNDEF(&rv);
+		forward(name, 0, NULL, &rv);
+		zval_ptr_dtor(&rv);
+	}
+}
+
 void cairo_plain_answer_begin(int64_t id)
 {
 	call = id;
@@ -246,6 +259,7 @@ static PHP_FUNCTION(fastcgi_finish_request)
 	php_output_end_all();
 	cairo_plain_answer();
 	cairo_stack_set_deadline(0);
+	cairo_plain_runtime_call("answered");
 	RETURN_TRUE;
 }
 

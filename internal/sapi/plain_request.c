@@ -29,6 +29,8 @@ static __thread zval ev;         // the call's event (internal/wire, decoded)
 static __thread HashTable *script;
 static __thread const char *cookie;
 static __thread size_t posted;   // what read_post gave of the body
+// Where Cairo's PHP files are: the thread outlives its PHP requests.
+static __thread char runtime_dir[MAXPATHLEN];
 
 static zval *field(HashTable *ht, const char *key)
 {
@@ -255,6 +257,28 @@ static size_t read_post(char *buf, size_t len)
 	return take;
 }
 
+// Runs Cairo's file name of the runtime's directory, as require does.
+static void run_runtime_file(const char *name)
+{
+	char path[MAXPATHLEN];
+	if (snprintf(path, sizeof(path), "%s/%s", runtime_dir, name) >= (int)sizeof(path)) {
+		return;
+	}
+	zend_file_handle fh;
+	zend_stream_init_filename(&fh, path);
+	zend_op_array *op = zend_compile_file(&fh, ZEND_REQUIRE);
+	zend_destroy_file_handle(&fh);
+	if (op == NULL) {
+		return;
+	}
+	zval rv;
+	ZVAL_UNDEF(&rv);
+	zend_execute(op, &rv);
+	zval_ptr_dtor(&rv);
+	destroy_op_array(op);
+	efree(op);
+}
+
 static void clear_exit(void)
 {
 	if (EG(exception) != NULL && zend_is_unwind_exit(EG(exception))) {
@@ -284,6 +308,7 @@ static void serve(void)
 		VCWD_CHDIR(dir);   // relative includes start where the script is
 	}
 	cairo_cgi_env_from(server_vars);   // getenv() and $_ENV have them, as under PHP-FPM
+	run_runtime_file("plain_request.php");   // Cairo's functions
 	zend_file_handle fh;
 	zend_stream_init_filename(&fh, file);
 	fh.primary_script = 1;
@@ -297,6 +322,7 @@ static void serve(void)
 	clear_exit();
 	php_output_end_all();
 	cairo_plain_answer();
+	cairo_plain_runtime_call("end");
 }
 
 // As the request shuts down, while its memory is still there: what PHP
@@ -332,6 +358,64 @@ static void end(void)
 	SG(request_info).cookie_data = NULL;
 }
 
+// cairo_plain_runtime(string $dir): void
+// Where the scripts that the thread serves in C find Cairo's PHP files.
+static PHP_FUNCTION(cairo_plain_runtime)
+{
+	char *dir;
+	size_t len;
+	ZEND_PARSE_PARAMETERS_START(1, 1)
+		Z_PARAM_PATH(dir, len)
+	ZEND_PARSE_PARAMETERS_END();
+	if (len >= sizeof(runtime_dir)) {
+		zend_value_error("cairo_plain_runtime(): the path is too long");
+		RETURN_THROWS();
+	}
+	memcpy(runtime_dir, dir, len + 1);
+}
+
+// cairo_plain_call(): array{id: int, deadline: ?float, values: array}
+// The call that the script served in C answers, for the runtime that it
+// loads (php/plain_request.php).
+static PHP_FUNCTION(cairo_plain_call)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+	if (!serving || Z_TYPE(ev) != IS_ARRAY) {
+		zend_throw_error(NULL, "cairo_plain_call(): no script is served in C");
+		RETURN_THROWS();
+	}
+	array_init(return_value);
+	add_assoc_long(return_value, "id", call);
+	zval *v = field(Z_ARRVAL(ev), "deadline");
+	if (v != NULL && Z_TYPE_P(v) == IS_DOUBLE) {
+		add_assoc_double(return_value, "deadline", Z_DVAL_P(v));
+	} else {
+		add_assoc_null(return_value, "deadline");
+	}
+	v = field(Z_ARRVAL(ev), "values");
+	if (v != NULL && Z_TYPE_P(v) == IS_ARRAY) {
+		Z_ADDREF_P(v);
+		add_assoc_zval(return_value, "values", v);
+	} else {
+		zval none;
+		array_init(&none);
+		add_assoc_zval(return_value, "values", &none);
+	}
+}
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_plain_runtime, 0, 0, 1)
+	ZEND_ARG_INFO(0, dir)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_plain_call, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+static const zend_function_entry functions[] = {
+	PHP_FE(cairo_plain_runtime, arginfo_cairo_plain_runtime)
+	PHP_FE(cairo_plain_call, arginfo_cairo_plain_call)
+	PHP_FE_END
+};
+
 static const cairo_cserver server = {
 	.begin = begin,
 	.serve = serve,
@@ -347,5 +431,6 @@ static const cairo_cserver server = {
 const cairo_extension cairo_plain_request = {
 	.startup = cairo_plain_answer_startup,
 	.request_shutdown = request_shutdown,
+	.functions = functions,
 	.cserver = &server,
 };

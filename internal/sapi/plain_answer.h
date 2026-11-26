@@ -27,6 +27,10 @@ void cairo_plain_answer_text(int status, const char *text);
 void cairo_plain_answer_free(void);
 void cairo_plain_answer_end(void);
 
+// Calls Cairo\Internal\PlainRequest::$method() once the script has
+// loaded Cairo's runtime (php/plain_request.php).
+void cairo_plain_runtime_call(const char *method);
+
 // Adds fastcgi_finish_request() and headers_send(), at module startup.
 void cairo_plain_answer_startup(void);
 

@@ -104,9 +104,9 @@ mark libzip
 fi
 
 # libpq for pdo_pgsql, from PostgreSQL's sources: the client library alone,
-# TLS through OpenSSL. Its calls to poll() are renamed to
-# cairo_libpq_poll(), which parks the fiber that waits for the server
-# (internal/sapi/libpq_wait.c); nothing else in the binary is renamed.
+# TLS through OpenSSL. libpq.a needs the -fPIC builds of PostgreSQL's common
+# and port libraries (they have its encoding functions), while libpq.pc
+# names the plain ones: those are replaced by them.
 if ! built libpq; then
 if [ -z "${PG_SRC:-}" ]; then
   curl -fsSL "https://ftp.postgresql.org/pub/source/v${PG_VERSION}/postgresql-${PG_VERSION}.tar.bz2" | tar -xj -C "$WORK"
@@ -122,7 +122,8 @@ fi
   done
 )
 rm -f "$DEPS"/lib/libpq.so*
-objcopy --redefine-sym poll=cairo_libpq_poll "$DEPS/lib/libpq.a"
+cp "$DEPS/lib/libpgcommon_shlib.a" "$DEPS/lib/libpgcommon.a"
+cp "$DEPS/lib/libpgport_shlib.a" "$DEPS/lib/libpgport.a"
 mark libpq
 fi
 
@@ -235,6 +236,12 @@ if [ "${STAGE:-}" = php ]; then
   echo "libraries and PHP $PHP_VERSION built in $WORK"
   exit 0
 fi
+
+# libpq's calls to poll() go to cairo_libpq_poll(), which parks the fiber
+# that waits for the server (internal/sapi/libpq_wait.c); nothing else in
+# the binary is renamed. Only now: PHP's configure links test programs with
+# libpq, which have no cairo_libpq_poll(). Renaming twice changes nothing.
+objcopy --redefine-sym poll=cairo_libpq_poll "$DEPS/lib/libpq.a"
 
 PHP_CONFIG="$PREFIX/bin/php-config"
 export CGO_ENABLED=1

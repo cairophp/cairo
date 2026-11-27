@@ -7,6 +7,12 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+### Fixed
+
+- `TestHardDeadlineStopsPHP` no longer fails when `/spin-catch` or
+  `/spin-async` starts behind `/spin` on the one thread, after its deadline:
+  each is checked again on its own.
+
 ### Changed
 
 - PDO pgsql is now PHP's own `pdo_pgsql`, on libpq, in every binary and

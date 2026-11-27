@@ -63,10 +63,12 @@ func TestHardDeadlineStopsPHP(t *testing.T) {
 	}
 	t.Logf("3 CPU-bound requests stopped at a 0.5s deadline on 1 PHP thread; all answered in %s", time.Since(start).Round(time.Millisecond))
 
-	// Alone, so it is sure to start before its deadline: queued behind the
+	// Alone, so each is sure to start before its deadline: queued behind the
 	// others on the one thread, it can be stopped before its try block runs.
-	if code, _, _ := fetch("/spin"); code != 504 {
-		t.Errorf("/spin alone: status %d, want 504", code)
+	for _, path := range []string{"/spin", "/spin-catch", "/spin-async"} {
+		if code, _, _ := fetch(path); code != 504 {
+			t.Errorf("%s alone: status %d, want 504", path, code)
+		}
 	}
 
 	_, raw, _ := fetch("/stats")

@@ -57,14 +57,16 @@ func TestHardDeadlineStopsPHP(t *testing.T) {
 	}
 	wg.Wait()
 
-	// The thread was freed: a fast request answers at once.
-	if code, _, took := fetch("/ok"); code != 200 || took > 500*time.Millisecond {
+	// The thread was freed: a fast request answers (a stuck one never would;
+	// 2 s leaves room for a slow CI machine).
+	if code, _, took := fetch("/ok"); code != 200 || took > 2*time.Second {
 		t.Fatalf("/ok after the stuck requests: %d in %s", code, took)
 	}
 	t.Logf("3 CPU-bound requests stopped at a 0.5s deadline on 1 PHP thread; all answered in %s", time.Since(start).Round(time.Millisecond))
 
-	// Alone, so each is sure to start before its deadline: queued behind the
-	// others on the one thread, it can be stopped before its try block runs.
+	// Alone, so each runs its try block before its deadline. Queued behind
+	// the others on the one thread, a request starts at about its deadline,
+	// and the stop that is already pending lands before its try block.
 	for _, path := range []string{"/spin", "/spin-catch", "/spin-async"} {
 		if code, _, _ := fetch(path); code != 504 {
 			t.Errorf("%s alone: status %d, want 504", path, code)

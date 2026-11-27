@@ -15,8 +15,9 @@ import (
 )
 
 // startFrameworks runs examples/frameworks, installing its Composer packages
-// first. It skips when Composer is not available.
-func startFrameworks(t *testing.T) string {
+// first, in fiber mode or with CAIRO_CONCURRENCY=isolated. It skips when
+// Composer is not available.
+func startFrameworks(t *testing.T, mode string) string {
 	t.Helper()
 	dir := "../examples/frameworks"
 	if _, err := os.Stat(dir + "/vendor/autoload.php"); err != nil {
@@ -41,7 +42,7 @@ func startFrameworks(t *testing.T) string {
 	}
 	addr := freeAddr()
 	cmd := exec.Command(cairoBin, "serve", dir+"/server.php", "--threads", "1", "--offload-threads", "1")
-	cmd.Env = append(os.Environ(), "CAIRO_HTTP="+addr)
+	cmd.Env = append(os.Environ(), "CAIRO_HTTP="+addr, "CAIRO_CONCURRENCY="+mode)
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -75,7 +76,7 @@ func doJSON(t *testing.T, req *http.Request, wantStatus int) (map[string]any, ht
 }
 
 func TestPSR15Handler(t *testing.T) {
-	base := startFrameworks(t)
+	base := startFrameworks(t, "fibers")
 
 	// A route with a parameter, a multipart body with a nested file field.
 	var body bytes.Buffer
@@ -134,7 +135,12 @@ func TestPSR15Handler(t *testing.T) {
 }
 
 func TestSymfonyKernel(t *testing.T) {
-	base := startFrameworks(t)
+	for _, mode := range []string{"fibers", "isolated"} {
+		t.Run(mode, func(t *testing.T) { testSymfonyKernel(t, startFrameworks(t, mode), mode) })
+	}
+}
+
+func testSymfonyKernel(t *testing.T, base, mode string) {
 	if resp, err := http.Get(base + "/missing-extensions"); err == nil {
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -184,6 +190,15 @@ func TestSymfonyKernel(t *testing.T) {
 		t.Errorf("streamed response = %q", b)
 	}
 
+	// Isolated mode fills the superglobals; the Symfony request is made from
+	// that same build, not from a second one.
+	if mode == "isolated" {
+		req, _ = http.NewRequest("GET", base+"/sf/once", nil)
+		if out, _ := doJSON(t, req, 200); out["same"] != true {
+			t.Errorf("/sf/once = %v: the request and $_SERVER were built apart", out)
+		}
+	}
+
 	// terminate() ran after each response.
 	resp, err = http.Get(base + "/sf/terminated")
 	if err != nil {
@@ -193,7 +208,11 @@ func TestSymfonyKernel(t *testing.T) {
 	resp.Body.Close()
 	var terminated []string
 	_ = json.Unmarshal(b, &terminated)
-	if !reflect.DeepEqual(terminated, []string{"/sf/7", "/sf/8", "/sf/stream"}) {
+	ran := []string{"/sf/7", "/sf/8", "/sf/stream"}
+	if mode == "isolated" {
+		ran = append(ran, "/sf/once")
+	}
+	if !reflect.DeepEqual(terminated, ran) {
 		t.Errorf("terminated = %s", b)
 	}
 }

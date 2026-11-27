@@ -124,6 +124,15 @@ fi
 rm -f "$DEPS"/lib/libpq.so*
 cp "$DEPS/lib/libpgcommon_shlib.a" "$DEPS/lib/libpgcommon.a"
 cp "$DEPS/lib/libpgport_shlib.a" "$DEPS/lib/libpgport.a"
+# PHP 8.3 links -lpq alone (it reads no libpq.pc): their objects go into
+# libpq.a too, so that libpq.a needs nothing of PostgreSQL's besides.
+(
+  mkdir -p "$WORK/pq-objs/common" "$WORK/pq-objs/port"
+  cd "$WORK/pq-objs/common" && ar x "$DEPS/lib/libpgcommon_shlib.a"
+  cd "$WORK/pq-objs/port" && ar x "$DEPS/lib/libpgport_shlib.a"
+  cd "$WORK/pq-objs" && ar q "$DEPS/lib/libpq.a" common/*.o port/*.o && ranlib "$DEPS/lib/libpq.a"
+)
+rm -rf "$WORK/pq-objs"
 mark libpq
 fi
 
@@ -189,6 +198,10 @@ case "$PHP_MINOR" in
   *) echo "PHP $PHP_VERSION: static builds need PHP 8.3 or later" >&2; exit 1 ;;
 esac
 
+# PHP 8.4 and newer find libpq through libpq.pc; 8.3 looks in a directory.
+PDO_PGSQL="--with-pdo-pgsql"
+[ "$PHP_MINOR" = 8.3 ] && PDO_PGSQL="--with-pdo-pgsql=$DEPS"
+
 # The extensions of scripts/build-php.sh.
 DEFAULT_EXTENSIONS="
   --enable-pdo --enable-mysqlnd --with-pdo-mysql=mysqlnd --with-mysqli=mysqlnd
@@ -199,7 +212,7 @@ DEFAULT_EXTENSIONS="
   --enable-bcmath --enable-calendar --enable-exif --enable-sockets --enable-pcntl
   --enable-gd --with-jpeg --with-webp --with-freetype
   --with-iconv
-  --with-pdo-pgsql
+  $PDO_PGSQL
   --without-readline --without-pgsql"
 for pkg in ${PECL_EXTENSIONS:-}; do
   name="${pkg%-*}"

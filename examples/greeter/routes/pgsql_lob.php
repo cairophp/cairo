@@ -46,11 +46,13 @@ return function ($http): void {
             $missing = $e->getMessage();
         }
         $pdo->rollBack();
+        // PHP refuses a name that is no OID before it asks the server where
+        // libc's strtoul() says so (musl), and the server refuses OID 0
+        // where it does not (glibc): either way nothing opens.
         try {
-            $pdo->pgsqlLOBOpen('not-an-oid');
-            $invalid = null;
-        } catch (PDOException $e) {
-            $invalid = $e->getMessage();
+            $invalid = $pdo->pgsqlLOBOpen('not-an-oid') === false ? 'refused' : 'opened';
+        } catch (PDOException) {
+            $invalid = 'refused';
         }
 
         return Response::json([

@@ -14,15 +14,16 @@ cd "$WORK/php-src-php-${VERSION}"
 ./buildconf --force
 
 # The extensions most PHP apps and frameworks expect (Laravel, Symfony,
-# WordPress), plus opcache, which Cairo loads by default. Left out: ext/pgsql
-# and pdo_pgsql (Cairo has its own Go-backed pdo pgsql driver), readline.
+# WordPress), plus opcache, which Cairo loads by default, and pdo_pgsql, on
+# the system's libpq (Cairo parks a fiber where libpq waits for the server:
+# internal/sapi/libpq_wait.c). Left out: ext/pgsql, readline.
 # pcntl is for the signals of `cairo php` scripts: internal/sapi/signals.c
 # takes it out of a server, and its fork out of both. System packages
 # (Debian/Ubuntu):
 #   build-essential autoconf bison re2c pkg-config libxml2-dev libsqlite3-dev
 #   libcurl4-openssl-dev libssl-dev libonig-dev libicu-dev libsodium-dev
 #   libzip-dev zlib1g-dev libbz2-dev libgmp-dev libpng-dev libjpeg-dev
-#   libwebp-dev libfreetype-dev
+#   libwebp-dev libfreetype-dev libpq-dev
 ./configure \
   --prefix="$PREFIX" \
   --enable-zts \
@@ -58,7 +59,7 @@ cd "$WORK/php-src-php-${VERSION}"
   --with-iconv \
   --without-readline \
   --without-pgsql \
-  --without-pdo-pgsql
+  --with-pdo-pgsql
 make -j"$(nproc)"
 make install
 echo "PHP $VERSION (ZTS, embed) installed in $PREFIX"

@@ -44,7 +44,7 @@ jobs:
       # The libraries PHP's extensions link against (scripts/build-php.sh), needed
       # to build PHP and to run it from the cache.
       - name: Install PHP's libraries
-        run: sudo apt-get update && sudo apt-get install -y libxml2-dev libsqlite3-dev libcurl4-openssl-dev libssl-dev libonig-dev libicu-dev libsodium-dev libzip-dev zlib1g-dev libbz2-dev libgmp-dev libpng-dev libjpeg-dev libwebp-dev libfreetype-dev
+        run: sudo apt-get update && sudo apt-get install -y libxml2-dev libsqlite3-dev libcurl4-openssl-dev libssl-dev libonig-dev libicu-dev libsodium-dev libzip-dev zlib1g-dev libbz2-dev libgmp-dev libpng-dev libjpeg-dev libwebp-dev libfreetype-dev libpq-dev
       - name: Cache PHP (ZTS, embed)
         id: php-cache
         uses: actions/cache@v4
@@ -105,6 +105,7 @@ jobs:
         run: |
           minor="$(echo "${{ matrix.php }}" | cut -d. -f1,2)"
           test "$(docker run --rm --entrypoint cairo cairo-native php -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION, PHP_ZTS;')" = "${minor}1"
+          test "$(docker run --rm --entrypoint cairo cairo-native php -r 'echo in_array("pgsql", PDO::getAvailableDrivers(), true) ? "pgsql" : "none";')" = pgsql
           docker build -t cairo-native-app test/native-image
           test "$(docker run --rm cairo-native-app php -r 'echo extension_loaded("shmop") ? "shmop" : "none";')" = shmop
           docker run -d --name app -p 8080:8080 cairo-native-app

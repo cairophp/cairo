@@ -93,14 +93,16 @@ func TestPDOPgsqlLargeObjects(t *testing.T) {
 	}
 	want := map[string]any{
 		"oid_is_numeric": true, "written": float64(100_011), "same": true, "length": float64(100_011),
-		"slice": "START", "tail": "656e64", "eof": true, "unlinked": true, "invalid": "SQLSTATE[22P02]: Invalid text representation: 7 Invalid OID value", "usable": float64(1),
+		"slice": "START", "tail": "656e64", "unlinked": true, "usable": float64(1),
 	}
 	for k, v := range want {
 		if out[k] != v {
 			t.Errorf("%s = %#v, want %#v", k, out[k], v)
 		}
 	}
-	if m, _ := out["missing"].(string); !strings.Contains(m, "does not exist") {
-		t.Errorf("opening an unlinked object: %#v, want a 'does not exist' error", out["missing"])
+	for _, k := range []string{"missing", "invalid"} {
+		if m, _ := out[k].(string); !strings.Contains(m, "does not exist") {
+			t.Errorf("%s: %#v, want a 'does not exist' error", k, out[k])
+		}
 	}
 }

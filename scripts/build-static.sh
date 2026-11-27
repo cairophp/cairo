@@ -11,7 +11,7 @@
 # binary (<output>-dev.tar.gz, PHP installed under /opt/cairo/phpA.B).
 #
 # Usage: scripts/build-static.sh [php-version] [output]
-#   PHP_SRC, CURL_SRC, LIBZIP_SRC, ICU_SRC, ONIG_SRC   unpacked sources to use instead of downloading
+#   PHP_SRC, CURL_SRC, LIBZIP_SRC, ICU_SRC, ONIG_SRC, PG_SRC   unpacked sources to use instead of downloading
 #   PHP_EXTENSIONS      configure flags for the extensions (default below)
 #   EXTRA_EXTENSIONS    configure flags added to those, for PHP's own extensions
 #                       left out by default and for the PECL ones below
@@ -39,6 +39,7 @@ CURL_VERSION="${CURL_VERSION:-8.11.1}"
 LIBZIP_VERSION="${LIBZIP_VERSION:-1.11.2}"
 ICU_VERSION="${ICU_VERSION:-74.2}"
 ONIG_VERSION="${ONIG_VERSION:-6.9.10}"
+PG_VERSION="${PG_VERSION:-18.7}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 case "$OUT" in /*) ;; *) OUT="$ROOT/$OUT" ;; esac
 WORK="${WORK:-$(mktemp -d)}"
@@ -100,6 +101,29 @@ cmake -S "$LIBZIP_SRC" -B "$WORK/libzip-build" -DCMAKE_INSTALL_PREFIX="$DEPS" -D
 cmake --build "$WORK/libzip-build" -j"$JOBS"
 cmake --install "$WORK/libzip-build"
 mark libzip
+fi
+
+# libpq for pdo_pgsql, from PostgreSQL's sources: the client library alone,
+# TLS through OpenSSL. Its calls to poll() are renamed to
+# cairo_libpq_poll(), which parks the fiber that waits for the server
+# (internal/sapi/libpq_wait.c); nothing else in the binary is renamed.
+if ! built libpq; then
+if [ -z "${PG_SRC:-}" ]; then
+  curl -fsSL "https://ftp.postgresql.org/pub/source/v${PG_VERSION}/postgresql-${PG_VERSION}.tar.bz2" | tar -xj -C "$WORK"
+  PG_SRC="$WORK/postgresql-${PG_VERSION}"
+fi
+(
+  cd "$PG_SRC"
+  CFLAGS="-O2 -fPIC" ./configure --prefix="$DEPS" --with-openssl \
+    --without-readline --without-icu --without-zlib --without-zstd --without-lz4
+  make -C src/interfaces/libpq -j"$JOBS"
+  for dir in src/include src/common src/port src/interfaces/libpq; do
+    make -C "$dir" install
+  done
+)
+rm -f "$DEPS"/lib/libpq.so*
+objcopy --redefine-sym poll=cairo_libpq_poll "$DEPS/lib/libpq.a"
+mark libpq
 fi
 
 # Oniguruma for mbstring. Debian ships it only as a shared library.
@@ -174,7 +198,8 @@ DEFAULT_EXTENSIONS="
   --enable-bcmath --enable-calendar --enable-exif --enable-sockets --enable-pcntl
   --enable-gd --with-jpeg --with-webp --with-freetype
   --with-iconv
-  --without-readline --without-pgsql --without-pdo-pgsql"
+  --with-pdo-pgsql
+  --without-readline --without-pgsql"
 for pkg in ${PECL_EXTENSIONS:-}; do
   name="${pkg%-*}"
   version="${pkg##*-}"
@@ -213,7 +238,7 @@ fi
 
 PHP_CONFIG="$PREFIX/bin/php-config"
 export CGO_ENABLED=1
-export CGO_CFLAGS="$($PHP_CONFIG --includes) -I$DEPS/include -DCAIRO_STATIC_CURL"
+export CGO_CFLAGS="$($PHP_CONFIG --includes) -I$DEPS/include -DCAIRO_STATIC_CURL -DCAIRO_STATIC_LIBPQ"
 # libphp.a first, then what it needs. The group lets the linker go back and
 # forth between libraries that need each other. ext/intl is C++.
 # Cairo's curl hook takes over two libcurl functions by renaming calls to

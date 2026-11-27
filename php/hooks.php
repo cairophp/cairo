@@ -25,7 +25,7 @@ namespace Cairo {
         public const CONNECT = 4;
         /** gethostbyname(), gethostbynamel(), through Go's resolver */
         public const DNS = 8;
-        /** PDO pgsql: Cairo's Go-backed driver runs each query as a Go operation of the fiber */
+        /** PDO pgsql: libpq's waits for the server (queries, connects, COPY, large objects, getNotify()) suspend the fiber */
         public const PGSQL = 32;
         public const ALL = self::SLEEP | self::SOCKETS | self::CONNECT | self::DNS | self::CURL | self::PGSQL;
     }
@@ -57,9 +57,20 @@ namespace Cairo\Internal {
          */
         public static function wait(int $fd, bool $write, float $timeout): int
         {
+            return self::waitFor(\Cairo\Hook::SOCKETS, $fd, $write, $timeout);
+        }
+
+        /** wait() for libpq's socket (PDO pgsql), under Hook::PGSQL. */
+        public static function waitPgsql(int $fd, bool $write, float $timeout): int
+        {
+            return self::waitFor(\Cairo\Hook::PGSQL, $fd, $write, $timeout);
+        }
+
+        private static function waitFor(int $hook, int $fd, bool $write, float $timeout): int
+        {
             // What on() asks, with the context looked up once: every query waits here.
             $ctx = Context::current();
-            if ($ctx->requestId === 0 || ((self::$flags ?? self::flags()) & \Cairo\Hook::SOCKETS) === 0) {
+            if ($ctx->requestId === 0 || ((self::$flags ?? self::flags()) & $hook) === 0) {
                 return 0;
             }
             $scheduler = Scheduler::instance();
@@ -148,18 +159,6 @@ namespace Cairo\Internal {
             }
             $ips = self::lookup($hostname);
             return $ips === [] ? false : $ips;
-        }
-
-        /**
-         * One request of Cairo's PDO pgsql driver, run as a Go operation of
-         * the fiber. Null lets the driver wait for Go instead.
-         *
-         * @param array<string, mixed> $request
-         * @return array<string, mixed>|null
-         */
-        public static function pg(array $request): ?array
-        {
-            return self::on(\Cairo\Hook::PGSQL) ? Scheduler::instance()->call('pg', $request) : null;
         }
 
         /** is_uploaded_file(): true for this thread's Cairo uploads. */

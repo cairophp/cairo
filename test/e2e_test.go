@@ -791,7 +791,7 @@ func pgsqlEnv(t *testing.T) {
 	}
 }
 
-// Cairo's PDO pgsql driver: the PHP build has no libpq or pdo_pgsql.
+// PDO pgsql: PHP's pdo_pgsql, with one round trip a query by default.
 func TestPDOPgsql(t *testing.T) {
 	pgsqlEnv(t)
 	var out struct {

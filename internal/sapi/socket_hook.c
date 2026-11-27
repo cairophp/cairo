@@ -47,29 +47,28 @@ static const php_stream_ops *find_orig_ops(const php_stream_ops *hooked)
 	return NULL;
 }
 
-// Hooks::wait as this PHP request found it at its first wait: a wait is too
+// Hooks::wait and Hooks::waitPgsql as this PHP request found them at its first wait: a wait is too
 // frequent to look the method up by its name each time. The class is the
 // request's, so its end forgets it (cairo_socket_request_end()).
-static __thread zend_function *wait_fn;
+static __thread zend_function *wait_fn, *wait_pgsql_fn;
 
 // A wait outside any fiber, of a classic request on its thread's own stack:
 // the thread waits, as PHP would, but no longer than the request's deadline.
-// Returns as cairo_wait_fd() does.
-static int wait_on_stack(php_netstream_data_t *sock, int write)
+// Returns as cairo_hook_wait() does.
+static int wait_on_stack(int fd, int write, double timeout)
 {
 	int64_t at = cairo_stack_deadline();
 	if (at == 0) {
 		return 0;
 	}
 	int64_t now = cairo_mono_ns();
-	int64_t end = sock->timeout.tv_sec == -1 ? INT64_MAX
-		: now + (int64_t)sock->timeout.tv_sec * 1000000000 + (int64_t)sock->timeout.tv_usec * 1000;
-	struct pollfd pfd = {.fd = sock->socket, .events = write ? POLLOUT : POLLIN};
+	int64_t end = timeout < 0 ? INT64_MAX : now + (int64_t)(timeout * 1e9);
+	struct pollfd pfd = {.fd = fd, .events = write ? POLLOUT : POLLIN};
 	for (;;) {
 		int64_t ms = ((end < at ? end : at) - now + 999999) / 1000000;
 		int n = poll(&pfd, 1, ms < 0 ? 0 : ms > INT_MAX ? INT_MAX : (int)ms);
 		if (n > 0 || (n < 0 && errno != EINTR)) {
-			return 1;   // ready, or an error that PHP's read reports
+			return 1;   // ready, or an error that the caller's read reports
 		}
 		now = cairo_mono_ns();
 		if (now >= at) {
@@ -82,34 +81,30 @@ static int wait_on_stack(php_netstream_data_t *sock, int write)
 	}
 }
 
-// Asks the runtime to wait (Cairo\Internal\Hooks::wait) for a socket that
-// was just found not ready. Returns 1 when the socket is ready, 0 when the
-// runtime declined (block as usual), -1 on the socket's own timeout, -2 when
-// an exception was thrown (deadline).
-static int cairo_wait_fd(php_netstream_data_t *sock, int write)
+int cairo_hook_wait(int fd, int write, double timeout, bool pgsql)
 {
 	if (EG(active_fiber) == NULL) {
-		return wait_on_stack(sock, write);
+		return wait_on_stack(fd, write, timeout);
 	}
-	double timeout = -1;
-	if (sock->timeout.tv_sec != -1) {
-		timeout = (double)sock->timeout.tv_sec + (double)sock->timeout.tv_usec / 1e6;
-	}
-	if (wait_fn == NULL) {
+	zend_function **fn = pgsql ? &wait_pgsql_fn : &wait_fn;
+	if (*fn == NULL) {
 		zend_string *name = zend_string_init(ZEND_STRL("Cairo\\Internal\\Hooks"), 0);
 		zend_class_entry *hooks = zend_lookup_class(name);
 		zend_string_release(name);
-		wait_fn = hooks != NULL ? zend_hash_str_find_ptr(&hooks->function_table, ZEND_STRL("wait")) : NULL;
-		if (wait_fn == NULL) {
+		*fn = hooks == NULL ? NULL : pgsql
+			? zend_hash_str_find_ptr(&hooks->function_table, ZEND_STRL("waitpgsql"))
+			: zend_hash_str_find_ptr(&hooks->function_table, ZEND_STRL("wait"));
+		if (*fn == NULL) {
 			return 0;
 		}
 	}
+	zend_function *wait = *fn;
 	zval args[3], retval;
-	ZVAL_LONG(&args[0], (zend_long)sock->socket);
+	ZVAL_LONG(&args[0], (zend_long)fd);
 	ZVAL_BOOL(&args[1], write);
 	ZVAL_DOUBLE(&args[2], timeout);
 	ZVAL_UNDEF(&retval);
-	zend_call_known_function(wait_fn, NULL, wait_fn->common.scope, &retval, 3, args, NULL);
+	zend_call_known_function(wait, NULL, wait->common.scope, &retval, 3, args, NULL);
 	if (EG(exception) != NULL) {
 		zval_ptr_dtor(&retval);
 		return -2;
@@ -117,6 +112,17 @@ static int cairo_wait_fd(php_netstream_data_t *sock, int write)
 	int out = Z_TYPE(retval) == IS_LONG ? (int)Z_LVAL(retval) : 0;
 	zval_ptr_dtor(&retval);
 	return out;
+}
+
+// A stream's socket was just found not ready: waits for it under the
+// stream's own timeout.
+static int cairo_wait_fd(php_netstream_data_t *sock, int write)
+{
+	double timeout = -1;
+	if (sock->timeout.tv_sec != -1) {
+		timeout = (double)sock->timeout.tv_sec + (double)sock->timeout.tv_usec / 1e6;
+	}
+	return cairo_hook_wait((int)sock->socket, write, timeout, false);
 }
 
 // TLS options from the stream context's "ssl" group, in Go's terms.
@@ -679,7 +685,7 @@ static void cairo_hook_sockets(void)
 
 static void cairo_socket_request_end(void)
 {
-	wait_fn = NULL;
+	wait_fn = wait_pgsql_fn = NULL;
 	crypto_setup_stream = NULL;
 }
 

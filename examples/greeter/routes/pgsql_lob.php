@@ -1,7 +1,7 @@
 <?php
 
 // PDO::pgsqlLOBCreate(), pgsqlLOBOpen() and pgsqlLOBUnlink(): large objects
-// as PHP streams. As with pdo_pgsql, they need a transaction.
+// as PHP streams. They need a transaction.
 
 declare(strict_types=1);
 
@@ -34,7 +34,6 @@ return function ($http): void {
         $slice = fread($lob, 5);
         fseek($lob, -3, SEEK_END);
         $tail = fread($lob, 10);
-        $eof = feof($lob);
         fclose($lob);
         $pdo->commit();
 
@@ -61,7 +60,6 @@ return function ($http): void {
             'length' => strlen($back),
             'slice' => $slice,
             'tail' => bin2hex($tail),
-            'eof' => $eof,
             'unlinked' => $unlinked,
             'missing' => $missing,
             'invalid' => $invalid,

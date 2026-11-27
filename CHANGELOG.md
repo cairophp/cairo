@@ -7,6 +7,26 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+### Changed
+
+- PDO pgsql is now PHP's own `pdo_pgsql`, on libpq, in every binary and
+  image, instead of Cairo's Go driver. Its waits for the server (queries,
+  connects, `COPY`, large objects, `getNotify()` with a timeout) suspend only
+  the fiber, and a new connection runs each statement in one round trip
+  (`PDO::PGSQL_ATTR_DISABLE_PREPARES` is on unless the connection's options
+  set it). Real requests that make two queries: +36% in fiber mode, +38% in
+  isolated mode. Everything `pdo_pgsql` does is there, with PHP's own
+  behaviour and error messages. A deadline or a cancel in the middle of a
+  query ends it at once and closes that connection.
+
+### Removed
+
+- `cairo_pool=N` in a pgsql DSN (the pool of server connections shared by
+  every thread), which belonged to Cairo's Go driver. Use `Cairo\Pool`, or a
+  pooler such as PgBouncer.
+- The `sql` kind of the slow request log: PDO pgsql's waits are now counted
+  under `socket`, with PDO MySQL's.
+
 ## [0.7.0] - 2026-11-27
 
 Cairo now ships for every PHP it supports, 8.3 to 8.6, and an app can add

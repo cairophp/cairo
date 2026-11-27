@@ -31,7 +31,7 @@ func RegisterOp(name string, fn GoOp) {
 }
 
 // FiberOp is an operation that only a fiber can ask for: what PHP's hooked
-// functions (connect, TLS, DNS, PDO pgsql) do in a goroutine while the fiber
+// functions (connect, TLS, DNS) do in a goroutine while the fiber
 // is suspended. It returns what the fiber wakes up with: a result,
 // or the text of an error. Unlike a GoOp it decides itself what the end of
 // the context means, because a socket that did connect must still reach PHP,

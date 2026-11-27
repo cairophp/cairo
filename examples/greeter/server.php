@@ -160,7 +160,7 @@ $http->get('/mysql', function (Request $req): Response {
     return Response::json($row);
 });
 
-// PDO pgsql through Cairo's Go-backed driver (pgx, no libpq): pg_sleep(1)
+// PDO pgsql (PHP's pdo_pgsql on libpq): pg_sleep(1)
 // suspends this fiber, not the thread.
 $pgsql = static fn (): PDO => new PDO((string) getenv('CAIRO_TEST_PGSQL'), (string) getenv('CAIRO_TEST_PGSQL_USER'), (string) getenv('CAIRO_TEST_PGSQL_PASSWORD'));
 

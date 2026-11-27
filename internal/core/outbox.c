@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include "extension.h"
+#include "isolated.h"
 #include "loop.h"
 #include "outbox.h"
 
@@ -77,6 +78,7 @@ int cairo_answer(int64_t id, const char *meta, size_t n, const char *body, size_
 	}
 	cairo_loop_answered(tid);
 	push(m);
+	cairo_isolated_answered(tid);   // after the answer: the next request does not go before it
 	return 0;
 }
 

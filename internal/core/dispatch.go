@@ -37,6 +37,10 @@ type call struct {
 	// so that the next request does not wait for this one's goroutine.
 	// Calling it again does nothing.
 	release func()
+	// In isolated mode, the call's id while its event waits in C's queue
+	// (0 once a thread takes it, or it left), and whether it has its thread.
+	queued atomic.Int64
+	placed atomic.Bool
 }
 
 // reply is PHP's answer to a call: its metadata (JSON) and, for an HTTP
@@ -175,16 +179,9 @@ func (e *Engine) dispatch(ctx context.Context, ev wire.Event) (reply, error) {
 	if te, ok := ev.(wire.TailEvent); ok {
 		tail = te.Tail()
 	}
-	t, release, err := e.pickWorker(ctx, release)
-	if err != nil {
-		r.free()
-		return reply{}, err
-	}
 	c := &r.call
-	c.id, c.thread, c.ctx, c.probe, c.release = id, t, ctx, p, release
-	t.inflight.Add(1)
-	if err := t.begin(c, r.buf, tail); err != nil {
-		t.inflight.Add(-1)
+	c.id, c.ctx, c.probe, c.release = id, ctx, p, release
+	if err := e.place(ctx, c, r.buf, tail); err != nil {
 		release()
 		r.free()
 		return reply{}, err
@@ -203,12 +200,39 @@ func (e *Engine) dispatch(ctx context.Context, ev wire.Event) (reply, error) {
 		}
 		return a, nil
 	case <-ctx.Done():
+		if e.isolated && unqueue(c) {
+			release()
+			r.free()
+			if p != nil {
+				p.Done(ev, CtxError(ctx))
+			}
+			return reply{}, ctx.Err()
+		}
 		go e.abandon(ctx, r, release)
 		if p != nil {
 			p.Done(ev, CtxError(ctx))
 		}
 		return reply{}, ctx.Err()
 	}
+}
+
+// place gives call c, whose event is data with tail behind it, to a request
+// thread.
+func (e *Engine) place(ctx context.Context, c *call, data, tail []byte) error {
+	if e.isolated {
+		return e.queueIsolated(c, data, tail)
+	}
+	t, err := acquire(ctx, e.workers)
+	if err != nil {
+		return err
+	}
+	c.thread = t
+	t.inflight.Add(1)
+	if err := t.begin(c, data, tail); err != nil {
+		t.inflight.Add(-1)
+		return err
+	}
+	return nil
 }
 
 // abandon sees a request through whose context ended before PHP answered:

@@ -7,6 +7,12 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+### Changed
+
+- Isolated and classic mode hand a request thread its next request as it
+  answers the last one: requests wait for a free thread in one queue that the
+  threads read themselves, instead of in Go.
+
 ## [0.7.0] - 2026-11-27
 
 Cairo now ships for every PHP it supports, 8.3 to 8.6, and an app can add

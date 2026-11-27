@@ -48,6 +48,9 @@ change the PHP API; patch versions do not.
 - A stop signal that came just as `cairo serve` began to answer could end the
   process at once, without `--drain`, the grace time or the last spans: the
   signals are now taken before the first server starts.
+- `make build` after switching to another PHP (`PHP_PREFIX`) could link code
+  compiled against the old PHP's headers from Go's build cache, and fail to
+  link or crash at start. The PHP version is now part of the cache key.
 - With PHP 8.6.0 and no `error_reporting` in php.ini, every error inside a
   fiber was silenced (PHP 8.6.0 starts a fiber with php.ini's value, which is
   then 0), so a request handler's warnings and fatal errors were neither

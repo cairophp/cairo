@@ -9,7 +9,9 @@ VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo d
 TAGS ?= deprecated_topic,deprecated_claim
 
 export CGO_ENABLED = 1
-export CGO_CFLAGS  = $(shell $(PHP_CONFIG) --includes)
+# Go's build cache does not see PHP's headers change: the version in the
+# flags keeps it from linking code compiled against another PHP.
+export CGO_CFLAGS  = $(shell $(PHP_CONFIG) --includes) -DCAIRO_PHP_VERNUM=$(shell $(PHP_CONFIG) --vernum)
 export CGO_LDFLAGS = -L$(PHP_PREFIX)/lib -Wl,-rpath,$(PHP_PREFIX)/lib
 
 .PHONY: build test run php static stubs

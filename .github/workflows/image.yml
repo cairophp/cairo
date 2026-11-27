@@ -60,7 +60,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download "$TAG" --pattern 'cairo-php${{ matrix.php }}-linux-*' --pattern SHA256SUMS --dir dist
+          gh release download "$TAG" --pattern 'cairo-php${{ matrix.php }}-linux-amd64' --pattern 'cairo-php${{ matrix.php }}-linux-arm64' --pattern SHA256SUMS --dir dist
           cd dist
           sha256sum --check --ignore-missing SHA256SUMS
           ls cairo-php${{ matrix.php }}-linux-amd64 cairo-php${{ matrix.php }}-linux-arm64

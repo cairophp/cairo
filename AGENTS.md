@@ -64,7 +64,7 @@ the operation has for its own length.
 | `examples/` | Runnable apps. The end-to-end tests serve these, so they are also fixtures |
 | `test/` | End-to-end tests: they start the `cairo` binary on an example and talk to it over HTTP and gRPC |
 | `scripts/` | `build-php.sh` (ZTS PHP into /opt/php-zts), `build-static.sh` (the static binary), `stubs.php`, `publish-stubs.sh`, `core-names.php` (what the core's PHP files name of the extensions, for the boundary test) |
-| `Dockerfile.native`, `scripts/php-image.sh`, `test/native-image/` | The native image: Cairo built against the libphp.so of the official thread-safe `php` image of a PHP version (`php-image.sh` names it: `php:8.4-zts-trixie`, from 8.6 on `php:8.6-cli-trixie`), so an app adds extensions with that image's tools and Cairo loads them. The static binary cannot load any (musl's static programs have no `dlopen`): `Dockerfile.static` builds more in (`EXTRA_EXTENSIONS`, `PECL_EXTENSIONS`, `APK_PACKAGES`). CI builds each native image and a static binary with APCu and shmop, and checks that they load |
+| `Dockerfile.native`, `scripts/php-image.sh`, `test/native-image/` | The native image: Cairo built against the libphp.so of the official thread-safe `php` image of a PHP version (`php-image.sh` names it: `php:8.4-zts-trixie`, from 8.6 on `php:8.6-cli-trixie`), so an app adds extensions with that image's tools and Cairo loads them. The static binary cannot load any (musl's static programs have no `dlopen`): `Dockerfile.static` builds more in (`EXTRA_EXTENSIONS`, `PECL_EXTENSIONS`, `APK_PACKAGES`). `Dockerfile.gnu` builds the same binary on Debian 12 with glibc left shared and PHP's symbols exported (`build-static.sh` sees glibc and links so), which loads extensions built with phpize against its PHP: the build writes that PHP's headers, `php-config` and `phpize` (installed under `/opt/cairo/phpA.B`) as `cairo-dev.tar.gz`, released next to the binary. CI builds each native image, a static binary with APCu and shmop, and the glibc binary of each PHP, which loads shmop built with its kit, and checks that they load |
 | `.github/php-versions.json`, `scripts/php-patches/` | The PHP versions a release ships, newest last: CI builds and tests a static binary of each, the release publishes one per version and architecture (`cairo-php8.4-linux-amd64`, the newest also as `cairo-linux-amd64`) and an image per version (`x.y-php8.4`, `php8.4`; the newest is also `x.y` and `latest`). A new PHP is one entry there, and the default of `Dockerfile.static` and `build-static.sh`. Before 8.5 opcache can only be a shared extension, which a static binary cannot load: `build-static.sh` builds it in with static-php-cli's patches (`php-patches/static-opcache-8.x.patch`, which define `HAVE_OPCACHE`; `cairo.c` then knows it is built in) and leaves its JIT out |
 
 ## Core engine and extensions
@@ -456,7 +456,8 @@ Cairo is a server: per-request code runs millions of times.
    `## [x.y.z] - YYYY-MM-DD` section and update the links at the bottom.
 2. Merge that to `main`, then tag it: `git tag vx.y.z && git push origin vx.y.z`.
 3. `.github/workflows/release.yml` builds the static binaries for amd64 and
-   arm64 and each PHP of `.github/php-versions.json`, with `cairo version`
+   arm64 and each PHP of `.github/php-versions.json`, on musl and on glibc
+   (`-gnu`, with its `-gnu-dev.tar.gz` kit), with `cairo version`
    set to the tag, checks them, and publishes a GitHub release with
    `SHA256SUMS` and the changelog section as notes. Tags with a hyphen
    (`v0.2.0-rc.1`) become prereleases. It then calls

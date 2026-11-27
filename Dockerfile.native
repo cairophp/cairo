@@ -2,7 +2,7 @@
 # against the official php image's own thread-safe PHP (its libphp.so), so an
 # app adds the extensions it needs with that image's tools, and Cairo loads
 # them as PHP does:
-#   FROM ghcr.io/cairophp/cairo:0.7-php8.6-trixie
+#   FROM ghcr.io/cairophp/cairo:0.8-php8.6-trixie
 #   USER root
 #   RUN docker-php-ext-install pdo_mysql intl && pecl install redis && docker-php-ext-enable redis
 #   USER cairo

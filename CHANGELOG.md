@@ -7,6 +7,24 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-28
+
+PostgreSQL now goes through PHP's own `pdo_pgsql` on libpq, with its waits
+suspending only the fiber, and isolated and classic mode hand a thread its
+next request as it answers the last one. Real requests that make two
+PostgreSQL queries are 33% faster in fiber mode and 47% faster in isolated
+mode.
+
+**Upgrading from 0.7.** A pgsql DSN with `cairo_pool=N` no longer pools
+connections across threads: drop the option and use `Cairo\Pool` or a pooler
+such as PgBouncer. A deadline or a cancel in the middle of a PostgreSQL query
+now closes that connection, so the next query on it fails: open a new one.
+The slow request log counts PostgreSQL's waits under `socket`, no longer
+`sql`. In isolated mode, under load every thread stays busy, so on a small
+machine fewer threads give a lower p99 (see
+[Isolated mode](https://github.com/cairophp/docs/blob/main/isolated-mode.md)).
+Update the stubs package to `^0.8`, and the image tag to `0.8`.
+
 ### Changed
 
 - PDO pgsql is now PHP's own `pdo_pgsql`, on libpq, in every binary and
@@ -892,7 +910,8 @@ PHP, with many requests per PHP thread as fibers.
 - `Cairo\Sql` returns timestamps in UTC instead of the server's time zone
   (#40).
 
-[Unreleased]: https://github.com/cairophp/cairo/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/cairophp/cairo/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/cairophp/cairo/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/cairophp/cairo/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/cairophp/cairo/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/cairophp/cairo/compare/v0.4.0...v0.5.0

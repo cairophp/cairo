@@ -21,7 +21,7 @@ change the PHP API; patch versions do not.
 - A static binary for glibc that loads extensions, `cairo-php8.6-linux-amd64-gnu`
   and so on for each PHP and architecture (`cairo-linux-amd64-gnu` for the
   newest), built with `Dockerfile.gnu`: everything but glibc is linked in,
-  and it runs where glibc is 2.34 or newer. Its kit,
+  and it runs where glibc is 2.36 or newer. Its kit,
   `cairo-php8.6-linux-amd64-gnu-dev.tar.gz`, has that PHP's headers,
   `php-config` and `phpize`, so `phpize && ./configure && make install`
   builds an extension for it. `CAIRO_LIBC=gnu` makes `install.sh` install

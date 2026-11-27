@@ -3,7 +3,7 @@
 #   docker build -f Dockerfile.gnu --output dist .
 # writes dist/cairo and dist/cairo-dev.tar.gz, the headers, php-config and
 # phpize of its PHP for building extensions (see scripts/build-static.sh).
-# Built on Debian 12, so it runs where glibc is 2.34 or newer.
+# Built on Debian 12, so it runs where glibc is 2.36 or newer.
 FROM golang:1.27-trixie AS go
 
 FROM debian:bookworm AS build

@@ -82,6 +82,10 @@ final class MiniKernel
         if ($request->getPathInfo() === '/sf/file') {
             return new BinaryFileResponse(__DIR__ . '/composer.json', 200, ['Content-Type' => 'application/json']);
         }
+        if ($request->getPathInfo() === '/sf/once') {
+            // In isolated mode the request and the superglobals come from one build.
+            return new JsonResponse(['same' => $request->server->get('REQUEST_TIME_FLOAT') === ($_SERVER['REQUEST_TIME_FLOAT'] ?? null)]);
+        }
         if ($request->getPathInfo() === '/sf/terminated') {
             return new JsonResponse(self::$terminated);
         }
@@ -110,6 +114,9 @@ final class MiniKernel
 }
 
 $app = new App();
+if (getenv('CAIRO_CONCURRENCY') === 'isolated') {
+    $app->concurrency('isolated');
+}
 $http = $app->http(getenv('CAIRO_HTTP') ?: ':8080');
 
 // A Cairo route next to the framework code.
@@ -126,6 +133,7 @@ $http->get('/sf/{id}', Adapter::symfony(new MiniKernel()));
 $http->post('/sf/{id}', Adapter::symfony(new MiniKernel()));
 $http->get('/sf/stream', Adapter::symfony(new MiniKernel()));
 $http->get('/sf/file', Adapter::symfony(new MiniKernel()));
+$http->get('/sf/once', Adapter::symfony(new MiniKernel()));
 $http->get('/sf/terminated', Adapter::symfony(new MiniKernel()));
 
 // A PSR-7 body too large to be one answer goes out in pieces.

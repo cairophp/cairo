@@ -7,6 +7,22 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-27
+
+Cairo now ships for every PHP it supports, 8.3 to 8.6, and an app can add
+the extensions it needs. Each release has a binary and an image per PHP,
+with PHP 8.6 as the default. There are three ways to add extensions: a
+native image on the official `php` image, where `docker-php-ext-install` and
+`pecl install` work as usual; a glibc binary that loads extensions built
+with `phpize` against its kit; and a static binary of your own with more
+extensions built in.
+
+**Upgrading from 0.6.** No API changed. The default binary and the plain
+image tags (`0.7`, `latest`) have PHP 8.6, where 0.6 had PHP 8.5: to stay on
+8.5, use `cairo-php8.5-linux-amd64`, `CAIRO_PHP=8.5` with `install.sh`, or
+the image `0.7-php8.5`. Update the stubs package to `^0.7`, and the image tag
+to `0.7`.
+
 ### Added
 
 - Native images, `ghcr.io/cairophp/cairo:0.7-php8.6-trixie` and so on for
@@ -28,7 +44,7 @@ change the PHP API; patch versions do not.
   both.
 - A release binary and an image for each PHP that Cairo supports: 8.3, 8.4,
   8.5 and 8.6. The binaries are `cairo-php8.4-linux-amd64` and so on, and
-  the images `ghcr.io/cairophp/cairo:0.6-php8.4` (also `x.y.z-php8.4` and
+  the images `ghcr.io/cairophp/cairo:0.7-php8.4` (also `x.y.z-php8.4` and
   `php8.4`, the newest release with that PHP). The default binary
   (`cairo-linux-amd64`) and the plain image tags (`x.y.z`, `x.y`, `latest`)
   have the newest PHP. `CAIRO_PHP=8.4` makes `install.sh` install that one.
@@ -844,7 +860,8 @@ PHP, with many requests per PHP thread as fibers.
 - `Cairo\Sql` returns timestamps in UTC instead of the server's time zone
   (#40).
 
-[Unreleased]: https://github.com/cairophp/cairo/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/cairophp/cairo/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/cairophp/cairo/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/cairophp/cairo/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/cairophp/cairo/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/cairophp/cairo/compare/v0.3.0...v0.4.0

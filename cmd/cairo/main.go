@@ -239,12 +239,17 @@ func serve(args []string) error {
 		log.Info("grpc server listening", "addr", s.Addr(), "services", len(decl.Services), "tls", decl.TLS != nil)
 	}
 
+	// The signals are ours before a server answers: a client that sees the
+	// server up may stop it at once, and Go's default for SIGTERM is to die
+	// without the drain.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	reloadOnSignal(engine, log)
 	errs := make(chan error, len(servers))
 	for _, s := range servers {
 		go func(s server) { errs <- s.Serve() }(s)
 	}
 
-	reloadOnSignal(engine, log)
 	var restart <-chan struct{}
 	if *watching || len(watched) > 0 {
 		paths, err := watchPaths(file, watched)
@@ -257,8 +262,6 @@ func serve(args []string) error {
 		log.Info("watching for changes", "paths", strings.Join(paths, ", "))
 	}
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	var runErr error
 	restarting := false
 	select {

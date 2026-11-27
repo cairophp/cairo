@@ -51,11 +51,13 @@ func TestRequestFree(t *testing.T) {
 	resp := r.call.resp
 	r.call.id, r.call.thread, r.call.ctx = 7, &thread{}, context.Background()
 	r.call.reply = reply{meta: []byte("{}"), body: []byte("body")}
+	r.call.queued.Store(7)
+	r.call.placed.Store(true)
 	r.buf = make([]byte, 0, maxEventBuf+1)
 
 	r.free()
-	if c := &r.call; c.id != 0 || c.thread != nil || c.ctx != nil || c.probe != nil || c.reply.meta != nil || c.reply.body != nil {
-		t.Errorf("the call kept %+v", r.call)
+	if c := &r.call; c.id != 0 || c.thread != nil || c.ctx != nil || c.probe != nil || c.reply.meta != nil || c.reply.body != nil || c.queued.Load() != 0 || c.placed.Load() {
+		t.Errorf("the call kept %+v", &r.call)
 	}
 	if r.call.resp != resp {
 		t.Error("the call's channel was replaced")

@@ -9,6 +9,9 @@ change the PHP API; patch versions do not.
 
 ### Changed
 
+- Isolated and classic mode hand a request thread its next request as it
+  answers the last one: requests wait for a free thread in one queue that the
+  threads read themselves, instead of in Go.
 - In isolated mode, the Symfony, Laravel and PSR-7 adapters make their request
   from the values Cairo already built for PHP's superglobals instead of
   building them a second time.

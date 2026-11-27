@@ -90,9 +90,8 @@ type Engine struct {
 	// slots caps requests in flight (App::maxInFlight() per request thread);
 	// nil when there is no cap.
 	slots chan struct{}
-	// idle holds the request threads free to take a request, in isolated
-	// mode; nil in fiber mode.
-	idle idleSlots
+	// isolated: a request thread runs one request at a time (isolated.go).
+	isolated bool
 
 	// newProbe makes the probe of each request (ProbeRequests); nil when no
 	// extension asked for one.
@@ -262,8 +261,13 @@ func Start(opts Options) (*Engine, error) {
 	if e.spec.MaxInFlight > 0 {
 		e.slots = make(chan struct{}, e.spec.MaxInFlight*nw)
 	}
-	if e.spec.Isolated {
-		e.idle = newIdleSlots(nw)
+	e.isolated = e.spec.Isolated
+	isolatedSlots := 0
+	if e.isolated {
+		isolatedSlots = nw
+	}
+	if err := startIsolated(isolatedSlots); err != nil {
+		return nil, err
 	}
 	e.workers = make([]atomic.Pointer[thread], nw)
 	e.offload = make([]atomic.Pointer[thread], no)
@@ -387,6 +391,7 @@ func (e *Engine) startThread(t *thread) error {
 	// left under this id.
 	t.box.since.Store(0)
 	t.box.stretch.Store(0)
+	placeIsolated(t)
 	if C.cairo_thread_start(C.int(t.id), cfile) != 0 {
 		return fmt.Errorf("could not start php thread %d", t.id)
 	}

@@ -3,12 +3,15 @@
 # SAPI as a static library, its extensions and their C libraries all linked
 # into the Go binary. Nothing else is needed at run time, not even libc.
 #
-# Meant for Alpine (musl): see Dockerfile.static, which installs the static
-# libraries and runs this script. On glibc the binary links but glibc's
-# static getaddrinfo still loads NSS modules at run time, so prefer musl.
+# On Alpine (musl, Dockerfile.static) the binary is fully static and cannot
+# load an extension: a static musl program has no dlopen(). On glibc
+# (Dockerfile.gnu) everything but glibc itself is linked in and PHP's symbols
+# are exported, so it loads extensions built with phpize against the same PHP:
+# the build also writes that PHP's headers, php-config and phpize next to the
+# binary (<output>-dev.tar.gz, PHP installed under /opt/cairo/phpA.B).
 #
 # Usage: scripts/build-static.sh [php-version] [output]
-#   PHP_SRC, CURL_SRC, LIBZIP_SRC, ICU_SRC   unpacked sources to use instead of downloading
+#   PHP_SRC, CURL_SRC, LIBZIP_SRC, ICU_SRC, ONIG_SRC   unpacked sources to use instead of downloading
 #   PHP_EXTENSIONS      configure flags for the extensions (default below)
 #   EXTRA_EXTENSIONS    configure flags added to those, for PHP's own extensions
 #                       left out by default and for the PECL ones below
@@ -18,6 +21,8 @@
 #                       PHP's ext/ and needs its flag in EXTRA_EXTENSIONS. The C
 #                       libraries one needs must be there as static libraries
 #                       (Dockerfile.static: APK_PACKAGES)
+#   PHP_PREFIX          where PHP is installed (default: $WORK/php, and
+#                       /opt/cairo/phpA.B on glibc, where the kit unpacks)
 #   WORK                build directory (default: a temporary one). Reusing
 #                       one skips the libraries and PHP already built there.
 #   STAGE=php           stop after PHP is built and its sources are removed
@@ -33,11 +38,19 @@ OUT="${2:-dist/cairo}"
 CURL_VERSION="${CURL_VERSION:-8.11.1}"
 LIBZIP_VERSION="${LIBZIP_VERSION:-1.11.2}"
 ICU_VERSION="${ICU_VERSION:-74.2}"
+ONIG_VERSION="${ONIG_VERSION:-6.9.10}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 case "$OUT" in /*) ;; *) OUT="$ROOT/$OUT" ;; esac
 WORK="${WORK:-$(mktemp -d)}"
 DEPS="$WORK/deps"
-PREFIX="$WORK/php"
+PHP_MINOR="$(echo "$PHP_VERSION" | cut -d. -f1,2)"
+GLIBC=""
+if getconf GNU_LIBC_VERSION >/dev/null 2>&1; then GLIBC=1; fi
+if [ -n "$GLIBC" ]; then
+  PREFIX="${PHP_PREFIX:-/opt/cairo/php$PHP_MINOR}"
+else
+  PREFIX="${PHP_PREFIX:-$WORK/php}"
+fi
 JOBS="$(nproc)"
 mkdir -p "$DEPS" "$(dirname "$OUT")"
 
@@ -89,10 +102,24 @@ cmake --install "$WORK/libzip-build"
 mark libzip
 fi
 
-# ICU for ext/intl, with its locale data inside libicudata.a. Distros ship
+# Oniguruma for mbstring. Debian ships it only as a shared library.
+if [ -n "$GLIBC" ] && ! built onig; then
+if [ -z "${ONIG_SRC:-}" ]; then
+  curl -fsSL "https://github.com/kkos/oniguruma/releases/download/v${ONIG_VERSION}/onig-${ONIG_VERSION}.tar.gz" | tar -xz -C "$WORK"
+  ONIG_SRC="$WORK/onig-${ONIG_VERSION}"
+fi
+cmake -S "$ONIG_SRC" -B "$WORK/onig-build" -DCMAKE_INSTALL_PREFIX="$DEPS" -DCMAKE_INSTALL_LIBDIR=lib \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_SHARED_LIBS=OFF -DBUILD_TEST=OFF
+cmake --build "$WORK/onig-build" -j"$JOBS"
+cmake --install "$WORK/onig-build"
+mark onig
+fi
+
+# ICU for ext/intl, with its locale data inside libicudata.a. Alpine ships
 # the data as a separate .dat file, which a static binary would not find
-# (NumberFormatter and friends then fail with "Constructor failed").
-if ! built icu; then
+# (NumberFormatter and friends then fail with "Constructor failed"). Debian's
+# libicudata.a has its data, and its libxml2.a needs that ICU.
+if [ -z "$GLIBC" ] && ! built icu; then
 if [ -z "${ICU_SRC:-}" ]; then
   curl -fsSL "https://github.com/unicode-org/icu/releases/download/release-${ICU_VERSION//./-}/icu4c-${ICU_VERSION//./_}-src.tgz" | tar -xz -C "$WORK"
   ICU_SRC="$WORK/icu/source"
@@ -122,7 +149,6 @@ fi
 # The CLI is not needed, as the binary is PHP's command line itself, but from
 # 8.6 the embed SAPI uses the CLI's sources and configure refuses
 # --disable-cli with --enable-embed.
-PHP_MINOR="$(echo "$PHP_VERSION" | cut -d. -f1,2)"
 OPCACHE=""
 NO_CLI="--disable-cli"
 case "$PHP_MINOR" in
@@ -192,10 +218,40 @@ export CGO_CFLAGS="$($PHP_CONFIG --includes) -I$DEPS/include -DCAIRO_STATIC_CURL
 # forth between libraries that need each other. ext/intl is C++.
 # Cairo's curl hook takes over two libcurl functions by renaming calls to
 # them (see internal/sapi/curl_hook.c).
-export CGO_LDFLAGS="-Wl,--wrap=curl_easy_perform -Wl,--wrap=curl_multi_wait -Wl,--wrap=curl_easy_cleanup -L$PREFIX/lib -L$DEPS/lib -Wl,--start-group -lphp $($PHP_CONFIG --libs) $(pkg-config --libs libcurl libzip) -Wl,--end-group -lstdc++ -lm"
+# shellcheck disable=SC2046
+LIBS="-lphp $($PHP_CONFIG --libs) $(pkg-config --libs libcurl libzip)"
+WRAP="-Wl,--wrap=curl_easy_perform -Wl,--wrap=curl_multi_wait -Wl,--wrap=curl_easy_cleanup -L$PREFIX/lib -L$DEPS/lib"
+if [ -z "$GLIBC" ]; then
+  export CGO_LDFLAGS="$WRAP -Wl,--start-group $LIBS -Wl,--end-group -lstdc++ -lm"
+  EXTLDFLAGS="-static"
+else
+  # Every library is linked in but glibc's own, which stay shared: a program
+  # that links glibc statically cannot load an extension either. The
+  # distro's .so files sit next to its .a files, so -Bstatic picks the
+  # archives. --export-dynamic lets an extension find PHP's functions.
+  static="" shared=""
+  for flag in $LIBS; do
+    case "$flag" in
+      -lc | -lm | -ldl | -lrt | -lpthread | -lresolv | -lutil | -lcrypt | -pthread) shared="$shared $flag" ;;
+      *) static="$static $flag" ;;
+    esac
+  done
+  export CGO_LDFLAGS="$WRAP -Wl,-Bstatic -Wl,--start-group $static -l:libstdc++.a -Wl,--end-group -Wl,-Bdynamic $shared -lm"
+  EXTLDFLAGS="-Wl,--export-dynamic -static-libgcc"
+fi
 
 cd "$ROOT"
 go build -trimpath -tags "netgo,osusergo,${CAIRO_TAGS:-deprecated_topic,deprecated_claim}" \
-  -ldflags "-s -w -X main.version=${CAIRO_VERSION:-dev} -linkmode external -extldflags '-static'" \
+  -ldflags "-s -w -X main.version=${CAIRO_VERSION:-dev} -linkmode external -extldflags '$EXTLDFLAGS'" \
   -o "$OUT" ./cmd/cairo
-echo "static cairo ${CAIRO_VERSION:-dev} with PHP $PHP_VERSION: $OUT"
+echo "cairo ${CAIRO_VERSION:-dev} with PHP $PHP_VERSION: $OUT"
+
+if [ -n "$GLIBC" ]; then
+  # What phpize needs to build an extension for this PHP, at the paths it
+  # was built with: unpacked in /, `$PREFIX/bin/phpize` works there.
+  EXT_DIR="$($PHP_CONFIG --extension-dir)"
+  mkdir -p "$EXT_DIR"
+  tar -czf "$OUT-dev.tar.gz" -C / "${PREFIX#/}/bin/php-config" "${PREFIX#/}/bin/phpize" \
+    "${PREFIX#/}/include/php" "${PREFIX#/}/lib/php/build" "${EXT_DIR#/}"
+  echo "the headers and phpize of PHP $PHP_VERSION for extensions: $OUT-dev.tar.gz"
+fi

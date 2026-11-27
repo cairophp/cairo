@@ -2,8 +2,10 @@ name: release
 # Push a tag such as v0.1.0 to publish a GitHub release with one static
 # binary per PHP version of .github/php-versions.json and architecture
 # (cairo-php8.4-linux-amd64), the newest PHP's also under the plain name
-# (cairo-linux-amd64), and their SHA-256 checksums. The release notes are
-# the tag's section of CHANGELOG.md.
+# (cairo-linux-amd64), and their SHA-256 checksums. Each also has a glibc
+# build that loads extensions (cairo-php8.4-linux-amd64-gnu), with the kit
+# to build them (cairo-php8.4-linux-amd64-gnu-dev.tar.gz). The release notes
+# are the tag's section of CHANGELOG.md.
 on:
   push:
     tags: ["v*"]
@@ -56,12 +58,16 @@ jobs:
       matrix:
         php: ${{ fromJSON(needs.versions.outputs.php) }}
         arch: [amd64, arm64]
+        libc: [musl, gnu]
         include:
           - arch: amd64
             runner: ubuntu-24.04
           - arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
+    env:
+      # What the binary's name ends with: nothing for musl, -gnu for glibc.
+      SUFFIX: ${{ matrix.libc == 'gnu' && '-gnu' || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -74,27 +80,29 @@ jobs:
           DOCKER_BUILD_RECORD_UPLOAD: false   # no .dockerbuild artifact, which counts against storage
         with:
           context: .
-          file: Dockerfile.static
+          file: ${{ matrix.libc == 'gnu' && 'Dockerfile.gnu' || 'Dockerfile.static' }}
           build-args: |
             CAIRO_VERSION=${{ github.ref_name }}
             PHP_VERSION=${{ matrix.php }}
           outputs: type=local,dest=dist
-          cache-from: type=gha,scope=static-${{ matrix.arch }}-php${{ matrix.php }}
+          cache-from: type=gha,scope=static-${{ matrix.libc }}-${{ matrix.arch }}-php${{ matrix.php }}
       - name: Check it
         env:
           CAIRO_TEST_BIN: ${{ github.workspace }}/dist/cairo
-          CAIRO_TEST_STATIC: "1"
+          CAIRO_TEST_STATIC: ${{ matrix.libc == 'musl' && '1' || '' }}
         run: |
           file dist/cairo
           test "$(dist/cairo version)" = "cairo ${{ github.ref_name }}"
           test "$(dist/cairo php -r 'echo PHP_VERSION;')" = "${{ matrix.php }}"
           go test ./test -count=1 -run 'TestStaticBinary|TestPHPBuildHasOpcacheAndExtensions'
           minor="$(echo "${{ matrix.php }}" | cut -d. -f1,2)"
-          mv dist/cairo "dist/cairo-php$minor-linux-${{ matrix.arch }}"
+          name="cairo-php$minor-linux-${{ matrix.arch }}$SUFFIX"
+          mv dist/cairo "dist/$name"
+          if [ -e dist/cairo-dev.tar.gz ]; then mv dist/cairo-dev.tar.gz "dist/$name-dev.tar.gz"; fi
       - name: Attach it to the draft
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" dist/cairo-php*-linux-${{ matrix.arch }} --clobber
+        run: gh release upload "$GITHUB_REF_NAME" dist/cairo-php*-linux-${{ matrix.arch }}* --clobber
 
   publish:
     needs: build
@@ -111,8 +119,10 @@ jobs:
           newest="$(ls cairo-php*-linux-amd64 | sed 's/^cairo-php//; s/-linux-amd64$//' | sort -V | tail -n 1)"
           for arch in amd64 arm64; do
             cp "cairo-php$newest-linux-$arch" "cairo-linux-$arch"
+            cp "cairo-php$newest-linux-$arch-gnu" "cairo-linux-$arch-gnu"
+            cp "cairo-php$newest-linux-$arch-gnu-dev.tar.gz" "cairo-linux-$arch-gnu-dev.tar.gz"
           done
-          gh release upload "$GITHUB_REF_NAME" cairo-linux-amd64 cairo-linux-arm64 --clobber
+          gh release upload "$GITHUB_REF_NAME" cairo-linux-amd64* cairo-linux-arm64* --clobber
           sha256sum cairo-linux-* cairo-php*-linux-* > SHA256SUMS
           cat SHA256SUMS
           gh release upload "$GITHUB_REF_NAME" SHA256SUMS --clobber

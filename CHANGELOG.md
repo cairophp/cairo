@@ -18,6 +18,14 @@ change the PHP API; patch versions do not.
   PHP's own extensions that are off by default and PECL packages
   (`EXTRA_EXTENSIONS`, `PECL_EXTENSIONS`, and `APK_PACKAGES` for the static
   libraries one needs). A static binary cannot load extensions at run time.
+- A static binary for glibc that loads extensions, `cairo-php8.6-linux-amd64-gnu`
+  and so on for each PHP and architecture (`cairo-linux-amd64-gnu` for the
+  newest), built with `Dockerfile.gnu`: everything but glibc is linked in,
+  and it runs where glibc is 2.36 or newer. Its kit,
+  `cairo-php8.6-linux-amd64-gnu-dev.tar.gz`, has that PHP's headers,
+  `php-config` and `phpize`, so `phpize && ./configure && make install`
+  builds an extension for it. `CAIRO_LIBC=gnu` makes `install.sh` install
+  both.
 - A release binary and an image for each PHP that Cairo supports: 8.3, 8.4,
   8.5 and 8.6. The binaries are `cairo-php8.4-linux-amd64` and so on, and
   the images `ghcr.io/cairophp/cairo:0.6-php8.4` (also `x.y.z-php8.4` and

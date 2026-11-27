@@ -138,15 +138,19 @@ jobs:
           file dist/cairo
           test "$(dist/cairo php -d apc.enable_cli=1 -r 'apcu_store("k", 42); echo apcu_fetch("k"), " ", function_exists("shmop_open") ? "shmop" : "none";')" = "42 shmop"
 
-  # One static binary (Dockerfile.static) per PHP version that a release
-  # ships and architecture, then the whole suite against it.
+  # One static binary per PHP version that a release ships, architecture
+  # and libc, then the whole suite against it: musl (Dockerfile.static,
+  # fully static) and glibc (Dockerfile.gnu, which loads extensions: an
+  # extension built with its kit is loaded in the command line and a server).
   static:
+    name: static (${{ matrix.php }}, ${{ matrix.arch }}${{ matrix.libc == 'gnu' && ', gnu' || '' }})
     needs: versions
     strategy:
       fail-fast: false
       matrix:
         php: ${{ fromJSON(needs.versions.outputs.php) }}
         arch: [amd64, arm64]
+        libc: [musl, gnu]
         include:
           - arch: amd64
             runner: ubuntu-24.04
@@ -182,20 +186,39 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.static
+          file: ${{ matrix.libc == 'gnu' && 'Dockerfile.gnu' || 'Dockerfile.static' }}
           build-args: PHP_VERSION=${{ matrix.php }}
           outputs: type=local,dest=dist
-          cache-from: type=gha,scope=static-${{ matrix.arch }}-php${{ matrix.php }}
-          cache-to: type=gha,scope=static-${{ matrix.arch }}-php${{ matrix.php }},mode=max
+          cache-from: type=gha,scope=static-${{ matrix.libc }}-${{ matrix.arch }}-php${{ matrix.php }}
+          cache-to: type=gha,scope=static-${{ matrix.libc }}-${{ matrix.arch }}-php${{ matrix.php }},mode=max
       - name: Inspect it
         run: |
           file dist/cairo
           ls -lh dist/cairo
           test "$(dist/cairo php -r 'echo PHP_VERSION;')" = "${{ matrix.php }}"
+          # The newest glibc the gnu binary needs.
+          if [ "${{ matrix.libc }}" = gnu ]; then objdump -T dist/cairo | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1; fi
+      - name: Build an extension with its kit and load it
+        if: matrix.libc == 'gnu'
+        run: |
+          minor="$(echo "${{ matrix.php }}" | cut -d. -f1,2)"
+          sudo tar -C / -xzf dist/cairo-dev.tar.gz
+          sudo chown -R "$USER" "/opt/cairo/php$minor"
+          curl -fsSL "https://github.com/php/php-src/archive/refs/tags/php-${{ matrix.php }}.tar.gz" \
+            | tar -xz --strip-components=2 "php-src-php-${{ matrix.php }}/ext/shmop"
+          (cd shmop && "/opt/cairo/php$minor/bin/phpize" && ./configure --with-php-config="/opt/cairo/php$minor/bin/php-config" && make && make install)
+          test "$(dist/cairo php -d extension=shmop -r 'echo extension_loaded("shmop") ? "shmop" : "none";')" = shmop
+          echo "extension=shmop" > ext.ini
+          dist/cairo serve test/native-image/server.php --php-ini ext.ini > serve.log 2>&1 &
+          pid=$!
+          for _ in $(seq 1 50); do curl -fsS http://127.0.0.1:8080/ > answer 2>/dev/null && break; sleep 0.2; done
+          kill "$pid"
+          cat serve.log
+          test "$(cat answer)" = shmop
       - name: Test against it
         env:
           CAIRO_TEST_BIN: ${{ github.workspace }}/dist/cairo
-          CAIRO_TEST_STATIC: "1"
+          CAIRO_TEST_STATIC: ${{ matrix.libc == 'musl' && '1' || '' }}
           CAIRO_TEST_MYSQL: "mysql:host=127.0.0.1;port=3306"
           CAIRO_TEST_MYSQL_USER: root
           CAIRO_TEST_MYSQL_PASSWORD: cairo
@@ -209,6 +232,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
-          name: cairo-php${{ matrix.php }}-linux-${{ matrix.arch }}-static
-          path: dist/cairo
+          name: cairo-php${{ matrix.php }}-linux-${{ matrix.arch }}-${{ matrix.libc }}
+          path: dist/cairo*
           retention-days: 7

@@ -7,6 +7,12 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+### Changed
+
+- In isolated mode, the Symfony, Laravel and PSR-7 adapters make their request
+  from the values Cairo already built for PHP's superglobals instead of
+  building them a second time.
+
 ## [0.7.0] - 2026-11-27
 
 Cairo now ships for every PHP it supports, 8.3 to 8.6, and an app can add

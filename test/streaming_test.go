@@ -482,7 +482,7 @@ func TestClassicOutputIsTheAnswer(t *testing.T) {
 // file response is sent in pieces with the ranges Symfony makes of it, and
 // a large PSR-7 body is too.
 func TestFrameworkStreamedResponses(t *testing.T) {
-	base := startFrameworks(t)
+	base := startFrameworks(t, "fibers")
 
 	start := time.Now()
 	resp, err := http.Get(base + "/sf/stream")

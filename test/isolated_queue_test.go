@@ -82,6 +82,19 @@ func TestIsolatedRecyclingWhileRequestsQueue(t *testing.T) {
 			}()
 		}
 		wg.Wait()
+		// A thread past its limit serves on until its replacement has
+		// started, which a fast machine's wave does not wait for: the next
+		// wave begins once a new thread answers.
+		for deadline := time.Now().Add(10 * time.Second); ; {
+			code, id := fetch("/boot")
+			if code == 200 && !seen[id] {
+				seen[id] = true
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("no new thread answered within 10 s after wave %d (%d threads so far)", wave, len(seen))
+			}
+		}
 	}
 	if len(seen) < 3 {
 		t.Fatalf("120 requests with maxRequests(5) ran on %d threads, want several", len(seen))

@@ -14,7 +14,7 @@ change the PHP API; patch versions do not.
   connects, `COPY`, large objects, `getNotify()` with a timeout) suspend only
   the fiber, and a new connection runs each statement in one round trip
   (`PDO::PGSQL_ATTR_DISABLE_PREPARES` is on unless the connection's options
-  set it). Real requests that make two queries: +36% in fiber mode, +38% in
+  set it). Real requests that make two queries: +33% in fiber mode, +47% in
   isolated mode. Everything `pdo_pgsql` does is there, with PHP's own
   behaviour and error messages. A deadline or a cancel in the middle of a
   query ends it at once and closes that connection.

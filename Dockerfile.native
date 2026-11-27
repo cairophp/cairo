@@ -26,6 +26,11 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     make build PHP_PREFIX=/usr/local VERSION="$CAIRO_VERSION" TAGS="$CAIRO_TAGS"
 
 FROM ${PHP_IMAGE}
+# PDO pgsql is PHP's own pdo_pgsql, on libpq, as in the static binary. The
+# official image leaves it out, so it is built here.
+RUN apt-get update && apt-get install -y --no-install-recommends libpq5 libpq-dev \
+    && docker-php-ext-install pdo_pgsql \
+    && apt-get purge -y libpq-dev && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 # Not root: an app that is taken over cannot change the image or bind low
 # ports. Installing an extension needs root, so a Dockerfile switches to it
 # for that and back (above).

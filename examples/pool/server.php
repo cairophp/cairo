@@ -134,27 +134,4 @@ $http->get('/lifetime', function (Request $req): Response {
     return Response::json(['before' => $before, 'after' => Conn::$opened, 'stats' => $pool->stats()]);
 });
 
-// PostgreSQL with cairo_pool=2 in the DSN: PDO objects on every thread share
-// 2 server connections. Each borrows one for the request that uses it.
-$pgShared = new Pool(fn () => new PDO(
-    getenv('CAIRO_TEST_PGSQL') . ';cairo_pool=2',
-    (string) getenv('CAIRO_TEST_PGSQL_USER'),
-    (string) getenv('CAIRO_TEST_PGSQL_PASSWORD'),
-    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION],
-), max: 8);
-
-$http->get('/pgsql-shared', function (Request $req) use ($pgShared): Response {
-    $pdo = $pgShared->get();
-    $pid = (int) $pdo->query('SELECT pg_backend_pid()')->fetchColumn();
-    $pdo->prepare('SELECT pg_sleep(?)')->execute([(float) ($req->query('s') ?? 0)]);
-    if ($req->query('open') !== null) {
-        $pdo->beginTransaction();   // left open: rolled back when the request ends
-        $pdo->exec('SET LOCAL application_name = \'left open\'');
-    }
-    return Response::json([
-        'pid' => $pid,
-        'app' => $pdo->query('SHOW application_name')->fetchColumn(),
-    ]);
-});
-
 return $app;

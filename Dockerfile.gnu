@@ -8,7 +8,7 @@ FROM golang:1.27-trixie AS go
 
 FROM debian:bookworm AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential autoconf bison re2c pkg-config cmake curl ca-certificates xz-utils perl patch file \
+      build-essential autoconf bison flex re2c pkg-config cmake curl ca-certificates xz-utils perl patch file \
       libssl-dev zlib1g-dev libbz2-dev liblzma-dev libxml2-dev libsqlite3-dev libicu-dev \
       libsodium-dev libgmp-dev libpng-dev libjpeg-dev libwebp-dev libfreetype-dev libbrotli-dev \
     && rm -rf /var/lib/apt/lists/*

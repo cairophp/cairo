@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -155,62 +154,6 @@ func TestPoolRetiresOldConnections(t *testing.T) {
 		fetch("/lifetime?by="+by, &got)
 		if got.Before != 1 || got.After != 2 || got.Stats.Open != 1 {
 			t.Fatalf("%s: got %+v, want one connection reused, then replaced when too old", by, got)
-		}
-	}
-}
-
-// cairo_pool=2 in a pgsql DSN: PDO objects on every thread share 2 server
-// connections. 8 requests that each hold one for 0.3 s run 2 at a time, a
-// waiting request suspends only its fiber, and a transaction left open is
-// rolled back before the connection is reused.
-func TestPoolPgsqlShared(t *testing.T) {
-	pgsqlEnv(t)
-	fetch, _ := startPoolThreads(t, 4)
-	type reply struct {
-		Pid int
-		App string
-	}
-	const requests, hold, size = 8, 0.3, 2
-	start := time.Now()
-	var (
-		wg   sync.WaitGroup
-		mu   sync.Mutex
-		pids = map[int]bool{}
-	)
-	for range requests {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			var r reply
-			fetch("/pgsql-shared?s="+strconv.FormatFloat(hold, 'f', -1, 64), &r)
-			mu.Lock()
-			pids[r.Pid] = true
-			mu.Unlock()
-		}()
-	}
-	time.Sleep(100 * time.Millisecond)
-	quick := time.Now()
-	fetch("/stats", nil)
-	if took := time.Since(quick); took > 200*time.Millisecond {
-		t.Errorf("/stats took %v while requests waited for a connection: a wait blocked a thread", took)
-	}
-	wg.Wait()
-	took := time.Since(start).Seconds()
-	want := float64(requests/size) * hold
-	if took < want*0.95 || took > want+1 {
-		t.Errorf("%d requests took %.2f s, want about %.1f s: %d at a time", requests, took, want, size)
-	}
-	if len(pids) > size {
-		t.Errorf("requests ran on %d server connections, want at most %d", len(pids), size)
-	}
-	for range 2 * size {
-		fetch("/pgsql-shared?open=1", nil)
-	}
-	for range 2 * size {
-		var r reply
-		fetch("/pgsql-shared", &r)
-		if r.App == "left open" {
-			t.Fatal("a transaction left open reached the next request")
 		}
 	}
 }

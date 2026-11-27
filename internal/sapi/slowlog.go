@@ -18,8 +18,7 @@ import (
 type waitKind uint8
 
 const (
-	waitSQL waitKind = iota
-	waitHTTP
+	waitHTTP waitKind = iota
 	waitSocket
 	waitConnect
 	waitSleep
@@ -30,13 +29,11 @@ const (
 	numWaitKinds
 )
 
-var waitKindNames = [numWaitKinds]string{"sql", "http", "socket", "connect", "sleep", "wait", "offload", "grpc", "other"}
+var waitKindNames = [numWaitKinds]string{"http", "socket", "connect", "sleep", "wait", "offload", "grpc", "other"}
 
 // opKind sorts a fiber operation (see runOp) into the kind it is logged as.
 func opKind(op string) waitKind {
 	switch op {
-	case "pg":
-		return waitSQL
 	case "waitset": // a hooked curl transfer
 		return waitHTTP
 	case "wait":

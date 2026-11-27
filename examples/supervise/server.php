@@ -49,6 +49,9 @@ function exhaust_memory(): never
 }
 
 $app = new App();
+if (getenv('CAIRO_CONCURRENCY') === 'isolated') {
+    $app->concurrency('isolated');
+}
 $app->maxRequests((int) (getenv('CAIRO_MAX_REQUESTS') ?: 0))
     ->maxMemory(getenv('CAIRO_MAX_MEMORY') ?: 0)
     ->maxInFlight((int) (getenv('CAIRO_MAX_IN_FLIGHT') ?: 0));

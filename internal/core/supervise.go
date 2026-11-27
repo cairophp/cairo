@@ -128,6 +128,11 @@ func (e *Engine) threadExited(t *thread, status int) {
 	t.retired, t.gone = t.retired || retiring, retiring
 	failed := e.failCalls(t, retiring)
 	t.sendMu.Unlock()
+	if e.isolated && failed > 0 && t.pool == poolWorker {
+		// Its request will never be answered: the slot takes the next. Not
+		// here, where the thread's answers are collected.
+		go releaseSlot(t.slot)
+	}
 	if retiring {
 		close(t.left)
 	}

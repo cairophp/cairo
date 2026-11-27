@@ -18,6 +18,9 @@ change the PHP API; patch versions do not.
   isolated mode. Everything `pdo_pgsql` does is there, with PHP's own
   behaviour and error messages. A deadline or a cancel in the middle of a
   query ends it at once and closes that connection.
+- In isolated mode, the Symfony, Laravel and PSR-7 adapters make their request
+  from the values Cairo already built for PHP's superglobals instead of
+  building them a second time.
 
 ### Removed
 

@@ -13,6 +13,14 @@ namespace Cairo\Internal {
     {
         /** @var ?array<string, mixed> what the app put in $_SERVER as its thread started */
         private static ?array $thread = null;
+        /**
+         * The request fill() last built for, by event id, and its build: a
+         * framework adapter that builds its request from the same values
+         * (Symfony, Laravel, PSR-7) takes them instead of building them a
+         * second time. An isolated thread runs one request at a time.
+         * @var ?array{int, array{get: array, post: array, cookies: array, server: array, files: array}}
+         */
+        private static ?array $filled = null;
 
         public static function fill(array $event): void
         {
@@ -34,6 +42,7 @@ namespace Cairo\Internal {
                 );
             }
             $g = self::build($event);
+            self::$filled = [(int) $event['id'], $g];
             $_GET = $g['get'];
             $_POST = $g['post'];
             $_COOKIE = $g['cookies'];
@@ -48,6 +57,9 @@ namespace Cairo\Internal {
          */
         public static function build(array $event): array
         {
+            if (self::$filled !== null && self::$filled[0] === (int) ($event['id'] ?? 0)) {
+                return self::$filled[1];
+            }
             $headers = $event['headers'] ?? [];
             parse_str((string) ($event['query'] ?? ''), $get);
             $cookies = [];

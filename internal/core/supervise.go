@@ -143,6 +143,13 @@ func (e *Engine) threadExited(t *thread, status int) {
 		e.log.Log(context.Background(), t.level(), "php thread recycled", "thread", t.id, "served", t.box.served.Load()-t.bootMark)
 		return
 	}
+	if t.outdated.Load() {
+		// server.php changed on disk since the start (a deploy, or an edit
+		// that --watch has not acted on yet): no thread of this process can
+		// start any more, and a new one serves the new declaration.
+		e.report(ErrDeclarationChanged)
+		return
+	}
 	// An offload thread that a reload told to end starts anew under its id.
 	renewed := t.renewing.Swap(false) && status == 0
 	if !renewed {

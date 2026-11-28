@@ -20,6 +20,15 @@ change the PHP API; patch versions do not.
   `poll()` of a PHP thread while no `pdo_pgsql` is loaded: about 3% of the CPU
   of a MySQL app in isolated and classic mode.
 
+### Fixed
+
+- A PHP thread that starts after `server.php` changed on disk (one that a
+  fatal error ended, an offload thread, or a thread still booting when
+  `--watch` saw the change) no longer fails with "built a different server
+  declaration" and restarts in a loop until the server stops: it ends
+  quietly and the process starts anew in place with the new declaration, as
+  `--watch` does. The servers listen once every PHP thread has read the code.
+
 ## [0.8.0] - 2026-11-28
 
 PostgreSQL now goes through PHP's own `pdo_pgsql` on libpq, with its waits

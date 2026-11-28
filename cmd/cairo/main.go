@@ -273,7 +273,9 @@ func serve(args []string) error {
 		restarting = true
 	case runErr = <-errs:
 	case runErr = <-engine.Errors():
-		if errors.Is(runErr, core.ErrRestartNeeded) {
+		// A thread that starts finds the code on disk changed, or opcache
+		// has to restart its cache: a new process serves either.
+		if errors.Is(runErr, core.ErrRestartNeeded) || errors.Is(runErr, core.ErrDeclarationChanged) {
 			log.Warn("restarting in place", "because", runErr)
 			restarting, runErr = true, nil
 		}

@@ -55,4 +55,14 @@ $http->get('/offload', fn (): Response => Response::text(offload('greeting')));
 // at a new release and reloads is served from there.
 $http->get('/where', fn (): Response => Response::text(basename(__DIR__)));
 
+// A fatal error, which ends the thread: the thread that starts in its place
+// reads server.php from disk.
+$http->get('/crash', function (): Response {
+    ini_set('memory_limit', '16M');
+    $hog = [];
+    while (true) {
+        $hog[] = str_repeat('x', 1 << 20);
+    }
+});
+
 return $app;

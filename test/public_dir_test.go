@@ -10,7 +10,8 @@ import (
 )
 
 // $http->publicDir(): files that exist are served by Go, everything else
-// (missing files, PHP sources, hidden files) reaches the app.
+// (missing files, PHP sources, hidden files but a top-level .well-known)
+// reaches the app.
 func TestPublicDir(t *testing.T) {
 	addr := freeAddr()
 	cmd := exec.Command(cairoBin, "serve", "../examples/public/server.php", "--threads", "1", "--offload-threads", "1")
@@ -34,6 +35,8 @@ func TestPublicDir(t *testing.T) {
 		{"/css/missing.css", "app /css/missing.css"},
 		{"/index.php", "app /index.php"},
 		{"/.env", "app /.env"},
+		{"/.well-known/security.txt", "Contact: https://github.com/cairophp/cairo/security\n"},
+		{"/css/.well-known/x", "app /css/.well-known/x"},
 	} {
 		resp, err := http.Get("http://" + addr + c.path)
 		if err != nil {

@@ -15,6 +15,16 @@ change the PHP API; patch versions do not.
   arguments of `timeouts()` (`header`, `idle`; 0 is no limit). A gRPC
   connection with no call in flight for 2 minutes gets a GOAWAY.
 
+- `$http->static()` serves its files by the rules of `publicDir()`: no PHP
+  source, no hidden file (`.env`, `.git/config`), no directory listing, and
+  nothing outside its directory, symlinks included. Before, it served all of
+  these. A directory is still served by its `index.html`.
+
+### Fixed
+
+- `publicDir()` serves a top-level `.well-known` directory (security.txt,
+  ACME challenges, app links) instead of handing it to the app.
+
 ## [0.8.1] - 2026-11-28
 
 The server turns opcache's JIT on by default where PHP has it built in:

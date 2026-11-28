@@ -1016,7 +1016,15 @@ namespace Cairo\Http {
         {
         }
 
-        public function timeouts(float $read = 0, float $write = 0): static
+        /**
+         * Time limits of a connection, in seconds (0: none). $read covers
+         * a request's head and body, $write the answer. $header bounds how
+         * long a client takes to send a request's head and $idle how long a
+         * kept-alive connection waits for its next request: they have
+         * defaults, so a client that sends nothing cannot hold a connection
+         * forever.
+         */
+        public function timeouts(float $read = 0, float $write = 0, float $header = 10, float $idle = 120): static
         {
         }
 

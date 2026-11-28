@@ -26,6 +26,8 @@ namespace Cairo\Http {
         private string $ready = '';
         private float $readTimeout = 0;
         private float $writeTimeout = 0;
+        private float $headerTimeout = 10;
+        private float $idleTimeout = 120;
         /** @var list<\Cairo\Middleware> */
         private array $middleware = [];
         /** @var ?array<string, mixed> */
@@ -291,10 +293,23 @@ namespace Cairo\Http {
             return $this;
         }
 
-        public function timeouts(float $read = 0, float $write = 0): static
+        /**
+         * Time limits of a connection, in seconds (0: none). $read covers
+         * a request's head and body, $write the answer. $header bounds how
+         * long a client takes to send a request's head and $idle how long a
+         * kept-alive connection waits for its next request: they have
+         * defaults, so a client that sends nothing cannot hold a connection
+         * forever.
+         */
+        public function timeouts(float $read = 0, float $write = 0, float $header = 10, float $idle = 120): static
         {
+            if (min($read, $write, $header, $idle) < 0) {
+                throw new \InvalidArgumentException('timeouts must be 0 (none) or more');
+            }
             $this->readTimeout = $read;
             $this->writeTimeout = $write;
+            $this->headerTimeout = $header;
+            $this->idleTimeout = $idle;
             return $this;
         }
 
@@ -365,6 +380,8 @@ namespace Cairo\Http {
                 'listen' => $this->listen,
                 'read_timeout' => $this->readTimeout,
                 'write_timeout' => $this->writeTimeout,
+                'header_timeout' => $this->headerTimeout,
+                'idle_timeout' => $this->idleTimeout,
                 'routes' => $this->routes,
                 'static' => $this->static,
                 'public_dir' => $this->publicDir,

@@ -9,6 +9,12 @@ change the PHP API; patch versions do not.
 
 ### Security
 
+- An HTTP server cuts a connection whose client takes more than 10 s to send
+  a request's head, or that stays idle for 2 minutes between requests:
+  before, a client could hold a connection forever (slowloris). Both are new
+  arguments of `timeouts()` (`header`, `idle`; 0 is no limit). A gRPC
+  connection with no call in flight for 2 minutes gets a GOAWAY.
+
 - `$http->static()` serves its files by the rules of `publicDir()`: no PHP
   source, no hidden file (`.env`, `.git/config`), no directory listing, and
   nothing outside its directory, symlinks included. Before, it served all of

@@ -12,11 +12,15 @@ import (
 
 // Declaration is one `$app->http(':8080')` declaration.
 type Declaration struct {
-	Listen       string       `json:"listen"`
-	ReadTimeout  float64      `json:"read_timeout"`
-	WriteTimeout float64      `json:"write_timeout"`
-	Routes       []Route      `json:"routes"`
-	Static       []StaticPath `json:"static"`
+	Listen       string  `json:"listen"`
+	ReadTimeout  float64 `json:"read_timeout"`
+	WriteTimeout float64 `json:"write_timeout"`
+	// HeaderTimeout and IdleTimeout are timeouts()'s $header and $idle,
+	// which PHP sends with their defaults: 0 is no limit.
+	HeaderTimeout float64      `json:"header_timeout"`
+	IdleTimeout   float64      `json:"idle_timeout"`
+	Routes        []Route      `json:"routes"`
+	Static        []StaticPath `json:"static"`
 	// PublicDir is $http->publicDir(): files served at their own paths,
 	// with everything else going to the routes ("" when not set).
 	PublicDir string `json:"public_dir"`

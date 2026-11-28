@@ -62,7 +62,11 @@ func New(decl Declaration, php Dispatcher, log *slog.Logger, tel *telemetry.Tele
 		Handler:      handler,
 		ReadTimeout:  seconds(decl.ReadTimeout),
 		WriteTimeout: seconds(decl.WriteTimeout),
-		ErrorLog:     slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+		// A client that sends its head slowly, or keeps a connection open
+		// with nothing to ask, holds a file descriptor (slowloris).
+		ReadHeaderTimeout: seconds(decl.HeaderTimeout),
+		IdleTimeout:       seconds(decl.IdleTimeout),
+		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
 	srv.RegisterOnShutdown(stopStreams)
 	srv.RegisterOnShutdown(stopSockets)

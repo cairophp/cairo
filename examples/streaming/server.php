@@ -26,14 +26,18 @@ final class Seen
 $app = new App();
 $http = $app->http(getenv('CAIRO_HTTP') ?: ':8080');
 
-// A time limit for requests and one for each write of a stream, when the
-// environment sets them: streams with noTimeout() outlast the first.
+// A time limit for requests, when the environment sets one: streams with
+// noTimeout() outlast it.
 if (($limit = getenv('CAIRO_TIMEOUT')) !== false) {
     $http->use(Middleware::timeout((float) $limit));
 }
-if (($limit = getenv('CAIRO_WRITE_TIMEOUT')) !== false) {
-    $http->timeouts(write: (float) $limit);
-}
+// The connection's own limits, when the environment sets them: 0 is none,
+// and the head of a request and an idle connection have defaults.
+$http->timeouts(
+    write: (float) (getenv('CAIRO_WRITE_TIMEOUT') ?: 0),
+    header: (float) (getenv('CAIRO_HEADER_TIMEOUT') ?: 10),
+    idle: (float) (getenv('CAIRO_IDLE_TIMEOUT') ?: 120),
+);
 
 // The client has "first" a second before "second".
 $http->get('/stream', fn (Request $req): Response => Response::stream(function (Stream $out) use ($req): void {

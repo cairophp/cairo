@@ -28,6 +28,8 @@ return function ($http): void {
                 'loaded' => extension_loaded('Zend OPcache'),
                 'enabled' => is_array($status) && $status['opcache_enabled'],
                 'cached' => function_exists('opcache_is_script_cached') && opcache_is_script_cached(__FILE__),
+                // A PHP built without the JIT has no 'jit' in the status: null.
+                'jit' => is_array($status) && isset($status['jit']) ? (bool) $status['jit']['on'] : null,
                 // Cairo's own PHP files: one of the core, one of an extension, one loaded on first use.
                 'runtime' => array_map(
                     static fn (string $class): bool => function_exists('opcache_is_script_cached')

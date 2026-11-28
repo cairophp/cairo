@@ -171,6 +171,7 @@ static zend_result wrap_pdo(void)
 	if (prev_post_startup != NULL && prev_post_startup() != SUCCESS) {
 		return FAILURE;
 	}
+	cairo_libpq_settle();
 	zend_class_entry *pdo = zend_hash_str_find_ptr(CG(class_table), ZEND_STRL("pdo"));
 	if (pdo == NULL) {
 		return SUCCESS;

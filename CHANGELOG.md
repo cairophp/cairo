@@ -7,6 +7,14 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+### Fixed
+
+- In fiber and isolated mode, what a request sets with `putenv()` is that
+  request's only, as in classic mode and under PHP-FPM: before, it stayed
+  for the next requests on the thread, and in fiber mode the requests that
+  ran beside it saw it too. What `server.php` (or an app's boot before the
+  first request) sets is where every request starts.
+
 ## [0.8.1] - 2026-11-28
 
 The server turns opcache's JIT on by default where PHP has it built in:

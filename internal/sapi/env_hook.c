@@ -12,6 +12,12 @@
 // read. What C libraries read from the environment (libpq, curl's proxies)
 // does not see a putenv().
 //
+// In fiber and isolated mode one PHP request serves all the thread's
+// requests, so its table would carry what one request set into the next.
+// There the table is a request-local static (php/env.php): each request
+// starts from what the thread set before its first one (server.php, an
+// app's boot), and what it sets ends with it.
+//
 // Under PHP-FPM a request's CGI variables (REQUEST_METHOD, HTTP_HOST, ...) are
 // its environment too: getenv() finds them before anything putenv() set, and
 // getenv() with no name and $_ENV list them. A classic script's are what
@@ -25,14 +31,29 @@
 static zif_handler original_getenv;
 static void (*original_import)(zval *array);
 
-// The request's changes: name => string, or null for a name it unset.
-static __thread HashTable *changes;
+// The changes: name => string, or null for a name it unset. In own, the PHP
+// request's, or in local, the request-local static that cairo_env_local()
+// named, which PHP frees itself.
+static __thread zval own;
+static __thread zval *local;
 // The classic script's CGI variables: its $_SERVER as it started, shared
 // with it (a write to $_SERVER separates it).
 static __thread HashTable *cgi;
 // Or what makes them on first use, for a script served in C, whose
 // $_SERVER PHP makes only when the script names it.
 static __thread void (*cgi_fill)(zval *array);
+
+static zval *changes_zval(void)
+{
+	return local != NULL ? local : &own;
+}
+
+// The changes to read, or NULL when there are none.
+static HashTable *changes(void)
+{
+	zval *z = changes_zval();
+	return Z_TYPE_P(z) == IS_ARRAY ? Z_ARRVAL_P(z) : NULL;
+}
 
 static HashTable *cgi_vars(void)
 {
@@ -82,18 +103,22 @@ static ZEND_NAMED_FUNCTION(cairo_putenv)
 		zend_argument_value_error(1, "must have a valid syntax");
 		RETURN_THROWS();
 	}
-	if (changes == NULL) {
-		ALLOC_HASHTABLE(changes);
-		zend_hash_init(changes, 8, NULL, ZVAL_PTR_DTOR, 0);
+	zval *z = changes_zval();
+	if (Z_TYPE_P(z) != IS_ARRAY) {
+		zval_ptr_dtor(z);
+		array_init(z);
 	}
+	// What other requests started from stays theirs.
+	SEPARATE_ARRAY(z);
+	HashTable *table = Z_ARRVAL_P(z);
 	const char *eq = memchr(setting, '=', len);
 	zval value;
 	if (eq == NULL) {
 		ZVAL_NULL(&value);   // no '=': unset it, as PHP's putenv() does
-		zend_hash_str_update(changes, setting, len, &value);
+		zend_hash_str_update(table, setting, len, &value);
 	} else {
 		ZVAL_STRINGL(&value, eq + 1, len - (size_t)(eq - setting) - 1);
-		zend_hash_str_update(changes, setting, (size_t)(eq - setting), &value);
+		zend_hash_str_update(table, setting, (size_t)(eq - setting), &value);
 	}
 	RETURN_TRUE;
 }
@@ -104,12 +129,13 @@ static void getenv_all(zval *return_value)
 {
 	zend_string *key;
 	zval *v;
-	if (changes == NULL && cgi_vars() == NULL) {
+	HashTable *table = changes();
+	if (table == NULL && cgi_vars() == NULL) {
 		return;
 	}
 	SEPARATE_ARRAY(return_value);
-	if (changes != NULL) {
-		ZEND_HASH_FOREACH_STR_KEY_VAL(changes, key, v) {
+	if (table != NULL) {
+		ZEND_HASH_FOREACH_STR_KEY_VAL(table, key, v) {
 			if (key == NULL) {
 				continue;
 			}
@@ -140,8 +166,9 @@ static ZEND_NAMED_FUNCTION(cairo_getenv)
 
 	if (name != NULL) {
 		zval *v = local_only ? NULL : cgi_find(name);
-		if (v == NULL && changes != NULL) {
-			v = zend_hash_find(changes, name);
+		HashTable *table = changes();
+		if (v == NULL && table != NULL) {
+			v = zend_hash_find(table, name);
 		}
 		if (v != NULL) {
 			if (Z_TYPE_P(v) == IS_NULL) {
@@ -192,12 +219,45 @@ PHP_FUNCTION(cairo_cgi_env)
 	}
 }
 
+// cairo_env_local(string $class, string $property): void
+// The changes live in that static property from now on, which the caller
+// makes request-local; what was set until now is its value.
+PHP_FUNCTION(cairo_env_local)
+{
+	zend_string *class_name, *name;
+	ZEND_PARSE_PARAMETERS_START(2, 2)
+		Z_PARAM_STR(class_name)
+		Z_PARAM_STR(name)
+	ZEND_PARSE_PARAMETERS_END();
+	zend_class_entry *ce = zend_lookup_class(class_name);
+	if (ce == NULL) {
+		zend_throw_error(NULL, "class %s does not exist", ZSTR_VAL(class_name));
+		RETURN_THROWS();
+	}
+	zval *slot = zend_std_get_static_property(ce, name, BP_VAR_W);
+	if (slot == NULL) {
+		RETURN_THROWS();
+	}
+	if (Z_TYPE(own) == IS_ARRAY) {
+		zval_ptr_dtor(slot);
+		ZVAL_COPY_VALUE(slot, &own);
+		ZVAL_UNDEF(&own);
+	}
+	local = slot;
+}
+
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_cgi_env, 0, 0, 1)
 	ZEND_ARG_INFO(0, server)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_INFO_EX(arginfo_cairo_env_local, 0, 0, 2)
+	ZEND_ARG_INFO(0, class)
+	ZEND_ARG_INFO(0, property)
+ZEND_END_ARG_INFO()
+
 static const zend_function_entry env_functions[] = {
 	PHP_FE(cairo_cgi_env, arginfo_cairo_cgi_env)
+	PHP_FE(cairo_env_local, arginfo_cairo_env_local)
 	PHP_FE_END
 };
 
@@ -219,16 +279,22 @@ static void env_startup(void)
 
 static void env_request_shutdown(void)
 {
-	if (changes != NULL) {
-		zend_hash_destroy(changes);
-		FREE_HASHTABLE(changes);
-		changes = NULL;
-	}
+	zval_ptr_dtor(&own);
+	ZVAL_UNDEF(&own);
+	local = NULL;
 	if (cgi != NULL) {
 		zend_array_release(cgi);
 		cgi = NULL;
 	}
 	cgi_fill = NULL;
+}
+
+// The PHP request has ended and its memory with it: what a putenv() made
+// after the shutdown above, if any, is gone too.
+static void env_request_end(void)
+{
+	ZVAL_UNDEF(&own);
+	local = NULL;
 }
 
 void cairo_cgi_env_from(void (*fill)(zval *array))
@@ -239,5 +305,6 @@ void cairo_cgi_env_from(void (*fill)(zval *array))
 const cairo_extension cairo_env_hook = {
 	.startup = env_startup,
 	.request_shutdown = env_request_shutdown,
+	.request_end = env_request_end,
 	.functions = env_functions,
 };

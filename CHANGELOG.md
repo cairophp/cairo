@@ -15,6 +15,10 @@ change the PHP API; patch versions do not.
   +5 to 12%, for 11 to 24 MB more memory. A `php.ini` that sets either keeps
   its own value. The static binary before PHP 8.5 has no JIT, and `cairo php`
   is unchanged.
+- A binary that loads extensions (the native images, `-gnu` and native
+  builds) looks for libpq once after PHP's startup instead of on every
+  `poll()` of a PHP thread while no `pdo_pgsql` is loaded: about 3% of the CPU
+  of a MySQL app in isolated and classic mode.
 
 ## [0.8.0] - 2026-11-28
 

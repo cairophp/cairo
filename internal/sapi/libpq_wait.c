@@ -68,6 +68,10 @@ static int from_libpq(uintptr_t ra)
 	(void)ra;
 	return 0;
 }
+
+void cairo_libpq_settle(void)
+{
+}
 #else
 #include <link.h>
 
@@ -92,20 +96,32 @@ static int find_libpq(struct dl_phdr_info *info, size_t size, void *data)
 	return 0;
 }
 
+static int libpq_settled;   // looked for after PHP's startup: no later look
+
 // Whether the code at return address ra is libpq's. pdo_pgsql.so may load
-// libpq after the process started (the native image's php.ini), so a PHP
-// thread that finds no libpq yet looks again.
+// libpq after the process started (the native image's php.ini), so until
+// PHP's startup has ended a PHP thread that finds no libpq yet looks again.
 static int from_libpq(uintptr_t ra)
 {
 	uintptr_t lo = __atomic_load_n(&libpq_lo, __ATOMIC_ACQUIRE);
 	if (lo == 0) {
-		if (tsrm_get_ls_cache() == NULL) {
+		if (__atomic_load_n(&libpq_settled, __ATOMIC_ACQUIRE) || tsrm_get_ls_cache() == NULL) {
 			return 0;
 		}
 		dl_iterate_phdr(find_libpq, NULL);
 		lo = __atomic_load_n(&libpq_lo, __ATOMIC_ACQUIRE);
 	}
 	return lo != 0 && ra >= lo && ra < __atomic_load_n(&libpq_hi, __ATOMIC_RELAXED);
+}
+
+// After PHP's startup every extension of php.ini is loaded, and a server
+// has no dl(): libpq is there now or never is. Without this, an app with no
+// pdo_pgsql walked the list of loaded libraries on each poll() of a PHP
+// thread (mysqlnd's waits among them).
+void cairo_libpq_settle(void)
+{
+	dl_iterate_phdr(find_libpq, NULL);
+	__atomic_store_n(&libpq_settled, 1, __ATOMIC_RELEASE);
 }
 #endif
 

@@ -7,6 +7,13 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+### Changed
+
+- A binary that loads extensions (the native images, `-gnu` and native
+  builds) looks for libpq once after PHP's startup instead of on every
+  `poll()` of a PHP thread while no `pdo_pgsql` is loaded: about 3% of the CPU
+  of a MySQL app in isolated and classic mode.
+
 ## [0.8.0] - 2026-11-28
 
 PostgreSQL now goes through PHP's own `pdo_pgsql` on libpq, with its waits

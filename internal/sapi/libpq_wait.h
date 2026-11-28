@@ -9,6 +9,10 @@
 // thread's epoll, and everywhere else the thread does (libpq_wait.c).
 int cairo_libpq_poll(struct pollfd *fds, nfds_t nfds, int timeout);
 
+// Looks for libpq once PHP's startup has loaded every extension; from then
+// on poll() looks no more (libpq_wait.c).
+void cairo_libpq_settle(void);
+
 // Whether the calling fiber is in pdo_pgsql's getNotify(), whose poll() is
 // its own wait.
 int cairo_pgsql_notify_wait(void);

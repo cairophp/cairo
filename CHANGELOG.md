@@ -51,6 +51,12 @@ Update the stubs package to `^0.8`, and the image tag to `0.8`.
 - The `sql` kind of the slow request log: PDO pgsql's waits are now counted
   under `socket`, with PDO MySQL's.
 
+### Fixed
+
+- `TestHardDeadlineStopsPHP` no longer fails when `/spin-catch` or
+  `/spin-async` starts behind `/spin` on the one thread, after its deadline:
+  each is checked again on its own.
+
 ## [0.7.0] - 2026-11-27
 
 Cairo now ships for every PHP it supports, 8.3 to 8.6, and an app can add

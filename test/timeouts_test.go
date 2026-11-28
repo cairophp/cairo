@@ -3,6 +3,7 @@ package test
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -19,14 +20,14 @@ func closedWithin(t *testing.T, conn net.Conn, from, to time.Duration) {
 	t.Helper()
 	start := time.Now()
 	_ = conn.SetReadDeadline(start.Add(to))
-	_, err := io.Copy(io.Discard, conn)
+	got, err := io.ReadAll(conn)
 	took := time.Since(start)
 	var ne net.Error
 	if errors.As(err, &ne) && ne.Timeout() {
 		t.Fatalf("the server still held the connection after %v", to)
 	}
 	if took < from {
-		t.Fatalf("the server closed the connection after %v, before %v", took, from)
+		t.Fatalf("the server closed the connection after %v, before %v (read %q, %v)", took, from, got, err)
 	}
 }
 
@@ -84,7 +85,9 @@ func TestHeaderTimeoutByDefault(t *testing.T) {
 		_ = cmd.Process.Signal(os.Interrupt)
 		_ = cmd.Wait()
 	})
-	if err := waitFor(addr, 10*time.Second); err != nil {
+	// Measure this server only: in one CI run a bare dial got through 1 ms
+	// after start, far too soon for cairo, and the slow head was cut in 9 us.
+	if err := waitForAnswer("http://"+addr+"/", "app /", 10*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	slow, err := net.Dial("tcp", addr)
@@ -96,4 +99,21 @@ func TestHeaderTimeoutByDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	closedWithin(t, slow, 9*time.Second, 14*time.Second)
+}
+
+// waitForAnswer polls url until it answers want.
+func waitForAnswer(url, want string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var got string
+	for time.Now().Before(deadline) {
+		if resp, err := http.Get(url); err == nil {
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if got = string(b); got == want {
+				return nil
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return fmt.Errorf("%s did not answer %q (last %q)", url, want, got)
 }

@@ -7,6 +7,23 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-28
+
+The server turns opcache's JIT on by default where PHP has it built in:
+Laravel through Octane in isolated mode is 12% faster and a real request 5 to
+12% faster, for 11 to 24 MB more memory per process.
+
+**Upgrading from 0.8.0.** Nothing to change. To keep the JIT off, set
+`opcache.jit = disable` in your `php.ini`; an extension that replaces
+`zend_execute_ex()` (some profilers) makes opcache turn it off and log a
+warning, which that setting quiets.
+
+### Changed
+
+- Releases can be made from the Actions page: the `release` workflow, run on
+  `main` with a version, tags the head of `main` itself, and every release
+  now publishes the stubs to `cairophp/stubs` too.
+
 ### Changed
 
 - The server turns opcache's JIT on by default where PHP has it built in
@@ -17,8 +34,8 @@ change the PHP API; patch versions do not.
   is unchanged.
 - A binary that loads extensions (the native images, `-gnu` and native
   builds) looks for libpq once after PHP's startup instead of on every
-  `poll()` of a PHP thread while no `pdo_pgsql` is loaded: about 3% of the CPU
-  of a MySQL app in isolated and classic mode.
+  `poll()` of a PHP thread while no `pdo_pgsql` is loaded: about 2% of the CPU
+  of a MySQL app in isolated mode, by profile.
 
 ### Fixed
 
@@ -938,7 +955,8 @@ PHP, with many requests per PHP thread as fibers.
 - `Cairo\Sql` returns timestamps in UTC instead of the server's time zone
   (#40).
 
-[Unreleased]: https://github.com/cairophp/cairo/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/cairophp/cairo/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/cairophp/cairo/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/cairophp/cairo/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/cairophp/cairo/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/cairophp/cairo/compare/v0.5.0...v0.6.0

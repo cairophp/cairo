@@ -161,8 +161,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release edit "$TAG" --draft=false
 
-  # The stubs repository takes a push only with its deploy key, kept in this
-  # repository's secret STUBS_DEPLOY_KEY.
+  # The stubs repository takes a push only from the org's GitHub App, whose id
+  # is the variable STUBS_APP_ID and whose private key the secret
+  # STUBS_APP_KEY; its token reaches cairophp/stubs alone and lasts an hour.
   stubs:
     needs: publish
     runs-on: ubuntu-24.04
@@ -170,19 +171,30 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - name: Publish the stubs
+      - name: Check the app
         env:
-          DEPLOY_KEY: ${{ secrets.STUBS_DEPLOY_KEY }}
+          APP_ID: ${{ vars.STUBS_APP_ID }}
+          APP_KEY: ${{ secrets.STUBS_APP_KEY }}
         run: |
-          if [ -z "$DEPLOY_KEY" ]; then
-            echo "No STUBS_DEPLOY_KEY secret: the stubs were not published" >&2
+          if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
+            echo "No STUBS_APP_ID variable or STUBS_APP_KEY secret: the stubs were not published" >&2
             exit 1
           fi
-          install -d -m 700 ~/.ssh
-          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/stubs
-          chmod 600 ~/.ssh/stubs
-          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/stubs -o IdentitiesOnly=yes"
-          git clone -q git@github.com:cairophp/stubs.git "$RUNNER_TEMP/stubs"
+      - uses: actions/create-github-app-token@v2
+        id: app
+        with:
+          app-id: ${{ vars.STUBS_APP_ID }}
+          private-key: ${{ secrets.STUBS_APP_KEY }}
+          owner: cairophp
+          repositories: stubs
+      - name: Publish the stubs
+        env:
+          TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          # The token goes in a header for this clone only, never in its URL.
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          git -c http.extraheader="$auth" clone -q https://github.com/cairophp/stubs.git "$RUNNER_TEMP/stubs"
+          git -C "$RUNNER_TEMP/stubs" config http.extraheader "$auth"
           # A re-run finds the tag of the first run.
           if git -C "$RUNNER_TEMP/stubs" ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
             echo "The stubs already have $TAG"

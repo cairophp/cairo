@@ -470,8 +470,8 @@ Cairo is a server: per-request code runs millions of times.
    (`Dockerfile.native`) tagged the same with `-trixie` behind
    (`x.y-phpA.B-trixie`; `x.y-trixie` and `trixie` for the newest).
 4. The same run publishes the stubs under the same tag (job `stubs`, with
-   the deploy key of `cairophp/stubs` in the secret `STUBS_DEPLOY_KEY`). By
-   hand, should it fail:
+   a token of the org's GitHub App: the variable `STUBS_APP_ID` and the
+   secret `STUBS_APP_KEY`). By hand, should it fail:
    `git clone git@github.com:cairophp/stubs.git /tmp/stubs && scripts/publish-stubs.sh /tmp/stubs vx.y.z`.
 5. `cairophp/octane` and `cairophp/symfony-runtime` have their own versions:
    each has a `release` workflow to run on `main` with the version, which

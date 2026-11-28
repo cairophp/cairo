@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
 	reflectionv1 "google.golang.org/grpc/reflection/grpc_reflection_v1"
 	reflectionv1alpha "google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
@@ -62,6 +63,10 @@ type Server struct {
 	php         Dispatcher
 	log         *slog.Logger
 }
+
+// idleConnection is how long a client's connection may stay open with no
+// call in flight, as an HTTP server's idle timeout.
+const idleConnection = 2 * time.Minute
 
 // New compiles the declared protos, registers the services and opens the listener.
 // With tel, the calls of its services are traced and measured, as declared.
@@ -107,7 +112,11 @@ func New(decl Declaration, php Dispatcher, log *slog.Logger, tel *telemetry.Tele
 		return nil, err
 	}
 	opts := []grpc.ServerOption{grpc.UnknownServiceHandler(s.handle), grpc.ChainStreamInterceptor(interceptors...),
-		grpc.ForceServerCodecV2(NewCodec())}
+		grpc.ForceServerCodecV2(NewCodec()),
+		// A connection with no call in flight for this long gets a GOAWAY,
+		// which a client takes as a cue to dial again on its next call: no
+		// client holds a connection forever with nothing to ask.
+		grpc.KeepaliveParams(keepalive.ServerParameters{MaxConnectionIdle: idleConnection})}
 	if decl.TLS != nil {
 		secure, err := servertls.New(*decl.TLS, log)
 		if err != nil {

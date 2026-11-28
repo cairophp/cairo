@@ -7,6 +7,14 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+### Security
+
+- An HTTP server cuts a connection whose client takes more than 10 s to send
+  a request's head, or that stays idle for 2 minutes between requests:
+  before, a client could hold a connection forever (slowloris). Both are new
+  arguments of `timeouts()` (`header`, `idle`; 0 is no limit). A gRPC
+  connection with no call in flight for 2 minutes gets a GOAWAY.
+
 ### Fixed
 
 - In fiber and isolated mode, what a request sets with `putenv()` is that

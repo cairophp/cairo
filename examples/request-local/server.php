@@ -32,7 +32,12 @@ final class Tenant
 Tenant::$current = 'boot';   // what each request starts with
 RequestLocal::register(Tenant::class, 'current', 'seen');
 
+// putenv() is request-local too: each request starts from what server.php
+// set, and what a request sets ends with it.
+putenv('BOOTED=yes');
+
 $app = new App();
+$app->concurrency(getenv('CAIRO_MODE') ?: 'fibers');
 $http = $app->http(getenv('CAIRO_HTTP') ?: ':8080');
 
 // Sets the tenant, waits while other requests run on the thread, then
@@ -45,6 +50,17 @@ $http->get('/tenant', function (Request $req): Response {
     sleep(0.2);
     $after = await(async(fn (): string => Tenant::$current));
     return Response::json(['before' => $before, 'after' => $after, 'seen' => $seen]);
+});
+
+// Sets TENANT and unsets BOOTED for this request, waits while others run,
+// and reads both back from an async() task.
+$http->get('/env', function (Request $req): Response {
+    $before = ['tenant' => getenv('TENANT'), 'booted' => getenv('BOOTED')];
+    putenv('TENANT=' . $req->query('name'));
+    putenv('BOOTED');
+    sleep(0.2);
+    $after = await(async(fn (): array => ['tenant' => getenv('TENANT'), 'booted' => getenv('BOOTED')]));
+    return Response::json(['before' => $before, 'after' => $after, 'listed' => getenv()['TENANT'] ?? null]);
 });
 
 return $app;

@@ -24,6 +24,11 @@ change the PHP API; patch versions do not.
 
 - `publicDir()` serves a top-level `.well-known` directory (security.txt,
   ACME challenges, app links) instead of handing it to the app.
+- In fiber and isolated mode, what a request sets with `putenv()` is that
+  request's only, as in classic mode and under PHP-FPM: before, it stayed
+  for the next requests on the thread, and in fiber mode the requests that
+  ran beside it saw it too. What `server.php` (or an app's boot before the
+  first request) sets is where every request starts.
 
 ## [0.8.1] - 2026-11-28
 

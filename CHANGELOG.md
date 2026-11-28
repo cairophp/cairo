@@ -41,7 +41,9 @@ warning, which that setting quiets.
   `--watch` saw the change) no longer fails with "built a different server
   declaration" and restarts in a loop until the server stops: it ends
   quietly and the process starts anew in place with the new declaration, as
-  `--watch` does. The servers listen once every PHP thread has read the code.
+  `--watch` does. The servers listen once every PHP thread has read the code,
+  and `--watch` compares with the files as they were before PHP read them,
+  so a change made while the server starts is not missed.
 
 ## [0.8.0] - 2026-11-28
 

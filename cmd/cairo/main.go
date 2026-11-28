@@ -22,6 +22,7 @@ import (
 
 	"github.com/cairophp/cairo/internal/codegen"
 	"github.com/cairophp/cairo/internal/core"
+	"github.com/cairophp/cairo/internal/filewatch"
 	"github.com/cairophp/cairo/internal/grpcserver"
 	"github.com/cairophp/cairo/internal/httpserver"
 	_ "github.com/cairophp/cairo/internal/sapi" // the extensions: each joins the core from its init()
@@ -202,6 +203,18 @@ func serve(args []string) error {
 		}
 		return decls.read(s)
 	}
+	// --watch looks at the files before PHP reads them: a change made while
+	// the threads boot is one it sees.
+	var watchRoots []string
+	var seen filewatch.Snapshot
+	if *watching || len(watched) > 0 {
+		if watchRoots, err = watchPaths(file, watched); err != nil {
+			return err
+		}
+		if seen, err = filewatch.Scan(watchRoots); err != nil {
+			return fmt.Errorf("watch: %w", err)
+		}
+	}
 	engine, err := core.Start(core.Options{
 		ServerFile: file, Threads: *threads, OffloadThreads: *offloadThreads, PHPIni: *phpIni, Logger: log, Validate: validate,
 		Entry: plainEntry, EntryArgs: map[string]any{"path": path, "listen": cmp.Or(*listen, ":8080"), "timeout": timeout.Seconds()},
@@ -251,15 +264,11 @@ func serve(args []string) error {
 	}
 
 	var restart <-chan struct{}
-	if *watching || len(watched) > 0 {
-		paths, err := watchPaths(file, watched)
-		if err != nil {
-			return err
-		}
+	if watchRoots != nil {
 		watchCtx, stopWatching := context.WithCancel(context.Background())
 		defer stopWatching()
-		restart = watch(watchCtx, engine, log, paths)
-		log.Info("watching for changes", "paths", strings.Join(paths, ", "))
+		restart = watch(watchCtx, engine, log, watchRoots, seen)
+		log.Info("watching for changes", "paths", strings.Join(watchRoots, ", "))
 	}
 
 	var runErr error

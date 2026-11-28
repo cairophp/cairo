@@ -454,7 +454,9 @@ Cairo is a server: per-request code runs millions of times.
 
 1. Move the Unreleased entries of `CHANGELOG.md` into a new
    `## [x.y.z] - YYYY-MM-DD` section and update the links at the bottom.
-2. Merge that to `main`, then tag it: `git tag vx.y.z && git push origin vx.y.z`.
+2. Merge that to `main`, then release it: run the `release` workflow on
+   `main` from the Actions page with the version (`vx.y.z`), which tags the
+   head of `main` itself, or push the tag (`git tag vx.y.z && git push origin vx.y.z`).
 3. `.github/workflows/release.yml` builds the static binaries for amd64 and
    arm64 and each PHP of `.github/php-versions.json`, on musl and on glibc
    (`-gnu`, with its `-gnu-dev.tar.gz` kit), with `cairo version`
@@ -467,8 +469,13 @@ Cairo is a server: per-request code runs millions of times.
    and `latest` for the newest, and the native image of each PHP
    (`Dockerfile.native`) tagged the same with `-trixie` behind
    (`x.y-phpA.B-trixie`; `x.y-trixie` and `trixie` for the newest).
-4. Publish the stubs under the same tag, by hand for now:
+4. The same run publishes the stubs under the same tag (job `stubs`, with
+   the deploy key of `cairophp/stubs` in the secret `STUBS_DEPLOY_KEY`). By
+   hand, should it fail:
    `git clone git@github.com:cairophp/stubs.git /tmp/stubs && scripts/publish-stubs.sh /tmp/stubs vx.y.z`.
+5. `cairophp/octane` and `cairophp/symfony-runtime` have their own versions:
+   each has a `release` workflow to run on `main` with the version, which
+   tags it and makes its GitHub release; Packagist follows the tag.
 
 ## Writing apps on Cairo
 

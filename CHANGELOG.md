@@ -9,6 +9,12 @@ change the PHP API; patch versions do not.
 
 ### Changed
 
+- Releases can be made from the Actions page: the `release` workflow, run on
+  `main` with a version, tags the head of `main` itself, and every release
+  now publishes the stubs to `cairophp/stubs` too.
+
+### Changed
+
 - The server turns opcache's JIT on by default where PHP has it built in
   (`opcache.jit=tracing`, `opcache.jit_buffer_size=64M`; PHP 8.4 and later
   leave it off): Laravel through Octane in isolated mode +12%, a real GET

@@ -647,27 +647,6 @@ func get(t *testing.T, path string) string {
 	return string(b)
 }
 
-// handedOut is every address freeAddr returned: the system may give a
-// port it just freed again, and a test that asks for two then gets one
-// twice (two servers on one address).
-var handedOut sync.Map
-
-// freeAddr is a local address that nothing listens on, and that no other
-// call of this process got.
-func freeAddr() string {
-	for {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			panic(err)
-		}
-		addr := ln.Addr().String()
-		ln.Close()
-		if _, taken := handedOut.LoadOrStore(addr, true); !taken {
-			return addr
-		}
-	}
-}
-
 func waitFor(addr string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {

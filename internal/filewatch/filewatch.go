@@ -119,14 +119,10 @@ func (s Snapshot) Diff(prev Snapshot) []string {
 }
 
 // Watch scans roots every interval until ctx ends, and calls changed with
-// the files that changed once they have stood still for a moment. It
-// returns at once with the error of the first scan, when that fails; a
-// later scan that fails (a directory that is being replaced) is tried again.
-func Watch(ctx context.Context, roots []string, interval time.Duration, changed func(paths []string)) error {
-	seen, err := Scan(roots)
-	if err != nil {
-		return err
-	}
+// the files that changed since seen (a Scan taken before the code was read)
+// once they have stood still for a moment. A scan that fails (a directory
+// that is being replaced) is tried again.
+func Watch(ctx context.Context, roots []string, seen Snapshot, interval time.Duration, changed func(paths []string)) {
 	for wait(ctx, interval) {
 		now, err := Scan(roots)
 		if err != nil || len(now.Diff(seen)) == 0 {
@@ -147,7 +143,6 @@ func Watch(ctx context.Context, roots []string, interval time.Duration, changed 
 		changed(now.Diff(seen))
 		seen = now
 	}
-	return nil
 }
 
 // wait reports false when ctx ended before d had passed.

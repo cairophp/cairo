@@ -23,9 +23,6 @@ warning, which that setting quiets.
 - Releases can be made from the Actions page: the `release` workflow, run on
   `main` with a version, tags the head of `main` itself, and every release
   now publishes the stubs to `cairophp/stubs` too.
-
-### Changed
-
 - The server turns opcache's JIT on by default where PHP has it built in
   (`opcache.jit=tracing`, `opcache.jit_buffer_size=64M`; PHP 8.4 and later
   leave it off): Laravel through Octane in isolated mode +12%, a real GET
@@ -36,6 +33,17 @@ warning, which that setting quiets.
   builds) looks for libpq once after PHP's startup instead of on every
   `poll()` of a PHP thread while no `pdo_pgsql` is loaded: about 2% of the CPU
   of a MySQL app in isolated mode, by profile.
+
+### Fixed
+
+- A PHP thread that starts after `server.php` changed on disk (one that a
+  fatal error ended, an offload thread, or a thread still booting when
+  `--watch` saw the change) no longer fails with "built a different server
+  declaration" and restarts in a loop until the server stops: it ends
+  quietly and the process starts anew in place with the new declaration, as
+  `--watch` does. The servers listen once every PHP thread has read the code,
+  and `--watch` compares with the files as they were before PHP read them,
+  so a change made while the server starts is not missed.
 
 ## [0.8.0] - 2026-11-28
 

@@ -111,6 +111,10 @@ type Engine struct {
 
 	reloadMu sync.Mutex   // one Reload at a time
 	reloads  atomic.Int64 // how many began: a thread that starts after the first reads its files anew
+
+	// Every thread of the start had read the code: a thread that builds
+	// another declaration after that read a server.php changed since.
+	started atomic.Bool
 }
 
 type pool int
@@ -161,6 +165,7 @@ type thread struct {
 	place    atomic.Int32  // placed, placeSpare or placeNone (supervise.go)
 	came     atomic.Bool   // it came to its loop
 	differs  atomic.Bool   // it built another declaration than the boot thread
+	outdated atomic.Bool   // it did so after the start: server.php changed on disk
 	renewing atomic.Bool   // an offload thread that a reload told to end and start anew
 	quiet    atomic.Bool   // replaced by a reload, which logs once for all its threads
 
@@ -298,6 +303,13 @@ func Start(opts Options) (*Engine, error) {
 			return nil, err
 		}
 	}
+	// Each thread reads server.php from disk: the servers listen, and --watch
+	// takes its first look, once all have, so a change from then on is one
+	// that a reload or a restart serves.
+	for _, t := range all {
+		<-t.ready
+	}
+	e.started.Store(true)
 	e.log.Info("php threads started", "request_threads", nw, "offload_threads", no)
 	for _, start := range startFuncs {
 		if err := start(e); err != nil {
@@ -499,6 +511,10 @@ func goCairoSpec(tid C.int, data *C.char, n C.int) *C.char {
 		t.differs.Store(true)
 		if t.place.Load() == placeSpare {
 			return C.CString("") // replace or Reload reports it: the thread only has to end
+		}
+		if e.started.Load() {
+			t.outdated.Store(true)
+			return C.CString("") // threadExited reports it
 		}
 		return C.CString(fmt.Sprintf("php thread %d built a different server declaration than the boot thread; server.php must declare the same servers and routes every time it runs", int(tid)))
 	}

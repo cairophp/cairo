@@ -108,37 +108,31 @@ func TestWatchReportsAChangeOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	file := write(t, dir, "server.php", 1, 1)
+	seen := scan(t, dir)
+	// Written before Watch runs, after the look it is given: still a change.
+	write(t, dir, "server.php", 2, 2)
 	ctx, cancel := context.WithCancel(context.Background())
 	changes := make(chan []string, 8)
-	done := make(chan error, 1)
+	done := make(chan struct{})
 	go func() {
-		done <- Watch(ctx, []string{dir}, 5*time.Millisecond, func(paths []string) { changes <- paths })
+		defer close(done)
+		Watch(ctx, []string{dir}, seen, 5*time.Millisecond, func(paths []string) { changes <- paths })
 	}()
 
-	// The first write may come before Watch has looked for the first time;
-	// the next one comes after the files stood still.
 	var got []string
-	for sec := int64(2); got == nil; sec++ {
-		if sec > 20 {
-			t.Fatal("the change was not reported")
-		}
-		write(t, dir, "server.php", 2, sec)
-		select {
-		case got = <-changes:
-		case <-time.After(3 * settle):
-		}
+	select {
+	case got = <-changes:
+	case <-time.After(time.Second):
+		t.Fatal("the change was not reported")
 	}
 	if !slices.Equal(got, []string{file}) {
 		t.Errorf("changed = %v, want %v", got, []string{file})
 	}
+	select {
+	case again := <-changes:
+		t.Errorf("reported again: %v", again)
+	case <-time.After(3 * settle):
+	}
 	cancel()
-	if err := <-done; err != nil {
-		t.Errorf("Watch: %v", err)
-	}
-	if len(changes) != 0 {
-		t.Errorf("reported again: %v", <-changes)
-	}
-	if err := Watch(context.Background(), []string{filepath.Join(dir, "nowhere")}, time.Millisecond, nil); err == nil {
-		t.Error("a root that does not exist: Watch returned no error")
-	}
+	<-done
 }

@@ -59,13 +59,13 @@ func reloadOnSignal(engine *core.Engine, log *slog.Logger) {
 	}()
 }
 
-// watch reloads the code whenever a file under paths changes, until ctx
-// ends. A change that only a new process can serve (another declaration, a
-// .env file) is sent on the channel it returns, once.
-func watch(ctx context.Context, engine *core.Engine, log *slog.Logger, paths []string) <-chan struct{} {
+// watch reloads the code whenever a file under paths changes from seen,
+// until ctx ends. A change that only a new process can serve (another
+// declaration, a .env file) is sent on the channel it returns, once.
+func watch(ctx context.Context, engine *core.Engine, log *slog.Logger, paths []string, seen filewatch.Snapshot) <-chan struct{} {
 	restart := make(chan struct{}, 1)
 	go func() {
-		err := filewatch.Watch(ctx, paths, watchInterval, func(changed []string) {
+		filewatch.Watch(ctx, paths, seen, watchInterval, func(changed []string) {
 			because := changed[0]
 			if len(changed) > 1 {
 				because += " and " + plural(len(changed)-1, "other file")
@@ -85,9 +85,6 @@ func watch(ctx context.Context, engine *core.Engine, log *slog.Logger, paths []s
 			default:
 			}
 		})
-		if err != nil {
-			log.Error("not watching for changes", "err", err)
-		}
 	}()
 	return restart
 }

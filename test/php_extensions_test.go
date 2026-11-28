@@ -16,6 +16,7 @@ func TestPHPBuildHasOpcacheAndExtensions(t *testing.T) {
 		Extensions map[string]bool `json:"extensions"`
 		Opcache    struct {
 			Loaded, Enabled, Cached bool
+			JIT                     *bool
 			Runtime                 map[string]bool
 		} `json:"opcache"`
 		Checks map[string]any `json:"checks"`
@@ -40,6 +41,11 @@ func TestPHPBuildHasOpcacheAndExtensions(t *testing.T) {
 	// The static binary has no opcache before PHP 8.5 (scripts/build-static.sh).
 	if os.Getenv("CAIRO_TEST_NO_OPCACHE") == "" && (!out.Opcache.Loaded || !out.Opcache.Enabled || !out.Opcache.Cached) {
 		t.Errorf("opcache = %+v, want loaded, enabled and caching the route file", out.Opcache)
+	}
+	// Cairo turns the JIT on where PHP has it (none in the static binary
+	// before PHP 8.5): PHP 8.4 and later leave it off by default.
+	if out.Opcache.JIT != nil && !*out.Opcache.JIT {
+		t.Error("opcache's JIT is built in but off")
 	}
 	// Cairo writes its own PHP files when it starts. Opcache has to hold
 	// them all the same, or every PHP thread compiles them for itself.

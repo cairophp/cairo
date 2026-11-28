@@ -569,6 +569,12 @@ static void cairo_ini_defaults(HashTable *configuration_hash)
 		{"register_argc_argv", "0"},   // PHP 8.5 deprecates argv from the query string
 		{"display_errors", "0"},   // errors go to the log (below), once
 		{"log_errors", "1"},
+#ifdef HAVE_JIT
+		// PHP 8.4 turned opcache's JIT off by default; a long-lived server
+		// gains from it (Laravel isolated +12%, a real GET +5 to 12%).
+		{"opcache.jit", "tracing"},
+		{"opcache.jit_buffer_size", "64M"},
+#endif
 	};
 	for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
 		zval v;

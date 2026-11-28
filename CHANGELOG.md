@@ -7,6 +7,15 @@ change the PHP API; patch versions do not.
 
 ## [Unreleased]
 
+### Changed
+
+- The server turns opcache's JIT on by default where PHP has it built in
+  (`opcache.jit=tracing`, `opcache.jit_buffer_size=64M`; PHP 8.4 and later
+  leave it off): Laravel through Octane in isolated mode +12%, a real GET
+  +5 to 12%, for 11 to 24 MB more memory. A `php.ini` that sets either keeps
+  its own value. The static binary before PHP 8.5 has no JIT, and `cairo php`
+  is unchanged.
+
 ## [0.8.0] - 2026-11-28
 
 PostgreSQL now goes through PHP's own `pdo_pgsql` on libpq, with its waits

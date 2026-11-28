@@ -27,7 +27,8 @@ func TestPublicFiles(t *testing.T) {
 	write("index.php", "<?php source")
 	write("upload.PHP", "<?php source")
 	write(".env", "SECRET=1")
-	write(".well-known/x", "hidden dir")
+	write(".well-known/x", "well-known")
+	write("css/.well-known/x", "hidden dir")
 	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("outside"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +54,8 @@ func TestPublicFiles(t *testing.T) {
 		{"GET", "/index.php", "app /index.php"},
 		{"GET", "/upload.PHP", "app /upload.PHP"},
 		{"GET", "/.env", "app /.env"},
-		{"GET", "/.well-known/x", "app /.well-known/x"},
+		{"GET", "/.well-known/x", "well-known"},
+		{"GET", "/css/.well-known/x", "app /css/.well-known/x"},
 		{"GET", "/link", "app /link"},
 		{"GET", "/../" + filepath.Base(outside) + "/secret", "app /../" + filepath.Base(outside) + "/secret"},
 	} {

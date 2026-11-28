@@ -135,7 +135,11 @@ func (decl *Declaration) handler(php Dispatcher, log *slog.Logger, tel *telemetr
 	}
 	for _, s := range decl.Static {
 		prefix := "/" + strings.Trim(s.Prefix, "/") + "/"
-		mux.Handle("GET "+prefix, http.StripPrefix(prefix, http.FileServer(http.Dir(s.Dir))))
+		files, err := staticFiles(prefix, s.Dir)
+		if err != nil {
+			return nil, nil, err
+		}
+		mux.Handle("GET "+prefix, files)
 	}
 	var routes http.Handler = mux
 	if len(decl.Sendfile) > 0 {

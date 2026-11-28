@@ -15,8 +15,15 @@ change the PHP API; patch versions do not.
   arguments of `timeouts()` (`header`, `idle`; 0 is no limit). A gRPC
   connection with no call in flight for 2 minutes gets a GOAWAY.
 
+- `$http->static()` serves its files by the rules of `publicDir()`: no PHP
+  source, no hidden file (`.env`, `.git/config`), no directory listing, and
+  nothing outside its directory, symlinks included. Before, it served all of
+  these. A directory is still served by its `index.html`.
+
 ### Fixed
 
+- `publicDir()` serves a top-level `.well-known` directory (security.txt,
+  ACME challenges, app links) instead of handing it to the app.
 - In fiber and isolated mode, what a request sets with `putenv()` is that
   request's only, as in classic mode and under PHP-FPM: before, it stayed
   for the next requests on the thread, and in fiber mode the requests that

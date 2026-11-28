@@ -159,7 +159,12 @@ namespace Cairo\Http {
             return $this->route('*', '/', $handler);
         }
 
-        /** Serve files under $dir at $prefix. Go serves them; no PHP runs. */
+        /**
+         * Serve the files under $dir at $prefix. Go serves them; no PHP
+         * runs. The rules are publicDir()'s: PHP sources and hidden files
+         * are never served, and paths cannot leave $dir, symlinks included.
+         * A directory is served by its index.html, never listed.
+         */
         public function static(string $prefix, string $dir): static
         {
             $this->static[] = ['prefix' => $prefix, 'dir' => $dir];
@@ -170,8 +175,9 @@ namespace Cairo\Http {
          * Serve the files under $dir at their own paths, as a web server's
          * document root does (Laravel's public/), and hand every other request
          * to the routes. Go serves the files; no PHP runs. PHP sources and
-         * hidden files (.env, .git) are never served, and paths cannot leave
-         * $dir, symlinks included.
+         * hidden files (.env, .git) are never served, but for a top-level
+         * .well-known (security.txt, ACME challenges), and paths cannot
+         * leave $dir, symlinks included.
          */
         public function publicDir(string $dir): static
         {
